@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "wl_spec",
+  "wl_scanner",
+  "wl_io",
+]

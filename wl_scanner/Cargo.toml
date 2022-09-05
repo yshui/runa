@@ -4,6 +4,15 @@ description = "Generate code from wayland protocol specifications"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+heck = "0.4.0"
+proc-macro2 = "1.0.43"
+quote = "1.0.21"
+rust-format = { version = "0.3.4", features = ["token_stream"] }
+thiserror = "1.0.33"
+wl_spec = { path = "../wl_spec" }
+
+[dev-dependencies]
+rust-format = { version = "0.3.4", features = ["token_stream"] }
+wl_scanner_support = { path = "../wl_scanner_support" }
+wl_spec = { path = "../wl_spec" }

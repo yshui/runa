@@ -1,0 +1,17 @@
+[package]
+name = "wl_scanner_macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-error = "1.0.4"
+proc-macro2 = "1.0.43"
+syn = "1.0.99"
+wl_scanner = { path = "../wl_scanner" }
+wl_spec = { path = "../wl_spec" }
+
+[dev-dependencies]
+wl_scanner_support = { path = "../wl_scanner_support" }

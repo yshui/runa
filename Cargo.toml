@@ -2,5 +2,10 @@
 members = [
   "wl_spec",
   "wl_scanner",
+  "wl_scanner_support",
+  "wl_scanner_macros",
   "wl_io",
+]
+exclude = [
+  "testbench"
 ]

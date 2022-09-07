@@ -12,5 +12,5 @@ pub fn generate_protocol(tokens: proc_macro::TokenStream) -> proc_macro::TokenSt
     let mut contents = String::new();
     file.read_to_string(&mut contents).map_err(|e| syn::Error::new_spanned(&tokens, e)).unwrap_or_abort();
     let protocol = wl_spec::parse::parse(contents.as_bytes()).unwrap();
-    wl_scanner::generate_all_messages(&protocol.interfaces[0]).unwrap().into()
+    wl_scanner::generate_protocol(&protocol).unwrap().into()
 }

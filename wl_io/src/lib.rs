@@ -1,5 +1,5 @@
-use futures_lite::{ready, AsyncRead, AsyncWrite};
 use futures_core::TryFuture;
+use futures_lite::{ready, AsyncRead, AsyncWrite};
 use std::ffi::OsStr;
 use std::io::{Read, Result, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -7,11 +7,11 @@ use std::os::unix::net::UnixStream as StdUnixStream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub mod buf;
 pub mod bin;
+pub mod buf;
 
-pub use buf::*;
 pub use bin::Bin;
+pub use buf::*;
 
 /// Maximum number of file descriptors that can be sent in a write by the wayland protocol. As
 /// defined in libwayland.
@@ -96,33 +96,22 @@ impl<T: AsyncReadWithFds + Unpin> AsyncReadWithFds for &mut T {
 pub trait Serialize<'a, T> {
     type Error;
     type Serialize: TryFuture<Ok = (), Error = Self::Error>;
-    fn serialize(
-        &'a self,
-        writer: Pin<&'a mut T>,
-    ) -> Self::Serialize;
+    fn serialize(&'a self, writer: Pin<&'a mut T>) -> Self::Serialize;
 }
 
 pub trait Deserializer<'de> {
     type Error;
-    type DeserializeU32: TryFuture<Ok = u32, Error = Self::Error> + 'de;
-    type DeserializeI32: TryFuture<Ok = i32, Error = Self::Error> + 'de;
-    type DeserializeBytes: TryFuture<Ok = &'de [u8], Error = Self::Error> + 'de;
-    fn deserialize_u32(
-        self: Pin<&'de mut Self>,
-    ) -> Self::DeserializeU32;
-    fn deserialize_i32(
-        self: Pin<&'de mut Self>,
-    ) -> Self::DeserializeI32;
-    fn deserialize_bytes(
-        self: Pin<&'de mut Self>,
-    ) -> Self::DeserializeBytes;
+    type DeserializeU32: TryFuture<Ok = u32, Error = Self::Error>;
+    type DeserializeI32: TryFuture<Ok = i32, Error = Self::Error>;
+    type DeserializeBytes: TryFuture<Ok = &'de [u8], Error = Self::Error>;
+    fn deserialize_u32(self: Pin<&'de mut Self>) -> Self::DeserializeU32;
+    fn deserialize_i32(self: Pin<&'de mut Self>) -> Self::DeserializeI32;
+    fn deserialize_bytes(self: Pin<&'de mut Self>) -> Self::DeserializeBytes;
     fn poll_deserialize_fd(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::result::Result<RawFd, Self::Error>>;
 }
-
-
 
 /// A borrowed deserialization trait. This is modeled after serde's Deserialize trait, with ability
 /// to deserialize file descriptors added.

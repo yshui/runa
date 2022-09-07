@@ -14,4 +14,5 @@ wl_scanner = { path = "../wl_scanner" }
 wl_spec = { path = "../wl_spec" }
 
 [dev-dependencies]
+smol = "1.2.5"
 wl_scanner_support = { path = "../wl_scanner_support" }

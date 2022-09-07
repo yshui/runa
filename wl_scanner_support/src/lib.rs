@@ -13,6 +13,26 @@ pub mod wayland_types {
 
 pub mod io {
     pub use wl_io::*;
+
+    use pin_project_lite::pin_project;
+    pin_project! {
+    /// A convenience type to hold futures returned by the Deserializer trait.
+    pub enum DeserializerFutureHolder<'de, D: Deserializer<'de>> {
+        U32 {
+            #[pin]
+            inner: D::DeserializeU32
+        },
+        I32 {
+            #[pin]
+            inner: D::DeserializeI32
+        },
+        Bytes {
+            #[pin]
+            inner: D::DeserializeBytes
+        },
+        None,
+    }
+    }
 }
 
 pub use futures_lite::ready;

@@ -1,8 +1,8 @@
-use crate::{AsyncReadWithFds, AsyncWriteWithFds};
+use crate::{AsyncBufReadExt, AsyncReadWithFds, AsyncWriteWithFds};
 use futures_lite::{ready, AsyncBufRead, AsyncRead, AsyncWrite};
 use pin_project_lite::pin_project;
 use std::{
-    collections::VecDeque, mem::MaybeUninit, os::unix::prelude::RawFd, pin::Pin, task::Poll,
+    collections::VecDeque, os::unix::prelude::RawFd, pin::Pin, task::Poll,
 };
 
 pin_project! {
@@ -14,10 +14,15 @@ pin_project! {
 /// `recvmsg` with a big enough buffer, so every time we read, we have to read all of them, whehter
 /// there are spare buffer left or not. This means the file descriptors buffer will grow
 /// indefinitely if they are not read from BufWithFd.
+///
+/// Also, users are encouraged to use up all the available data before calling
+/// poll_fill_buf/poll_fill_buf_until again, otherwise there is potential for causing a lot of
+/// allocations and memcpys.
 pub struct BufReaderWithFd<T> {
     #[pin]
     inner: T,
-    buf: Box<[MaybeUninit<u8>]>,
+    buf: Vec<u8>,
+    cap_data: usize,
     filled_data: usize,
     pos_data: usize,
 
@@ -26,21 +31,51 @@ pub struct BufReaderWithFd<T> {
 }
 
 impl<T> BufReaderWithFd<T> {
+    #[inline]
     pub fn new(inner: T) -> Self {
         Self::with_capacity(inner, 4 * 1024, 32)
     }
+    #[inline]
+    pub fn shrink(self: Pin<&mut Self>) {
+        // We have something to do if either:
+        // 1. pos_data > 0 - we can move data to the front
+        // 2. buf.len() > filled_data, and buf.len() > cap_data - we can shrink the buffer down to
+        //    filled_data or cap_data
+        if self.pos_data > 0 || self.buf.len() > std::cmp::max(self.filled_data, self.cap_data) {
+            let this = self.project();
+            let data_len = *this.filled_data - *this.pos_data;
+            // Safety: pos_data and filled_data are valid indices. u8 is Copy and !Drop
+            unsafe {
+                std::ptr::copy(
+                    this.buf[*this.pos_data..].as_ptr(),
+                    this.buf.as_mut_ptr(),
+                    data_len,
+                )
+            };
+            this.buf.truncate(std::cmp::max(data_len, *this.cap_data));
+            this.buf.shrink_to_fit();
+            *this.pos_data = 0;
+            *this.filled_data = data_len;
+        }
+    }
+    #[inline]
     pub fn with_capacity(inner: T, cap_data: usize, cap_fd: usize) -> Self {
         // TODO: consider using box::new_uninit_slice when #63291 is stablized
+        // Actually, we can't use MaybeUninit here, AsyncRead::poll_read has no guarantee that it
+        // will definitely initialize the number of bytes it claims to have read. That's why tokio
+        // uses a ReadBuf type track how many bytes have been initialized.
         Self {
             inner,
-            buf: vec![MaybeUninit::uninit(); cap_data].into_boxed_slice(),
+            buf: vec![0; cap_data],
             filled_data: 0,
             pos_data: 0,
+            cap_data,
 
             fd_buf: VecDeque::with_capacity(cap_fd),
         }
     }
 
+    #[inline]
     fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize) {
         let this = self.project();
         *this.pos_data += amt_data;
@@ -48,11 +83,12 @@ impl<T> BufReaderWithFd<T> {
         // Has to drop the Drain iterator to prevent leaking
         drop(this.fd_buf.drain(..amt_fd));
     }
-    fn buffer(self: Pin<&mut Self>) -> &[u8] {
-        unsafe {
-            let buf = self.buf.get_unchecked(self.pos_data..self.filled_data);
-            &*(buf as *const [MaybeUninit<u8>] as *const [u8])
-        }
+
+    #[inline]
+    fn buffer(&self) -> &[u8] {
+        let range = self.pos_data..self.filled_data;
+        // Safety: invariant: filled_data <= buf.len()
+        unsafe { self.buf.get_unchecked(range) }
     }
 }
 
@@ -60,40 +96,53 @@ impl<T: AsyncReadWithFds> AsyncRead for BufReaderWithFd<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        mut buf: &mut [u8],
+        buf: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
-        Poll::Ready(ready!(self.poll_read_with_fds(cx, &mut buf, &mut [])).map(|(n, _)| n))
+        Poll::Ready(ready!(self.poll_read_with_fds(cx, buf, &mut [])).map(|(n, _)| n))
+    }
+}
+
+impl<T: AsyncReadWithFds> AsyncBufReadExt for BufReaderWithFd<T> {
+    fn poll_fill_buf_until(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        len: usize,
+    ) -> Poll<std::io::Result<&[u8]>> {
+        if self.pos_data + len > self.buf.len() || self.filled_data == self.pos_data {
+            // Try to shrink before we grow it. Or if the buf is empty.
+            self.as_mut().shrink();
+        }
+        while self.filled_data - self.pos_data < len {
+            let this = self.as_mut().project();
+            if this.filled_data == this.pos_data {
+                *this.filled_data = 0;
+                *this.pos_data = 0;
+            }
+            if *this.pos_data + len > this.buf.len() {
+                this.buf.resize(len + *this.pos_data, 0);
+            }
+
+            let mut tmp_fds = [0; crate::SCM_MAX_FD];
+            // Safety: loop invariant: filled_data < len + pos_data
+            // post condition from the if above: buf.len() >= len + pos_data
+            // combined: filled_data < buf.len()
+            let buf = unsafe { &mut this.buf.get_unchecked_mut(*this.filled_data..) };
+            let (bytes, nfds) = ready!(this.inner.poll_read_with_fds(cx, buf, &mut tmp_fds))?;
+            *this.filled_data += bytes;
+            this.fd_buf.extend(tmp_fds[..nfds].iter());
+        }
+
+        Poll::Ready(Ok(self.into_ref().get_ref().buffer()))
     }
 }
 
 impl<T: AsyncReadWithFds> AsyncBufRead for BufReaderWithFd<T> {
     fn poll_fill_buf(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<&[u8]>> {
-        use std::ops::DerefMut;
-        if self.pos_data >= self.filled_data {
-            let this = self.as_mut().project();
-            *this.filled_data = 0;
-            *this.pos_data = 0;
-
-            loop {
-                let this = self.as_mut().project();
-                let mut tmp_fds = [0; crate::SCM_MAX_FD];
-                let (bytes, nfds) = unsafe {
-                    let buf = &mut *(this.buf.deref_mut() as *mut [MaybeUninit<u8>] as *mut [u8]);
-                    ready!(this.inner.poll_read_with_fds(cx, buf, &mut tmp_fds))?
-                };
-                *this.filled_data = bytes;
-                *this.pos_data = 0;
-                this.fd_buf.extend(tmp_fds[..nfds].iter());
-                if *this.filled_data > 0 {
-                    break;
-                }
-            }
-        }
-
-        Poll::Ready(Ok(self.buffer()))
+        // Fill at least 1 byte
+        self.poll_fill_buf_until(cx, 1)
     }
     fn consume(self: Pin<&mut Self>, amt: usize) {
         self.consume_with_fds(amt, 0);
@@ -113,8 +162,8 @@ impl<T: AsyncReadWithFds> AsyncReadWithFds for BufReaderWithFd<T> {
         buf = &mut buf[read_len..];
 
         let nfds = std::cmp::min(self.fd_buf.len(), fds.len());
-        for i in 0..nfds {
-            fds[i] = self.fd_buf[i];
+        for (i, fd) in fds.iter_mut().take(nfds).enumerate() {
+            *fd = self.fd_buf[i];
         }
         fds = &mut fds[nfds..];
 
@@ -122,7 +171,7 @@ impl<T: AsyncReadWithFds> AsyncReadWithFds for BufReaderWithFd<T> {
 
         let mut read = read_len;
         let mut fds_read = nfds;
-        if buf.len() > 0 {
+        if !buf.is_empty() {
             // If we still have buffer left, we try to read directly into the buffer to
             // opportunistically avoid copying.
             //
@@ -185,7 +234,7 @@ impl<T: AsyncWriteWithFds> BufWriterWithFd<T> {
             match ready!(this.inner.as_mut().poll_write_with_fds(
                 cx,
                 &this.buf[*this.written..],
-                &this.fd_buf
+                this.fd_buf
             )) {
                 Ok(0) => {
                     return Poll::Ready(Err(std::io::Error::new(

@@ -1,5 +1,5 @@
 use heck::ToPascalCase;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use thiserror::Error;
 use wl_spec::protocol::{Interface, Message, Protocol};
@@ -16,12 +16,12 @@ pub fn generate_arg_type(ty: &wl_spec::protocol::Type, is_owned: bool) -> Result
         Uint => quote!(u32),
         Fixed => quote!(::wl_scanner_support::wayland_types::Fixed),
         Array => quote!(&'a [u8]),
-        Fd => quote!(::std::os::unix::prelude::RawFd),
+        Fd => quote!(::wl_scanner_support::wayland_types::Fd),
         String => {
             if is_owned {
-                quote!(::std::ffi::OsString)
+                quote!(::wl_scanner_support::wayland_types::String)
             } else {
-                quote!(&'a ::std::ffi::OsStr)
+                quote!(::wl_scanner_support::wayland_types::Str<'a>)
             }
         }
         Object => quote!(::wl_scanner_support::wayland_types::Object),
@@ -56,6 +56,86 @@ fn fixed_length_write() -> TokenStream {
         }
     }
 }
+
+pub fn generate_deserialize_accessor(ty: &Ident, is_borrowed: bool) -> TokenStream {
+    let accessor_name = format_ident!("{}Accessor", ty);
+    let accessor_parameter = if is_borrowed {
+        quote!(<'a, R>)
+    } else {
+        quote!(<R>)
+    };
+    let accessor_parameter_no_bound = if is_borrowed {
+        quote!(<'a, R>)
+    } else {
+        quote!(<R>)
+    };
+    let ty_lifetime = if is_borrowed { quote!(<'a>) } else { quote!() };
+    quote! {
+    /// Holds a value that is deserialized from borrowed data from `reader`.
+    /// This prevents the reader from being used again while this accessor is alive.
+    /// Also this accessor will advance the reader to the next message when dropped.
+    pub struct #accessor_name #accessor_parameter
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        result: #ty #ty_lifetime,
+        reader: ::std::ptr::NonNull<R>,
+        len: usize,
+    }
+
+    impl #accessor_parameter #accessor_name #accessor_parameter_no_bound
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        // Safety: result must be borrowing from `reader`, `reader` must be valid. (i.e. reader
+        // must outlive result). _And_ `reader` must have already been pinned
+        pub(super) unsafe fn new(reader: ::std::ptr::NonNull<R>, result: #ty #ty_lifetime, len: usize) -> Self {
+            Self {
+                result,
+                reader,
+                len,
+            }
+        }
+    }
+    impl #accessor_parameter ::std::fmt::Debug for #accessor_name #accessor_parameter_no_bound
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            self.result.fmt(f)
+        }
+    }
+    impl #accessor_parameter Drop for #accessor_name #accessor_parameter_no_bound
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        fn drop(&mut self) {
+            use ::wl_scanner_support::io::AsyncBufReadExt;
+            // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
+            // And `reader` must be pinned already.
+            unsafe { ::std::pin::Pin::new_unchecked(self.reader.as_mut()).consume(self.len); }
+        }
+    }
+    impl #accessor_parameter ::std::ops::Deref for #accessor_name #accessor_parameter_no_bound
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        type Target = #ty #ty_lifetime;
+        fn deref(&self) -> &Self::Target {
+            &self.result
+        }
+    }
+    impl #accessor_parameter ::std::ops::DerefMut for #accessor_name #accessor_parameter_no_bound
+    where
+        R: ::wl_scanner_support::io::AsyncBufRead,
+    {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.result
+        }
+    }
+    }
+}
+
 pub fn generate_serialize_for_type(
     name: &TokenStream,
     ty: &wl_spec::protocol::Type,
@@ -64,11 +144,11 @@ pub fn generate_serialize_for_type(
     if let Fd = ty {
         return quote! {
             use ::wl_scanner_support::io::AsyncWriteWithFds;
-            let fd = #name;
+            use ::std::os::unix::io::AsRawFd;
+            let fd = #name.as_raw_fd();
             ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, &[], &[fd]))?;
         };
     }
-    let null_term_length = if let String = ty { 1usize } else { 0 };
     let get = match ty {
         Int | Uint => quote! {
             let buf = #name.to_ne_bytes();
@@ -78,8 +158,7 @@ pub fn generate_serialize_for_type(
         },
         Fd => unreachable!(),
         String => quote! {
-            use std::os::unix::ffi::OsStrExt;
-            let buf = #name.as_bytes();
+            let buf = #name.0.to_bytes_with_nul();
         },
         Array => quote! {
             let buf = #name;
@@ -96,7 +175,7 @@ pub fn generate_serialize_for_type(
             #get
             let aligned_len = ((buf.len() + 3) & !3) + 4;
             let align_buf = [0; 3];
-            let len_buf = (buf.len() + #null_term_length).to_ne_bytes();
+            let len_buf = (buf.len() as u32).to_ne_bytes();
             loop {
                 let offset = self.offset;
                 // [0, 4): length
@@ -135,7 +214,15 @@ pub fn generate_message_variant(
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
             let ty = generate_arg_type(&arg.typ, is_owned)?;
+            let attr = if !is_owned && type_is_borrowed(&arg.typ) {
+                quote!(#[serde(borrow)])
+            } else {
+                quote!()
+            };
+            let doc_comment = generate_doc_comment(&arg.description);
             Ok(quote! {
+                #doc_comment
+                #attr
                 pub #name: #ty,
             })
         })
@@ -143,7 +230,11 @@ pub fn generate_message_variant(
     let args = args?;
     let pname = request.name.as_str().to_pascal_case();
     let name = format_ident!("{}", pname);
-    let is_borrowed = request.args.iter().any(|arg| type_is_borrowed(&arg.typ));
+    let is_borrowed = if !is_owned {
+        request.args.iter().any(|arg| type_is_borrowed(&arg.typ))
+    } else {
+        false
+    };
     let lifetime = if is_borrowed {
         quote! {
             <'a>
@@ -152,8 +243,11 @@ pub fn generate_message_variant(
         quote! {}
     };
     let serialize_name = format_ident!("{}Serialize", pname);
-    let deserialize_name = format_ident!("{}Deserialize", pname);
+    let doc_comment = generate_doc_comment(&request.description);
     let public = quote! {
+        #doc_comment
+        #[derive(::wl_scanner_support::serde::Deserialize, Debug)]
+        #[serde(crate = "::wl_scanner_support::serde")]
         pub struct #name #lifetime {
             #args
         }
@@ -168,24 +262,6 @@ pub fn generate_message_variant(
                     writer,
                     index: -1, // Start with -1 to write the message prefix
                     offset: 0,
-                }
-            }
-        }
-
-        impl<'a, D> ::wl_scanner_support::io::Deserialize<'a, D> for #name #lifetime
-        where
-            D: ::wl_scanner_support::io::Deserializer<'a> + 'a {
-            type Error = ::wl_scanner_support::Error;
-            type Deserialize = super::internal::#deserialize_name <'a, D>;
-            fn deserialize(deserializer: ::std::pin::Pin<&'a mut D>)
-            -> Self::Deserialize {
-                Self::Deserialize {
-                    // Safety: &mut is not used but just turned into a raw pointer directly.
-                    de: unsafe { deserializer.get_unchecked_mut().into() },
-                    pending: ::wl_scanner_support::io::DeserializerFutureHolder::None,
-                    tmp: ::std::mem::MaybeUninit::uninit(),
-                    index: 0,
-                    _pin: ::std::default::Default::default(),
                 }
             }
         }
@@ -207,23 +283,6 @@ pub fn generate_message_variant(
                 ::std::task::Poll<Self::Output> {
                 #serialize
                 ::std::task::Poll::Ready(Ok(()))
-            }
-        }
-
-        pub struct #deserialize_name <'a, T: ::wl_scanner_support::io::Deserializer<'a>> {
-            pub(super) de: ::std::ptr::NonNull<T>,
-            pub(super) pending: ::wl_scanner_support::io::DeserializerFutureHolder<'a, T>,
-            pub(super) tmp: ::std::mem::MaybeUninit<super::#parent::#name #lifetime>,
-            pub(super) index: u32,
-            pub(super) _pin: ::std::marker::PhantomPinned,
-        }
-        impl<'a, D> ::std::future::Future for #deserialize_name<'a, D>
-        where
-            D: ::wl_scanner_support::io::Deserializer<'a> {
-            type Output = ::std::result::Result<super::#parent::#name #lifetime, ::wl_scanner_support::Error>;
-            fn poll(mut self: ::std::pin::Pin<&mut Self>, cx: &mut ::std::task::Context<'_>) ->
-                ::std::task::Poll<Self::Output> {
-                todo!()
             }
         }
     };
@@ -277,7 +336,7 @@ pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Res
                 | wl_spec::protocol::Type::Fd
                 | wl_spec::protocol::Type::Destructor => quote! {},
                 wl_spec::protocol::Type::String => quote! {
-                    + ((::std::os::unix::ffi::OsStrExt::as_bytes(self.request.#name).len() + 1 + 3) & !3) as u32
+                    + ((self.request.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
                 },
                 wl_spec::protocol::Type::Array => quote! {
                     + ((self.request.#name.len() + 3) & !3) as u32
@@ -285,7 +344,6 @@ pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Res
             }
         })
         .collect();
-    let var_name = format_ident!("{}", request.name.to_pascal_case());
     let fixed_length_write = fixed_length_write();
     Ok(quote! {
         let msg_len = (#fixed_len #variable_len + 8) as u32; // 8 is the header
@@ -306,42 +364,6 @@ pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Res
     })
 }
 
-fn generate_deserialize_for_type(name: &Ident, ty: &wl_spec::protocol::Type) -> TokenStream {
-    quote! {}
-}
-
-pub fn generate_message_variant_deserialize(request: &Message) -> Result<TokenStream> {
-    let arg_list: TokenStream = request
-        .args
-        .iter()
-        .map(|arg| {
-            let name = format_ident!("{}", arg.name);
-            quote! {
-                #name,
-            }
-        })
-        .collect();
-    let deserialize: TokenStream = request
-        .args
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| {
-            let name = format_ident!("{}", arg.name);
-            let i = i as i32;
-            let deserialize = generate_deserialize_for_type(&name, &arg.typ);
-            quote! {
-                #i => {
-                    #deserialize
-                }
-            }
-        })
-        .collect();
-    let var_name = format_ident!("{}", request.name.to_pascal_case());
-    Ok(quote! {
-        #var_name { #arg_list }
-    })
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EventOrRequest {
     Event,
@@ -349,7 +371,7 @@ pub enum EventOrRequest {
 }
 
 pub fn generate_event_or_request(
-    name: &str,
+    _name: &str,
     messages: &[Message],
     event_or_request: EventOrRequest,
 ) -> Result<(TokenStream, TokenStream)> {
@@ -380,6 +402,8 @@ pub fn generate_event_or_request(
         } else {
             quote! {}
         };
+        let accessor = generate_deserialize_accessor(&type_name, enum_is_borrowed);
+        let accessor_name = format_ident!("{}Accessor", type_name);
         let enum_members = messages
             .iter()
             .map(|v| {
@@ -424,8 +448,32 @@ pub fn generate_event_or_request(
                 }
             })
             .collect::<TokenStream>();
+        let accessor_parameter = if enum_is_borrowed {
+            quote! { <'a, D> }
+        } else {
+            quote! { <D> }
+        };
+        let deserialize = messages
+            .iter()
+            .enumerate()
+            .map(|(opcode, v)| {
+                let name = format_ident!("{}", v.name.to_pascal_case());
+                let opcode = opcode as u32;
+                quote! {
+                    #opcode => {
+                        #type_name::#name(
+                            ::wl_scanner_support::serde::de::Deserialize::deserialize(&mut body)?
+                        )
+                    }
+                }
+            })
+            .collect::<TokenStream>();
         let public = quote! {
+            #accessor
             pub mod #mod_name { #public }
+            #[doc = "Collection of all possible types of messages, see individual message types "]
+            #[doc = "for more information."]
+            #[derive(Debug)]
             pub enum #type_name #enum_lifetime {
                 #enum_members
             }
@@ -440,8 +488,78 @@ pub fn generate_event_or_request(
                     }
                 }
             }
+
+            /// Deserialize a message. This is implemented on the accessor to make sure user
+            /// doesn't forget to advance the buffer in the reader.
+            ///
+            /// This is also not implemented for each of the message variants because to
+            /// efficiently deserialize a message we need to know the message length beforehand,
+            /// however message header is not part of the individual variants.
+            impl<'a, 'de: 'a, D> ::wl_scanner_support::io::Deserialize<'de, D> for
+            #accessor_name #accessor_parameter
+            where
+                D: ::wl_scanner_support::io::AsyncBufReadExt +
+                   ::wl_scanner_support::io::AsyncBufRead +
+                   ::wl_scanner_support::io::AsyncReadWithFds +
+                   'de
+            {
+                type Error = ::wl_scanner_support::Error;
+                fn poll_deserialize(mut reader: ::std::pin::Pin<&'de mut D>, cx: &mut ::std::task::Context<'_>)
+                -> ::std::task::Poll<::std::result::Result<Self, Self::Error>> {
+                    use ::wl_scanner_support::io::{AsyncBufReadExt as _, de::WaylandDeserializer};
+                    use ::wl_scanner_support::Error;
+                    use ::std::io::{Error as StdError, ErrorKind};
+                    use ::wl_scanner_support::ready;
+                    use ::std::task::Poll;
+                    use ::std::pin::Pin;
+                    use ::std::ptr::NonNull;
+                    let buf = ready!(reader.as_mut().poll_fill_buf_until(cx, 4))?;
+                    let header = buf.get(..4)
+                                    .ok_or_else(|| StdError::new(ErrorKind::UnexpectedEof, "Unexpected EOF"))?;
+                    // Safety: we just checked that the buffer is exactly 4 bytes long
+                    let header = u32::from_ne_bytes(unsafe { *(header.as_ptr() as *const [u8; 4]) });
+                    let len = (header >> 16) - 4; // minus 4 byte object ID we assume is already
+                                                  // read
+                    let opcode = header & 0xffff;
+                    // Make sure data is ready, we don't hold the buffer yet, because if we do,
+                    // we won't be able to get file descriptors from the reader anymore. Filling
+                    // the buffer to `len` bytes should have made the file descriptors available to
+                    // us as well, as per unix(7).
+                    let _ = ready!(reader.as_mut().poll_fill_buf_until(cx, len as usize))?;
+                    // Safety: we don't move the reader using the &mut from get_unchecked_mut, we
+                    // just case it to a *mut
+                    let (raw_reader, buf) = unsafe {
+                        let reader = reader.get_unchecked_mut();
+                        let mut raw_reader: NonNull<D> = reader.into();
+                        // Safety:
+                        // 1. raw_reader was pinned and we didn't move it.
+                        // 2. poll_fill_buf_until must originate from raw_reader to not violate
+                        //    stacked borrow rules.
+                        // 3. buf is give a 'de lifetime so it borrows reader (probably
+                        //    unnecessary)
+                        let buf: &'de [u8] = ready!(Pin::new_unchecked(raw_reader.as_mut())
+                            .poll_fill_buf_until(cx, len as usize))?;
+                        (raw_reader, buf)
+                    };
+                    let body = buf.get(4..len as usize)
+                                  .ok_or_else(|| StdError::new(ErrorKind::UnexpectedEof, "Unexpected EOF"))?;
+                    let mut body = WaylandDeserializer::new(body);
+                    let result = match opcode {
+                        #deserialize
+                        _ => return Poll::Ready(Err(Self::Error::UnknownOpcode(opcode))),
+                    };
+                    // Safety: result _does_ borrow from raw_reader
+                    Poll::Ready(Ok(unsafe {
+                        Self::new(
+                            raw_reader,
+                            result,
+                            len as usize,
+                        )
+                    }))
+                }
+            }
         };
-        private.extend(quote!{
+        private.extend(quote! {
             pub enum #enum_serialize_name <'a, T> {
                 #enum_serialize_members
             }
@@ -460,7 +578,26 @@ pub fn generate_event_or_request(
         Ok((public, private))
     }
 }
-
+pub fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
+    if let Some((summary, desc)) = description {
+        let desc = desc
+            .split("\n")
+            .map(|s| {
+                let s = s.trim();
+                quote! {
+                    #[doc = #s]
+                }
+            })
+            .collect::<TokenStream>();
+        quote! {
+            #[doc = #summary]
+            #[doc = ""]
+            #desc
+        }
+    } else {
+        quote! {}
+    }
+}
 pub fn generate_interface(iface: &Interface) -> Result<TokenStream> {
     let name = format_ident!("{}", iface.name);
     let version = format_ident!("v{}", iface.version);
@@ -469,8 +606,10 @@ pub fn generate_interface(iface: &Interface) -> Result<TokenStream> {
         generate_event_or_request(&iface.name, &iface.requests, EventOrRequest::Request)?;
     let (events, events_private) =
         generate_event_or_request(&iface.name, &iface.events, EventOrRequest::Event)?;
+    let doc_comment = generate_doc_comment(&iface.description);
 
     Ok(quote! {
+        #doc_comment
         pub mod #name {
             pub mod #version {
                 #requests

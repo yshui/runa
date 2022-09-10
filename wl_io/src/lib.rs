@@ -1,16 +1,15 @@
 use futures_core::TryFuture;
 use futures_lite::{ready, AsyncRead, AsyncWrite};
-use std::ffi::OsStr;
 use std::io::{Read, Result, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub mod bin;
 pub mod buf;
+pub mod de;
+pub mod utils;
 
-pub use bin::Bin;
 pub use buf::*;
 
 /// Maximum number of file descriptors that can be sent in a write by the wayland protocol. As
@@ -86,6 +85,15 @@ impl<T: AsyncReadWithFds + Unpin> AsyncReadWithFds for &mut T {
     }
 }
 
+pub trait AsyncBufReadExt: futures_lite::AsyncRead {
+    /// Reads enough data to return a buffer at least the given size.
+    fn poll_fill_buf_until<'a>(
+        self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+        len: usize,
+    ) -> Poll<Result<&'a [u8]>>;
+}
+
 /// A serialization trait, implemented by wayland message types.
 ///
 /// We can't use serde, because it doesn't support passing file descriptors. Most of the
@@ -99,31 +107,19 @@ pub trait Serialize<'a, T> {
     fn serialize(&'a self, writer: Pin<&'a mut T>) -> Self::Serialize;
 }
 
-pub trait Deserializer<'de> {
-    type Error;
-    type DeserializeU32: TryFuture<Ok = u32, Error = Self::Error>;
-    type DeserializeI32: TryFuture<Ok = i32, Error = Self::Error>;
-    type DeserializeBytes: TryFuture<Ok = &'de [u8], Error = Self::Error>;
-    fn deserialize_u32(self: Pin<&'de mut Self>) -> Self::DeserializeU32;
-    fn deserialize_i32(self: Pin<&'de mut Self>) -> Self::DeserializeI32;
-    fn deserialize_bytes(self: Pin<&'de mut Self>) -> Self::DeserializeBytes;
-    fn poll_deserialize_fd(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<RawFd, Self::Error>>;
-}
-
 /// A borrowed deserialization trait. This is modeled after serde's Deserialize trait, with ability
 /// to deserialize file descriptors added.
 ///
 /// We have a Deserializer trait here instead of AsyncReadWithFds. The intention is that the
 /// deserializer could have a buffer, and the deserialization result can borrow from it, to avoid
 /// allocating a new string every time.
-pub trait Deserialize<'de, D: Deserializer<'de>> {
+pub trait Deserialize<'de, D> {
+    // TODO: use generic associated types, and type alias impl trait when they are stable.
+    type Error;
     fn poll_deserialize(
-        deserializer: Pin<&'de mut D>,
+        reader: Pin<&'de mut D>,
         cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<Self, D::Error>>
+    ) -> ::std::task::Poll<::std::result::Result<Self, Self::Error>>
     where
         Self: Sized;
 }
@@ -180,7 +176,7 @@ impl<T: Write + AsRawFd> AsyncWriteWithFds for WithFd<T> {
     ) -> Poll<Result<usize>> {
         use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
-        let () = ready!(self.inner.poll_writable(cx)?);
+        ready!(self.inner.poll_writable(cx)?);
         let fd = self.inner.as_raw_fd();
 
         match sendmsg::<()>(
@@ -289,9 +285,6 @@ impl<'a> Iterator for ScmRightsIterator<'a> {
                 Some(hdr) => {
                     // Get the data.
                     // Safe if cmsghdr points to valid data returned by recvmsg(2)
-                    if hdr.cmsg_type != libc::SCM_RIGHTS || hdr.cmsg_level != libc::SOL_SOCKET {
-                        return None;
-                    }
                     let ret = FdIter {
                         cmsghdr: hdr,
                         idx: 0,
@@ -300,6 +293,9 @@ impl<'a> Iterator for ScmRightsIterator<'a> {
                         let p = libc::CMSG_NXTHDR(self.mhdr as *const _, hdr as *const _);
                         p.as_ref()
                     };
+                    if hdr.cmsg_type != libc::SCM_RIGHTS || hdr.cmsg_level != libc::SOL_SOCKET {
+                        continue;
+                    }
                     break Some(ret);
                 }
             }
@@ -393,7 +389,7 @@ impl<T: Read + AsRawFd> AsyncReadWithFds for WithFd<T> {
         fds: &mut [RawFd],
     ) -> Poll<Result<(usize, usize)>> {
         use nix::sys::socket::MsgFlags;
-        let () = ready!(self.inner.poll_readable(cx)?);
+        ready!(self.inner.poll_readable(cx)?);
         let fd = self.inner.as_raw_fd();
 
         match recvmsg::<()>(

@@ -1,12 +1,13 @@
+use crate::AsyncBufReadWithFds;
 use futures_lite::{ready, AsyncBufRead};
 use serde::de::{value, Deserializer, Error, Visitor};
 use std::{
+    mem::ManuallyDrop,
     os::unix::io::RawFd,
     pin::Pin,
     ptr::NonNull,
     task::{Context, Poll},
 };
-use crate::AsyncBufReadWithFds;
 
 /// When passed this string as name, deserialize_newtype_struct will try
 /// to deserialize a file descriptor.
@@ -15,17 +16,34 @@ pub const WAYLAND_FD_NEWTYPE_NAME: &str = "__WaylandFd__";
 /// Holds a value that is deserialized from borrowed data from `reader`.
 /// This prevents the reader from being used again while this accessor is alive.
 /// Also this accessor will advance the reader to the next message when dropped.
-pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFds + 'a> {
+#[derive(Debug)]
+pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFds + ?Sized + 'a> {
     read: &'a [u8],
     fds: &'a [RawFd],
     reader: NonNull<R>,
     fds_used: usize,
     read_len: usize,
+
+    enum_deserialized: bool,
+}
+
+impl<'a, R> Drop for WaylandBufAccess<'a, R>
+where
+    R: AsyncBufReadWithFds + ?Sized + 'a,
+{
+    fn drop(&mut self) {
+        // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
+        // And `reader` must be pinned already.
+        unsafe {
+            ::std::pin::Pin::new_unchecked(self.reader.as_mut())
+                .consume_with_fds(self.read_len, self.fds_used);
+        }
+    }
 }
 
 impl<'a, R> WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + 'a,
+    R: AsyncBufReadWithFds + ?Sized + 'a,
 {
     /// Safety: result must be borrowing from `reader`, `reader` must be valid. (i.e. reader
     /// must outlive result). _And_ `reader` must have already been pinned
@@ -36,31 +54,13 @@ where
             fds,
             fds_used: 0,
             read_len: read.len(),
+            enum_deserialized: false,
         }
     }
 
     pub fn into_inner(mut self) -> Pin<&'a mut R> {
         unsafe { Pin::new_unchecked(self.reader.as_mut()) }
     }
-}
-
-impl<'a, R> Drop for WaylandBufAccess<'a, R>
-where
-    R: AsyncBufReadWithFds + 'a,
-{
-    fn drop(&mut self) {
-        // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
-        // And `reader` must be pinned already.
-        unsafe {
-            ::std::pin::Pin::new_unchecked(self.reader.as_mut()).consume_with_fds(self.read_len, self.fds_used);
-        }
-    }
-}
-
-impl<'a, R> WaylandBufAccess<'a, R>
-where
-    R: AsyncBufReadWithFds + 'a,
-{
     /// Poll the reader until it has `len` bytes in the buffer. Then wrap
     /// the buffer and the reader in a `BufAccessor`. When the `BufAccessor`
     /// is dropped, the reader will be advanced by buf.len() bytes.
@@ -100,26 +100,25 @@ where
             let header = unsafe { u32::from_ne_bytes(*(header.as_ptr() as *const [u8; 4])) };
             (object_id, header & 0xffff, (header >> 16) as usize)
         };
-        // Make sure we have the whole message in the buffer first, because we are going to drop
-        // the object id here, if we are not ready, returning Pending from this functino would
-        // cause us to lose the object id.
-        let b = ready!(reader.as_mut().poll_fill_buf_until(cx, len))?;
-        eprintln!("bbb {:x?}", b);
-        // Drop object_id
-        reader.as_mut().consume_with_fds(4, 0);
-        Poll::Ready(match Self::poll_fill_buf_until(reader, cx, len - 4) {
-            Poll::Ready(v) => v.map(|a|  {
-                eprintln!("{:x?}", a.read);
+
+        ready!(reader.as_mut().poll_fill_buf_until(cx, len))?;
+        Poll::Ready(match Self::poll_fill_buf_until(reader, cx, len) {
+            Poll::Ready(v) => v.map(|a| {
                 (object_id, opcode, a)
             }),
-            Poll::Pending => unsafe { std::hint::unreachable_unchecked() },
+            Poll::Pending => panic!(
+                "Bug in poll_fill_buf_until implementation: returned Pending after returning Ready"
+            ),
         })
+    }
+    pub fn next_message(reader: &mut R) -> NextMessage<'_, R> where R: Unpin {
+        NextMessage(Some(reader))
     }
 }
 
 impl<'a, R> WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + 'a,
+    R: AsyncBufReadWithFds + ?Sized + 'a,
 {
     fn pop_i32(&mut self) -> Result<i32, value::Error> {
         let slice = self
@@ -306,12 +305,16 @@ where
             where
                 V: serde::de::DeserializeSeed<'de>,
             {
+                let _object_id = self.pop_u32()?;
                 let variant = self.pop_u32()?;
-                eprintln!("variant: {:x?}", variant);
                 let variant = seed.deserialize(WaylandHeaderDerserializer(variant))?;
                 Ok((variant, self))
             }
         }
+        if self.enum_deserialized {
+            return Err(Self::Error::custom("Message header already deserialized"));
+        }
+        self.enum_deserialized = true;
         visitor.visit_enum(self)
     }
     fn deserialize_unit_struct<V>(
@@ -461,5 +464,37 @@ where
         V: serde::de::Visitor<'de>,
     {
         self.deserialize_tuple(fields.len(), visitor)
+    }
+}
+
+pub struct NextMessage<'a, R: Unpin + ?Sized>(Option<&'a mut R>);
+impl<'a, R: Unpin + std::fmt::Debug> std::future::Future for NextMessage<'a, R>
+where
+    R: AsyncBufReadWithFds,
+{
+    type Output = std::io::Result<(u32, u32, WaylandBufAccess<'a, R>)>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let reader = this.0.take().expect("NextMessage polled after completion");
+        let x = WaylandBufAccess::poll_next_message(Pin::new(&mut *reader), cx).map(|r| {
+            r.map(|a| {
+                // Don't advance the buffer when this access is dropped because we will be polling again
+                ManuallyDrop::new(a)
+            })
+        });
+        match x {
+            Poll::Pending => {
+                this.0 = Some(reader);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(_)) => match WaylandBufAccess::poll_next_message(Pin::new(reader), cx) {
+                Poll::Ready(Ok(access)) => Poll::Ready(Ok(access)),
+                other => panic!(
+                    "Bug in poll_fill_buf_until, returned pending after returning ready: {:?}",
+                    other
+                ),
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        }
     }
 }

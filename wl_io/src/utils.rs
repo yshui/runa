@@ -7,7 +7,7 @@ use std::task::Poll;
 use super::AsyncReadWithFds;
 use super::AsyncWriteWithFds;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct WritePool {
     inner: Vec<u8>,
     fds: Vec<RawFd>,
@@ -61,6 +61,7 @@ impl WritePool {
     }
 }
 
+#[derive(Debug)]
 pub struct ReadPool {
     inner: Cursor<Vec<u8>>,
     fds: Vec<RawFd>,

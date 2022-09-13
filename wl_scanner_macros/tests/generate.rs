@@ -36,13 +36,8 @@ fn test_roundtrip() {
         let (buf, fds) = tx.into_inner();
 
         let mut rx = ReadPool::new(buf, fds);
-        let (_object_id, _opcode, mut accessor) = unsafe {
-            poll_map_fn(Pin::new(&mut rx), |rx, cx| {
-                WaylandBufAccess::poll_next_message(rx, cx)
-            })
-        }
-        .await
-        .unwrap();
+        let (_object_id, _opcode, mut accessor) =
+            WaylandBufAccess::next_message(&mut rx).await.unwrap();
         let item = Event::deserialize(&mut accessor).unwrap();
         assert_eq!(&item, &orig_item);
 
@@ -73,13 +68,7 @@ fn test_roundtrip_with_fd() {
         eprintln!("{:x?}", buf);
 
         let mut rx = ReadPool::new(buf, fds);
-        let (_, _, mut accessor) = unsafe {
-            ::wl_scanner_support::future::poll_map_fn(Pin::new(&mut rx), |rx, cx| {
-                WaylandBufAccess::poll_next_message(rx, cx)
-            })
-        }
-        .await
-        .unwrap();
+        let (_, _, mut accessor) = WaylandBufAccess::next_message(&mut rx).await.unwrap();
         let item = Request::deserialize(&mut accessor).unwrap();
         eprintln!("{:?}", item);
         assert_eq!(&item, &orig_item);

@@ -95,6 +95,40 @@ pub trait AsyncBufReadWithFds: AsyncReadWithFds {
     fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize);
 }
 
+pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
+
+impl<'a, R: AsyncBufReadWithFds + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
+    type Output = Result<(&'a [u8], &'a [RawFd])>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let len = this.1;
+        let inner = this.0.take().expect("FillBufUtil polled after completion");
+        match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
+            Poll::Pending => {
+                this.0 = Some(inner);
+                Poll::Pending
+            },
+            Poll::Ready(Ok(_)) => {
+                match Pin::new(inner).poll_fill_buf_until(cx, len) {
+                    Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+                    other => panic!("poll_fill_buf_until returned {:?} after returning Ready", other),
+                }
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
+pub trait AsyncBufReadWithFdsExt: AsyncBufReadWithFds {
+    fn fill_buf_until<'a>(self: &'a mut Self, len: usize) -> FillBufUtil<'a, Self>
+    where
+        Self: Unpin,
+    {
+        FillBufUtil(Some(self), len)
+    }
+}
+
 /// A serialization trait, implemented by wayland message types.
 ///
 /// We can't use serde, because it doesn't support passing file descriptors. Most of the

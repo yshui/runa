@@ -85,13 +85,14 @@ impl<T: AsyncReadWithFds + Unpin> AsyncReadWithFds for &mut T {
     }
 }
 
-pub trait AsyncBufReadExt: futures_lite::AsyncRead {
+pub trait AsyncBufReadWithFds: AsyncReadWithFds {
     /// Reads enough data to return a buffer at least the given size.
     fn poll_fill_buf_until<'a>(
         self: Pin<&'a mut Self>,
         cx: &mut Context<'_>,
         len: usize,
-    ) -> Poll<Result<&'a [u8]>>;
+    ) -> Poll<Result<(&'a [u8], &'a [RawFd])>>;
+    fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize);
 }
 
 /// A serialization trait, implemented by wayland message types.

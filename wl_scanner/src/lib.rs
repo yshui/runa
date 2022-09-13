@@ -1,36 +1,89 @@
-use heck::ToPascalCase;
-use proc_macro2::{Ident, TokenStream};
+use std::collections::HashMap;
+
+use heck::{ToPascalCase, ToShoutySnekCase};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::Lifetime;
 use thiserror::Error;
-use wl_spec::protocol::{Interface, Message, Protocol};
+use wl_spec::protocol::{Enum, Interface, Message, Protocol};
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Destructor is not a valid argument type")]
     InvalidArgumentType,
+
+    #[error("Enum refers to an unknown interface: {0}")]
+    UnknownInterface(String),
+
+    #[error("Unknown type: {0}")]
+    UnknownEnum(String),
 }
 type Result<T, E = Error> = std::result::Result<T, E>;
-pub fn generate_arg_type(ty: &wl_spec::protocol::Type, is_owned: bool) -> Result<TokenStream> {
+
+/// Mapping from enum names to whether it's a bitflags
+/// interface -> name -> bool.
+type EnumInfo<'a> = HashMap<&'a str, HashMap<&'a str, bool>>;
+fn generate_arg_type_with_lifetime(
+    arg: &wl_spec::protocol::Arg,
+    lifetime: &Option<Lifetime>,
+    iface_version: &HashMap<&str, u32>,
+) -> Result<TokenStream> {
     use wl_spec::protocol::Type::*;
-    Ok(match ty {
-        Int => quote!(i32),
-        Uint => quote!(u32),
-        Fixed => quote!(::wl_scanner_support::wayland_types::Fixed),
-        Array => quote!(&'a [u8]),
-        Fd => quote!(::wl_scanner_support::wayland_types::Fd),
-        String => {
-            if is_owned {
-                quote!(::wl_scanner_support::wayland_types::String)
-            } else {
-                quote!(::wl_scanner_support::wayland_types::Str<'a>)
-            }
+    if let Some(enum_) = &arg.enum_ {
+        if let Some((iface, name)) = enum_.split_once('.') {
+            let version = iface_version
+                .get(iface)
+                .ok_or(Error::UnknownInterface(enum_.to_string()))?;
+            let iface = format_ident!("{}", iface);
+            let name = format_ident!("{}", name.to_pascal_case());
+            let version = format_ident!("v{}", version);
+            Ok(quote! {
+                __generated_root::#iface::#version::enums::#name
+            })
+        } else {
+            let name = format_ident!("{}", enum_.to_pascal_case());
+            Ok(quote! {
+                enums::#name
+            })
         }
-        Object => quote!(::wl_scanner_support::wayland_types::Object),
-        NewId => quote!(::wl_scanner_support::wayland_types::NewId),
-        Destructor => return Err(Error::InvalidArgumentType),
-    })
+    } else {
+        Ok(match arg.typ {
+            Int => quote!(i32),
+            Uint => quote!(u32),
+            Fixed => quote!(::wl_scanner_support::wayland_types::Fixed),
+            Array => {
+                if let Some(lifetime) = lifetime {
+                    quote!(&#lifetime [u8])
+                } else {
+                    quote!(Box<[u8]>)
+                }
+            }
+            Fd => quote!(::wl_scanner_support::wayland_types::Fd),
+            String => {
+                if let Some(lifetime) = lifetime {
+                    quote!(::wl_scanner_support::wayland_types::Str<#lifetime>)
+                } else {
+                    quote!(::wl_scanner_support::wayland_types::String)
+                }
+            }
+            Object => quote!(::wl_scanner_support::wayland_types::Object),
+            NewId => quote!(::wl_scanner_support::wayland_types::NewId),
+            Destructor => return Err(Error::InvalidArgumentType),
+        })
+    }
+}
+fn generate_arg_type(
+    arg: &wl_spec::protocol::Arg,
+    is_owned: bool,
+    iface_version: &HashMap<&str, u32>,
+) -> Result<TokenStream> {
+    generate_arg_type_with_lifetime(
+        arg,
+        &(!is_owned).then(|| Lifetime::new("'a", Span::call_site())),
+        iface_version,
+    )
 }
 
-pub fn type_is_borrowed(ty: &wl_spec::protocol::Type) -> bool {
+fn type_is_borrowed(ty: &wl_spec::protocol::Type) -> bool {
     use wl_spec::protocol::Type::*;
     match ty {
         Int | Uint | Fixed | Fd | Object | NewId => false,
@@ -57,102 +110,52 @@ fn fixed_length_write() -> TokenStream {
     }
 }
 
-pub fn generate_deserialize_accessor(ty: &Ident, is_borrowed: bool) -> TokenStream {
-    let accessor_name = format_ident!("{}Accessor", ty);
-    let accessor_parameter = if is_borrowed {
-        quote!(<'a, R>)
-    } else {
-        quote!(<R>)
-    };
-    let accessor_parameter_no_bound = if is_borrowed {
-        quote!(<'a, R>)
-    } else {
-        quote!(<R>)
-    };
-    let ty_lifetime = if is_borrowed { quote!(<'a>) } else { quote!() };
-    quote! {
-    /// Holds a value that is deserialized from borrowed data from `reader`.
-    /// This prevents the reader from being used again while this accessor is alive.
-    /// Also this accessor will advance the reader to the next message when dropped.
-    pub struct #accessor_name #accessor_parameter
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        result: #ty #ty_lifetime,
-        reader: ::std::ptr::NonNull<R>,
-        len: usize,
-    }
-
-    impl #accessor_parameter #accessor_name #accessor_parameter_no_bound
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        // Safety: result must be borrowing from `reader`, `reader` must be valid. (i.e. reader
-        // must outlive result). _And_ `reader` must have already been pinned
-        pub(super) unsafe fn new(reader: ::std::ptr::NonNull<R>, result: #ty #ty_lifetime, len: usize) -> Self {
-            Self {
-                result,
-                reader,
-                len,
-            }
-        }
-    }
-    impl #accessor_parameter ::std::fmt::Debug for #accessor_name #accessor_parameter_no_bound
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-            self.result.fmt(f)
-        }
-    }
-    impl #accessor_parameter Drop for #accessor_name #accessor_parameter_no_bound
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        fn drop(&mut self) {
-            use ::wl_scanner_support::io::AsyncBufReadExt;
-            // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
-            // And `reader` must be pinned already.
-            unsafe { ::std::pin::Pin::new_unchecked(self.reader.as_mut()).consume(self.len); }
-        }
-    }
-    impl #accessor_parameter ::std::ops::Deref for #accessor_name #accessor_parameter_no_bound
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        type Target = #ty #ty_lifetime;
-        fn deref(&self) -> &Self::Target {
-            &self.result
-        }
-    }
-    impl #accessor_parameter ::std::ops::DerefMut for #accessor_name #accessor_parameter_no_bound
-    where
-        R: ::wl_scanner_support::io::AsyncBufRead,
-    {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.result
-        }
-    }
-    }
-}
-
-pub fn generate_serialize_for_type(
+fn generate_serialize_for_type(
+    current_iface_name: &str,
     name: &TokenStream,
-    ty: &wl_spec::protocol::Type,
-) -> TokenStream {
+    arg: &wl_spec::protocol::Arg,
+    enum_info: &EnumInfo,
+) -> Result<TokenStream> {
     use wl_spec::protocol::Type::*;
-    if let Fd = ty {
-        return quote! {
-            use ::wl_scanner_support::io::AsyncWriteWithFds;
+    if let Fd = arg.typ {
+        return Ok(quote! {
             use ::std::os::unix::io::AsRawFd;
             let fd = #name.as_raw_fd();
             ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, &[], &[fd]))?;
-        };
+        });
     }
-    let get = match ty {
-        Int | Uint => quote! {
-            let buf = #name.to_ne_bytes();
-        },
+    let get = match arg.typ {
+        Int | Uint => {
+            if let Some(enum_) = &arg.enum_ {
+                let is_bitfield = if let Some((iface, enum_)) = enum_.split_once('.') {
+                    *enum_info
+                        .get(iface)
+                        .ok_or_else(|| Error::UnknownInterface(iface.to_string()))?
+                        .get(enum_)
+                        .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+                } else {
+                    *enum_info
+                        .get(current_iface_name)
+                        .unwrap()
+                        .get(enum_.as_str())
+                        .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+                };
+                if is_bitfield {
+                    quote! {
+                        let buf = #name.bits().to_ne_bytes();
+                    }
+                } else {
+                    quote! {
+                        let buf: u32 = #name.into();
+                        let buf = buf.to_ne_bytes();
+                    }
+                }
+            } else {
+                quote! {
+                    let buf = #name.to_ne_bytes();
+                }
+            }
+        }
         Fixed | Object | NewId => quote! {
             let buf = #name.0.to_ne_bytes();
         },
@@ -166,7 +169,7 @@ pub fn generate_serialize_for_type(
         Destructor => quote! {},
     };
     let fixed_length_write = fixed_length_write();
-    match ty {
+    Ok(match arg.typ {
         Int | Uint | Fixed | Object | NewId => quote! {
             #get
             #fixed_length_write
@@ -200,20 +203,23 @@ pub fn generate_serialize_for_type(
         },
         Fd => unreachable!(),
         Destructor => quote! {},
-    }
+    })
 }
-pub fn generate_message_variant(
+fn generate_message_variant(
+    iface_name: &str,
     opcode: u16,
     request: &Message,
     is_owned: bool,
     parent: &Ident,
+    iface_version: &HashMap<&str, u32>,
+    enum_info: &EnumInfo,
 ) -> Result<(TokenStream, TokenStream)> {
     let args = &request.args;
     let args: Result<TokenStream> = args
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
-            let ty = generate_arg_type(&arg.typ, is_owned)?;
+            let ty = generate_arg_type(&arg, is_owned, iface_version)?;
             let attr = if !is_owned && type_is_borrowed(&arg.typ) {
                 quote!(#[serde(borrow)])
             } else {
@@ -246,10 +252,13 @@ pub fn generate_message_variant(
     let doc_comment = generate_doc_comment(&request.description);
     let public = quote! {
         #doc_comment
-        #[derive(::wl_scanner_support::serde::Deserialize, Debug)]
+        #[derive(::wl_scanner_support::serde::Deserialize, Debug, PartialEq, Eq)]
         #[serde(crate = "::wl_scanner_support::serde")]
         pub struct #name #lifetime {
             #args
+        }
+        impl #lifetime #name #lifetime {
+            pub const OPCODE: u16 = #opcode;
         }
         impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFds + 'a>
         ::wl_scanner_support::io::Serialize<'a, T> for #name #lifetime {
@@ -267,9 +276,10 @@ pub fn generate_message_variant(
         }
     };
 
-    let serialize = generate_message_variant_serialize(opcode, request)?;
+    let serialize = generate_message_variant_serialize(iface_name, opcode, request, enum_info)?;
     let private = quote! {
         pub struct #serialize_name <'a, T> {
+            #[allow(unused)]
             pub(super) request: &'a super::#parent::#name #lifetime,
             pub(super) writer: ::std::pin::Pin<&'a mut T>,
             pub(super) index: i32, // current field being serialized
@@ -288,8 +298,13 @@ pub fn generate_message_variant(
     };
     Ok((public, private))
 }
-pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Result<TokenStream> {
-    let serialize: TokenStream = request
+fn generate_message_variant_serialize(
+    iface_name: &str,
+    opcode: u16,
+    request: &Message,
+    enum_info: &EnumInfo,
+) -> Result<TokenStream> {
+    let serialize = request
         .args
         .iter()
         .enumerate()
@@ -297,14 +312,14 @@ pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Res
             let name = format_ident!("{}", arg.name);
             let name = quote! { self.request.#name };
             let i = i as i32;
-            let serialize = generate_serialize_for_type(&name, &arg.typ);
-            quote! {
+            let serialize = generate_serialize_for_type(iface_name, &name, &arg, enum_info)?;
+            Ok(quote! {
                 #i => {
                     #serialize
                 }
-            }
+            })
         })
-        .collect();
+        .collect::<Result<TokenStream>>()?;
     // Generate experssion for length calculation
     let fixed_len: u32 = request
         .args
@@ -364,15 +379,108 @@ pub fn generate_message_variant_serialize(opcode: u16, request: &Message) -> Res
     })
 }
 
+fn generate_dispatch_trait(
+    messages: &[Message],
+    event_or_request: EventOrRequest,
+    iface_version: &HashMap<&str, u32>,
+) -> Result<TokenStream> {
+    let ty = match event_or_request {
+        EventOrRequest::Event => format_ident!("EventDispatch"),
+        EventOrRequest::Request => format_ident!("RequestDispatch"),
+    };
+    let methods = messages
+        .iter()
+        .map(|m| {
+            let name = if m.name == "move" || m.name == "type" {
+                format_ident!("{}_", m.name)
+            } else {
+                format_ident!("{}", m.name)
+            };
+            let args = m
+                .args
+                .iter()
+                .map(|arg| {
+                    let name = format_ident!("{}", arg.name);
+                    let typ = generate_arg_type_with_lifetime(
+                        &arg,
+                        &Some(Lifetime::new("'_", Span::call_site())),
+                        iface_version,
+                    )?;
+                    Ok(quote! {
+                        #name: #typ
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let doc_comment = generate_doc_comment(&m.description);
+            Ok(quote! {
+                #doc_comment
+                fn #name(
+                    ctx: &mut D,
+                    client_ctx: &mut C,
+                    object: ::wl_scanner_support::wayland_types::Object,
+                    #(#args),*
+                )
+                -> ::std::result::Result<(), Self::Error>;
+            })
+        })
+        .collect::<Result<TokenStream>>()?;
+    Ok(quote! {
+        pub trait #ty<D, C> {
+            type Error;
+            #methods
+        }
+    })
+}
+
+fn generate_dispatch_impl(messages: &[Message], event_or_request: EventOrRequest) -> TokenStream {
+    let (ty, mod_name) = match event_or_request {
+        EventOrRequest::Event => (format_ident!("Event"), format_ident!("events")),
+        EventOrRequest::Request => (format_ident!("Request"), format_ident!("requests")),
+    };
+    let trait_ = match event_or_request {
+        EventOrRequest::Event => format_ident!("EventDispatch"),
+        EventOrRequest::Request => format_ident!("RequestDispatch"),
+    };
+    let variants = messages.iter().map(|v| {
+        let vname = format_ident!("{}", v.name.to_pascal_case());
+        let mname = if v.name == "move" || v.name == "type" {
+            format_ident!("{}_", v.name)
+        } else {
+            format_ident!("{}", v.name)
+        };
+        let args = v.args.iter().map(|a| format_ident!("{}", a.name));
+        let args2 = args.clone();
+        quote! {
+            #ty::#vname(#mod_name::#vname { #(#args),* }) => {
+                Visitor::#mname(ctx, client_ctx, object, #(#args2),*)
+            }
+        }
+    });
+    quote! {
+        pub fn dispatch<D, C, Visitor: #trait_<D, C>>(
+            self,
+            ctx: &mut D,
+            client_ctx: &mut C,
+            object: ::wl_scanner_support::wayland_types::Object
+        ) -> Result<(), Visitor::Error> {
+            match self {
+                #(#variants),*
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EventOrRequest {
+enum EventOrRequest {
     Event,
     Request,
 }
 
-pub fn generate_event_or_request(
-    _name: &str,
+fn generate_event_or_request(
+    iface_name: &str,
     messages: &[Message],
+    iface_version: &HashMap<&str, u32>,
+    enum_info: &EnumInfo,
     event_or_request: EventOrRequest,
 ) -> Result<(TokenStream, TokenStream)> {
     if messages.is_empty() {
@@ -389,7 +497,17 @@ pub fn generate_event_or_request(
         let (public, mut private): (TokenStream, TokenStream) = messages
             .iter()
             .enumerate()
-            .map(|(opcode, v)| generate_message_variant(opcode as u16, v, false, &mod_name))
+            .map(|(opcode, v)| {
+                generate_message_variant(
+                    iface_name,
+                    opcode as u16,
+                    v,
+                    false,
+                    &mod_name,
+                    iface_version,
+                    enum_info,
+                )
+            })
             .collect::<Result<Vec<(TokenStream, TokenStream)>>>()?
             .into_iter()
             .unzip();
@@ -402,8 +520,6 @@ pub fn generate_event_or_request(
         } else {
             quote! {}
         };
-        let accessor = generate_deserialize_accessor(&type_name, enum_is_borrowed);
-        let accessor_name = format_ident!("{}Accessor", type_name);
         let enum_members = messages
             .iter()
             .map(|v| {
@@ -414,7 +530,13 @@ pub fn generate_event_or_request(
                 } else {
                     quote! {}
                 };
+                let attr = if is_borrowed {
+                    quote! { #[serde(borrow)] }
+                } else {
+                    quote! {}
+                };
                 quote! {
+                    #attr
                     #name(#mod_name::#name #lifetime),
                 }
             })
@@ -448,34 +570,26 @@ pub fn generate_event_or_request(
                 }
             })
             .collect::<TokenStream>();
-        let accessor_parameter = if enum_is_borrowed {
-            quote! { <'a, D> }
-        } else {
-            quote! { <D> }
-        };
-        let deserialize = messages
-            .iter()
-            .enumerate()
-            .map(|(opcode, v)| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                let opcode = opcode as u32;
-                quote! {
-                    #opcode => {
-                        #type_name::#name(
-                            ::wl_scanner_support::serde::de::Deserialize::deserialize(&mut body)?
-                        )
-                    }
-                }
-            })
-            .collect::<TokenStream>();
+        let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version)?;
+        let dispatch_impl = generate_dispatch_impl(messages, event_or_request);
         let public = quote! {
-            #accessor
-            pub mod #mod_name { #public }
+            pub mod #mod_name {
+                #[allow(unused_imports)]
+                use super::enums;
+                #[allow(unused_imports)]
+                use super::__generated_root;
+                #public
+            }
             #[doc = "Collection of all possible types of messages, see individual message types "]
             #[doc = "for more information."]
-            #[derive(Debug)]
+            #[derive(Debug, PartialEq, Eq, ::wl_scanner_support::serde::Deserialize)]
+            #[serde(crate = "::wl_scanner_support::serde")]
             pub enum #type_name #enum_lifetime {
                 #enum_members
+            }
+            #dispatch
+            impl #enum_lifetime #type_name #enum_lifetime {
+                #dispatch_impl
             }
             impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFds + 'a>
             ::wl_scanner_support::io::Serialize<'a, T> for #type_name #enum_lifetime {
@@ -486,76 +600,6 @@ pub fn generate_event_or_request(
                     match self {
                         #enum_serialize_cases
                     }
-                }
-            }
-
-            /// Deserialize a message. This is implemented on the accessor to make sure user
-            /// doesn't forget to advance the buffer in the reader.
-            ///
-            /// This is also not implemented for each of the message variants because to
-            /// efficiently deserialize a message we need to know the message length beforehand,
-            /// however message header is not part of the individual variants.
-            impl<'a, 'de: 'a, D> ::wl_scanner_support::io::Deserialize<'de, D> for
-            #accessor_name #accessor_parameter
-            where
-                D: ::wl_scanner_support::io::AsyncBufReadExt +
-                   ::wl_scanner_support::io::AsyncBufRead +
-                   ::wl_scanner_support::io::AsyncReadWithFds +
-                   'de
-            {
-                type Error = ::wl_scanner_support::Error;
-                fn poll_deserialize(mut reader: ::std::pin::Pin<&'de mut D>, cx: &mut ::std::task::Context<'_>)
-                -> ::std::task::Poll<::std::result::Result<Self, Self::Error>> {
-                    use ::wl_scanner_support::io::{AsyncBufReadExt as _, de::WaylandDeserializer};
-                    use ::wl_scanner_support::Error;
-                    use ::std::io::{Error as StdError, ErrorKind};
-                    use ::wl_scanner_support::ready;
-                    use ::std::task::Poll;
-                    use ::std::pin::Pin;
-                    use ::std::ptr::NonNull;
-                    let buf = ready!(reader.as_mut().poll_fill_buf_until(cx, 4))?;
-                    let header = buf.get(..4)
-                                    .ok_or_else(|| StdError::new(ErrorKind::UnexpectedEof, "Unexpected EOF"))?;
-                    // Safety: we just checked that the buffer is exactly 4 bytes long
-                    let header = u32::from_ne_bytes(unsafe { *(header.as_ptr() as *const [u8; 4]) });
-                    let len = (header >> 16) - 4; // minus 4 byte object ID we assume is already
-                                                  // read
-                    let opcode = header & 0xffff;
-                    // Make sure data is ready, we don't hold the buffer yet, because if we do,
-                    // we won't be able to get file descriptors from the reader anymore. Filling
-                    // the buffer to `len` bytes should have made the file descriptors available to
-                    // us as well, as per unix(7).
-                    let _ = ready!(reader.as_mut().poll_fill_buf_until(cx, len as usize))?;
-                    // Safety: we don't move the reader using the &mut from get_unchecked_mut, we
-                    // just case it to a *mut
-                    let (raw_reader, buf) = unsafe {
-                        let reader = reader.get_unchecked_mut();
-                        let mut raw_reader: NonNull<D> = reader.into();
-                        // Safety:
-                        // 1. raw_reader was pinned and we didn't move it.
-                        // 2. poll_fill_buf_until must originate from raw_reader to not violate
-                        //    stacked borrow rules.
-                        // 3. buf is give a 'de lifetime so it borrows reader (probably
-                        //    unnecessary)
-                        let buf: &'de [u8] = ready!(Pin::new_unchecked(raw_reader.as_mut())
-                            .poll_fill_buf_until(cx, len as usize))?;
-                        (raw_reader, buf)
-                    };
-                    let body = buf.get(4..len as usize)
-                                  .ok_or_else(|| StdError::new(ErrorKind::UnexpectedEof, "Unexpected EOF"))?;
-                    let mut body = WaylandDeserializer::new(body);
-                    let result = match opcode {
-                        #deserialize
-                        _ => return Poll::Ready(Err(Self::Error::UnknownOpcode(opcode))),
-                    };
-                    // Safety: result _does_ borrow from raw_reader
-                    Poll::Ready(Ok(unsafe {
-                        Self::new(
-                            raw_reader,
-                            result,
-                            len as usize,
-                        )
-                    }))
                 }
             }
         };
@@ -578,17 +622,82 @@ pub fn generate_event_or_request(
         Ok((public, private))
     }
 }
-pub fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
+fn wrap_links(line: &str) -> String {
+    let links = linkify::LinkFinder::new().links(line);
+    let mut result = String::new();
+    let mut curr_pos = 0;
+    for link in links {
+        if link.start() > curr_pos {
+            result.push_str(&line[curr_pos..link.start()]);
+        }
+        result.push_str("<");
+        result.push_str(link.as_str());
+        result.push_str(">");
+        curr_pos = link.end();
+    }
+    result.push_str(&line[curr_pos..]);
+    result
+}
+
+use lazy_static::lazy_static;
+use regex::{Captures, Regex};
+lazy_static! {
+    static ref LINKREF_REGEX: Regex = Regex::new(r"\[([0-9]+)\]").unwrap();
+    static ref LINKREF_REGEX_WITH_SPACE: Regex = Regex::new(r"\s*\[([0-9]+)\]").unwrap();
+}
+fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
     if let Some((summary, desc)) = description {
+        let link_refs: HashMap<u32, &str> = desc
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                LINKREF_REGEX
+                    .captures(line)
+                    .and_then(|m| {
+                        if m.get(0).unwrap().start() != 0 {
+                            None
+                        } else {
+                            Some(m)
+                        }
+                    })
+                    .and_then(|m| m.get(1))
+                    .and_then(|refcap| {
+                        if let Ok(refnum) = refcap.as_str().parse::<u32>() {
+                            Some((refnum, line[refcap.end() + 1..].trim()))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect();
         let desc = desc
             .split("\n")
-            .map(|s| {
+            .filter_map(|s| {
                 let s = s.trim();
-                quote! {
-                    #[doc = #s]
+                if let Some(m) = LINKREF_REGEX.find(s) {
+                    if m.start() == 0 {
+                        return None;
+                    }
                 }
+                let mut s = wrap_links(s);
+                s = LINKREF_REGEX_WITH_SPACE
+                    .replace(&s, |m: &Captures| {
+                        let refnum = m.get(1).unwrap().as_str().parse::<u32>().unwrap();
+                        let link = link_refs.get(&refnum).unwrap();
+                        format!(
+                            "<a href={link}><sup>{refnum}</sup></a>",
+                            refnum = refnum,
+                            link = link
+                        )
+                    })
+                    .into_owned();
+                s = s.replace('[', "\\[").replace(']', "\\]");
+                Some(quote! {
+                    #[doc = #s]
+                })
             })
             .collect::<TokenStream>();
+        let summary = summary.replace('[', "\\[").replace(']', "\\]");
         quote! {
             #[doc = #summary]
             #[doc = ""]
@@ -598,22 +707,123 @@ pub fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStre
         quote! {}
     }
 }
-pub fn generate_interface(iface: &Interface) -> Result<TokenStream> {
+fn generate_enums(enums: &[Enum]) -> TokenStream {
+    let enums = enums
+        .iter()
+        .map(|e| {
+            let doc = generate_doc_comment(&e.description);
+            let name = format_ident!("{}", e.name.to_pascal_case());
+            let is_bitfield = e.bitfield;
+            let members = e.entries.iter().map(|e| {
+                let name = if e.name.chars().all(|x| x.is_ascii_digit()) {
+                    format_ident!("_{}", e.name)
+                } else {
+                    if is_bitfield {
+                        format_ident!("{}", e.name.TO_SHOUTY_SNEK_CASE())
+                    } else {
+                        format_ident!("{}", e.name.to_pascal_case())
+                    }
+                };
+                let value = e.value;
+                let summary = e.summary.as_deref().unwrap_or("");
+                let summary = summary.replace('[', "\\[").replace(']', "\\]");
+                if is_bitfield {
+                    quote! {
+                        #[doc = #summary]
+                        const #name = #value;
+                    }
+                } else {
+                    quote! {
+                        #[doc = #summary]
+                        #name = #value,
+                    }
+                }
+            });
+            if is_bitfield {
+                quote! {
+                    ::wl_scanner_support::bitflags! {
+                        #doc
+                        #[derive(
+                            ::wl_scanner_support::serde::Serialize,
+                            ::wl_scanner_support::serde::Deserialize,
+                        )]
+                        #[serde(crate = "::wl_scanner_support::serde")]
+                        pub struct #name: u32 {
+                            #(#members)*
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    #doc
+                    #[derive(
+                        ::wl_scanner_support::num_enum::IntoPrimitive,
+                        ::wl_scanner_support::num_enum::TryFromPrimitive,
+                        Debug, Clone, Copy, PartialEq, Eq
+                    )]
+                    #[repr(u32)]
+                    pub enum #name {
+                        #(#members)*
+                    }
+                    impl ::wl_scanner_support::serde::Serialize for #name {
+                        fn serialize<S: ::wl_scanner_support::serde::Serializer>(&self, serializer: S)
+                        -> ::std::result::Result<S::Ok, S::Error> {
+                            let num: u32 = (*self).into();
+                            serializer.serialize_u32(num)
+                        }
+                    }
+                    impl<'de> ::wl_scanner_support::serde::Deserialize<'de> for #name {
+                        fn deserialize<D: ::wl_scanner_support::serde::Deserializer<'de>>(deserializer: D)
+                        -> ::std::result::Result<Self, D::Error> {
+                            use ::wl_scanner_support::serde::de::Error;
+                            let value = u32::deserialize(deserializer)?;
+                            Self::try_from(value)
+                                .map_err(|_| D::Error::custom("invalid enum value"))
+                        }
+                    }
+                }
+            }
+        });
+    quote! {
+        pub mod enums {
+            #(#enums)*
+        }
+    }
+}
+fn generate_interface(
+    iface: &Interface,
+    iface_version: &HashMap<&str, u32>,
+    enum_info: &EnumInfo,
+) -> Result<TokenStream> {
     let name = format_ident!("{}", iface.name);
     let version = format_ident!("v{}", iface.version);
 
-    let (requests, requests_private) =
-        generate_event_or_request(&iface.name, &iface.requests, EventOrRequest::Request)?;
-    let (events, events_private) =
-        generate_event_or_request(&iface.name, &iface.events, EventOrRequest::Event)?;
+    let (requests, requests_private) = generate_event_or_request(
+        &iface.name,
+        &iface.requests,
+        iface_version,
+        enum_info,
+        EventOrRequest::Request,
+    )?;
+    let (events, events_private) = generate_event_or_request(
+        &iface.name,
+        &iface.events,
+        iface_version,
+        enum_info,
+        EventOrRequest::Event,
+    )?;
     let doc_comment = generate_doc_comment(&iface.description);
+    let enums = generate_enums(&iface.enums);
 
     Ok(quote! {
         #doc_comment
         pub mod #name {
             pub mod #version {
+                #[allow(unused_imports)]
+                use super::super::__generated_root;
                 #requests
                 #events
+                #enums
                 #[doc(hidden)]
                 mod internal {
                     #requests_private
@@ -625,14 +835,33 @@ pub fn generate_interface(iface: &Interface) -> Result<TokenStream> {
 }
 
 pub fn generate_protocol(proto: &Protocol) -> Result<TokenStream> {
+    let iface_version = proto
+        .interfaces
+        .iter()
+        .map(|i| (i.name.as_str(), i.version))
+        .collect();
+    let enum_info: EnumInfo = proto
+        .interfaces
+        .iter()
+        .map(|i| {
+            (
+                i.name.as_str(),
+                i.enums
+                    .iter()
+                    .map(move |e| (e.name.as_str(), e.bitfield))
+                    .collect(),
+            )
+        })
+        .collect();
     let interfaces = proto
         .interfaces
         .iter()
-        .map(|v| generate_interface(v))
+        .map(|v| generate_interface(v, &iface_version, &enum_info))
         .collect::<Result<TokenStream>>()?;
     let name = format_ident!("{}", proto.name);
     Ok(quote! {
         pub mod #name {
+            use super::#name as __generated_root;
             #interfaces
         }
     })

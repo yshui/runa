@@ -9,5 +9,5 @@ fn generate() {
     .unwrap();
     let proto = wl_spec::parse::parse(f).unwrap();
 
-    eprintln!("{}", generate_protocol(&proto).unwrap());
+    generate_protocol(&proto).unwrap();
 }

@@ -1,8 +1,12 @@
-use crate::{AsyncBufReadExt, AsyncReadWithFds, AsyncWriteWithFds};
+use crate::{AsyncBufReadWithFds, AsyncReadWithFds, AsyncWriteWithFds};
 use futures_lite::{ready, AsyncBufRead, AsyncRead, AsyncWrite};
 use pin_project_lite::pin_project;
 use std::{
-    collections::VecDeque, os::unix::prelude::RawFd, pin::Pin, task::Poll,
+    collections::VecDeque,
+    os::unix::prelude::RawFd,
+    pin::Pin,
+    ptr::NonNull,
+    task::{Context, Poll},
 };
 
 pin_project! {
@@ -76,15 +80,6 @@ impl<T> BufReaderWithFd<T> {
     }
 
     #[inline]
-    fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize) {
-        let this = self.project();
-        *this.pos_data += amt_data;
-
-        // Has to drop the Drain iterator to prevent leaking
-        drop(this.fd_buf.drain(..amt_fd));
-    }
-
-    #[inline]
     fn buffer(&self) -> &[u8] {
         let range = self.pos_data..self.filled_data;
         // Safety: invariant: filled_data <= buf.len()
@@ -102,12 +97,12 @@ impl<T: AsyncReadWithFds> AsyncRead for BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFds> AsyncBufReadExt for BufReaderWithFd<T> {
+impl<T: AsyncReadWithFds> AsyncBufReadWithFds for BufReaderWithFd<T> {
     fn poll_fill_buf_until(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         len: usize,
-    ) -> Poll<std::io::Result<&[u8]>> {
+    ) -> Poll<std::io::Result<(&[u8], &[RawFd])>> {
         if self.pos_data + len > self.buf.len() || self.filled_data == self.pos_data {
             // Try to shrink before we grow it. Or if the buf is empty.
             self.as_mut().shrink();
@@ -132,7 +127,18 @@ impl<T: AsyncReadWithFds> AsyncBufReadExt for BufReaderWithFd<T> {
             this.fd_buf.extend(tmp_fds[..nfds].iter());
         }
 
-        Poll::Ready(Ok(self.into_ref().get_ref().buffer()))
+        self.as_mut().project().fd_buf.make_contiguous();
+        let mut this = self.into_ref().get_ref();
+        Poll::Ready(Ok((this.buffer(), this.fd_buf.as_slices().0)))
+    }
+
+    #[inline]
+    fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize) {
+        let this = self.project();
+        *this.pos_data += amt_data;
+
+        // Has to drop the Drain iterator to prevent leaking
+        drop(this.fd_buf.drain(..amt_fd));
     }
 }
 
@@ -142,7 +148,7 @@ impl<T: AsyncReadWithFds> AsyncBufRead for BufReaderWithFd<T> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<&[u8]>> {
         // Fill at least 1 byte
-        self.poll_fill_buf_until(cx, 1)
+        Poll::Ready(Ok(ready!(self.poll_fill_buf_until(cx, 0))?.0))
     }
     fn consume(self: Pin<&mut Self>, amt: usize) {
         self.consume_with_fds(amt, 0);

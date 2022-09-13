@@ -15,20 +15,20 @@ pub mod wayland_types {
 
     use fixed::types::extra::U8;
     use serde::{de, Deserialize};
-    #[derive(Deserialize, Debug, Clone, Copy)]
+    #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
     pub struct NewId(pub u32);
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Fixed(pub fixed::FixedI32<U8>);
     #[derive(Debug)]
     pub enum Fd {
         Raw(RawFd),
         Owned(OwnedFd),
     }
-    #[derive(Deserialize, Debug, Clone, Copy)]
+    #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Object(pub u32);
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Str<'a>(pub &'a CStr);
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct String(pub CString);
 
     impl AsRawFd for Fd {
@@ -38,6 +38,15 @@ pub mod wayland_types {
                 Fd::Owned(fd) => fd.as_raw_fd(),
             }
         }
+    }
+
+    impl ::std::cmp::PartialEq for Fd {
+        fn eq(&self, other: &Self) -> bool {
+            self.as_raw_fd() == other.as_raw_fd()
+        }
+    }
+
+    impl ::std::cmp::Eq for Fd {
     }
 
     impl Fd {
@@ -130,6 +139,8 @@ pub mod io {
 
 pub use futures_lite::ready;
 pub use serde;
+pub use bitflags::bitflags;
+pub use num_enum;
 
 pub mod future {
     use std::{pin::Pin, task::Poll};
@@ -160,8 +171,8 @@ pub mod future {
                 //    lifetime going from 'de to T is sound.
                 // 3. In case of Ready, we won't touch raw_reader ever again here, and inner is left
                 //    empty.
-                // 4. In case of Pending, we know the inner is definitely no longer borrowed, so
-                //    we can get our Pin<&mut inner> back safely.
+                // 4. In case of Pending, we know the inner is no longer borrowed (contract of the
+                //    poll_map_fn function), so we can get our Pin<&mut inner> back safely.
                 // 5. self.f must be called with Pin created from raw_inner to satisfy stacked
                 //    borrow rules.
                 let mut raw_inner = NonNull::from(inner.get_unchecked_mut());
@@ -176,7 +187,21 @@ pub mod future {
         }
     }
 
-    pub fn poll_map_fn<'a, F, O, T>(inner: Pin<&'a mut T>, f: F) -> PollMapFn<'a, F, O, T>
+    // Safety: F can't keep a hold of `inner` after it returns.
+    // Rust's type system is limited so there is no easy way to enforce this via types.
+    //
+    // Hypothetically we can have:
+    //   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) -> Poll<O> + Unpin
+    // This way F should be valid for T with any lifetime, therefore it won't be able to store it
+    // somewhere with a concrete lifetime. But then O won't be able to borrow from &'a mut T. We
+    // need O to be a higher kind type to do this. Like:
+    //   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) -> Poll<O<'a>> + Unpin
+    // We can emulate this with a trait with GAT, but it has bad UX:
+    //   trait HKT { type O<'a>; }
+    //   OFamily: HKT
+    //   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) -> Poll<OFamily::O<'a>> + Unpin
+    // We need to define a OFamily for each closure.
+    pub unsafe fn poll_map_fn<'a, F, O, T>(inner: Pin<&'a mut T>, f: F) -> PollMapFn<'a, F, O, T>
     where
         F: Fn(Pin<&'a mut T>, &mut ::std::task::Context<'_>) -> Poll<O> + Unpin,
     {
@@ -187,3 +212,4 @@ pub mod future {
         }
     }
 }
+

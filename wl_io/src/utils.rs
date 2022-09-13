@@ -88,22 +88,31 @@ impl futures_lite::AsyncBufRead for ReadPool {
     }
     fn consume(mut self: std::pin::Pin<&mut Self>, amt: usize) {
         use std::io::BufRead;
+        eprintln!("consume {}", amt);
         self.inner.consume(amt)
     }
 }
 
-impl crate::AsyncBufReadExt for ReadPool {
+impl crate::AsyncBufReadWithFds for ReadPool {
     fn poll_fill_buf_until<'a>(
             self: std::pin::Pin<&'a mut Self>,
             cx: &mut std::task::Context<'_>,
             len: usize,
-        ) -> Poll<std::io::Result<&'a [u8]>> {
+        ) -> Poll<std::io::Result<(&'a [u8], &'a [RawFd])>> {
         if len > self.inner.get_ref().len() - self.inner.position() as usize {
             Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Unexpected EOF")))
         } else {
-            use futures_lite::AsyncBufRead;
-            self.poll_fill_buf(cx)
+            use std::io::BufRead;
+            let this = self.get_mut();
+            Poll::Ready(Ok((this.inner.fill_buf()?, this.fds.as_slice())))
         }
+    }
+    fn consume_with_fds(self: std::pin::Pin<&mut Self>, amt_data: usize, amt_fd: usize) {
+        use std::io::BufRead;
+        eprintln!("consume {} {}", amt_data, amt_fd);
+        let this = self.get_mut();
+        this.inner.consume(amt_data);
+        this.fds_offset += amt_fd;
     }
 }
 
@@ -130,5 +139,8 @@ impl ReadPool {
             fds,
             fds_offset: 0,
         }
+    }
+    pub fn is_eof(&self) -> bool {
+        self.inner.position() as usize == self.inner.get_ref().len() && self.fds_offset == self.fds.len()
     }
 }

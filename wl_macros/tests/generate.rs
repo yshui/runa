@@ -2,7 +2,7 @@ use futures_lite::io::AsyncWrite;
 use futures_lite::io::AsyncWriteExt;
 use std::task::Context;
 use std::{ffi::CStr, pin::Pin};
-use wl_scanner_macros::generate_protocol;
+use wl_macros::generate_protocol;
 use wl_scanner_support::io::de::WaylandBufAccess;
 use wl_scanner_support::serde::Deserialize;
 use wl_scanner_support::wayland_types::{Fd, NewId};

@@ -1,0 +1,16 @@
+[package]
+name = "wl_protocol"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+wl_scanner = { path = "../wl_scanner" }
+wl_spec = { path = "../wl_spec" }
+rust-format = "0.3"
+
+[dependencies]
+futures-executor = "0.3"
+futures-lite = "1.12.0"
+# TODO: remove
+num_enum = "0.5.7"
+wl_scanner_support = { path = "../wl_scanner_support" }

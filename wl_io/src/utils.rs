@@ -4,8 +4,8 @@ use std::io::Cursor;
 use std::os::unix::prelude::RawFd;
 use std::task::Poll;
 
-use super::AsyncReadWithFds;
-use super::AsyncWriteWithFds;
+use super::AsyncReadWithFd;
+use super::AsyncWriteWithFd;
 
 #[derive(Default, Debug)]
 pub struct WritePool {
@@ -36,7 +36,7 @@ impl futures_lite::AsyncWrite for WritePool {
     }
 }
 
-impl AsyncWriteWithFds for WritePool {
+impl AsyncWriteWithFd for WritePool {
     fn poll_write_with_fds(
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
@@ -94,7 +94,7 @@ impl futures_lite::AsyncBufRead for ReadPool {
     }
 }
 
-impl crate::AsyncBufReadWithFds for ReadPool {
+impl crate::AsyncBufReadWithFd for ReadPool {
     fn poll_fill_buf_until<'a>(
             self: std::pin::Pin<&'a mut Self>,
             cx: &mut std::task::Context<'_>,
@@ -117,7 +117,7 @@ impl crate::AsyncBufReadWithFds for ReadPool {
     }
 }
 
-impl AsyncReadWithFds for ReadPool {
+impl AsyncReadWithFd for ReadPool {
     fn poll_read_with_fds(
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,

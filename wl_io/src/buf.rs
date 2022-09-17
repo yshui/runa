@@ -1,13 +1,155 @@
-use crate::{AsyncBufReadWithFds, AsyncReadWithFds, AsyncWriteWithFds};
+use crate::{AsyncReadWithFd, AsyncWriteWithFd};
 use futures_lite::{ready, AsyncBufRead, AsyncRead, AsyncWrite};
 use pin_project_lite::pin_project;
+use std::io::Result;
 use std::{
     collections::VecDeque,
+    mem::MaybeUninit,
     os::unix::prelude::RawFd,
     pin::Pin,
     ptr::NonNull,
     task::{Context, Poll},
 };
+
+pub trait AsyncBufReadWithFd: AsyncReadWithFd {
+    /// Reads enough data to return a buffer at least the given size.
+    fn poll_fill_buf_until<'a>(
+        self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+        len: usize,
+    ) -> Poll<Result<(&'a [u8], &'a [RawFd])>>;
+    fn consume_with_fds(self: Pin<&mut Self>, amt_data: usize, amt_fd: usize);
+}
+
+pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
+
+impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
+    type Output = Result<(&'a [u8], &'a [RawFd])>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let len = this.1;
+        let inner = this.0.take().expect("FillBufUtil polled after completion");
+        match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
+            Poll::Pending => {
+                this.0 = Some(inner);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(_)) => match Pin::new(inner).poll_fill_buf_until(cx, len) {
+                Poll::Ready(Ok(v)) => Poll::Ready(Ok(v)),
+                other => panic!(
+                    "poll_fill_buf_until returned {:?} after returning Ready",
+                    other
+                ),
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
+pub trait AsyncBufReadWithFdExt: AsyncBufReadWithFd {
+    fn fill_buf_until<'a>(self: &'a mut Self, len: usize) -> FillBufUtil<'a, Self>
+    where
+        Self: Unpin,
+    {
+        FillBufUtil(Some(self), len)
+    }
+}
+
+impl<T: AsyncBufReadWithFd> AsyncBufReadWithFdExt for T {}
+
+/// A wrapper around a byte buffer that is incrementally filled and initialized.
+///
+/// Taken from tokio, see tokio::io::ReadBuf
+pub struct WriteBuf<'a> {
+    buf: &'a mut [MaybeUninit<u8>],
+    filled: usize,
+    fds: &'a mut [MaybeUninit<RawFd>],
+    filled_fd: usize,
+}
+
+fn slice_to_uninit_mut<T>(slice: &mut [T]) -> &mut [MaybeUninit<T>] {
+    unsafe { &mut *(slice as *mut [T] as *mut [MaybeUninit<T>]) }
+}
+
+impl<'a> WriteBuf<'a> {
+    pub fn from_spare(buf: &'a mut Vec<u8>, fds: &'a mut Vec<RawFd>) -> Self {
+        Self {
+            buf: buf.spare_capacity_mut(),
+            fds: fds.spare_capacity_mut(),
+            filled: 0,
+            filled_fd: 0,
+        }
+    }
+    pub fn new(buf: &'a mut [u8], fds: &'a mut [RawFd]) -> Self {
+        Self {
+            buf: slice_to_uninit_mut(buf),
+            fds: slice_to_uninit_mut(fds),
+            filled: 0,
+            filled_fd: 0,
+        }
+    }
+    pub fn remaining(&self) -> usize {
+        self.buf.len() - self.filled
+    }
+    pub fn remaining_fds(&self) -> usize {
+        self.fds.len() - self.filled_fd
+    }
+    pub fn filled(&self) -> usize {
+        self.filled
+    }
+    pub fn filled_fd(&self) -> usize {
+        self.filled_fd
+    }
+    pub fn put_slice(&mut self, buf: &[u8]) {
+        assert!(
+            self.remaining() >= buf.len(),
+            "WriteBuf::put_slice: not enough space"
+        );
+        let amt = buf.len();
+        let end = self.filled + amt;
+        // Safety: length checked above, and we never read from the ptr.
+        unsafe {
+            self.buf[self.filled..end]
+                .as_mut_ptr()
+                .cast::<u8>()
+                .copy_from_nonoverlapping(buf.as_ptr(), amt);
+        }
+        self.filled = end;
+    }
+    pub fn put_fds(&mut self, fds: &[RawFd]) {
+        assert!(
+            self.remaining_fds() >= fds.len(),
+            "WriteBuf::put_fds: not enough space"
+        );
+        let amt = fds.len();
+        let end = self.filled_fd + amt;
+        // Safety: length checked above, and we never read from the ptr.
+        unsafe {
+            self.fds[self.filled_fd..end]
+                .as_mut_ptr()
+                .cast::<RawFd>()
+                .copy_from_nonoverlapping(fds.as_ptr(), amt);
+        }
+        self.filled_fd = end;
+    }
+}
+
+pub trait AsyncBufWriteWithFd: AsyncWriteWithFd {
+    /// Waits until there are at least `len` bytes available in the buffer. Then call a callback to
+    /// write data into the reserved buffer. Implementation should update the internal buffer
+    /// length according to how many bytes are written into WriteBuf. write_buf.remaining() must be
+    /// greater or equal to `len` when the callback is called.
+    /// Implementation shold first try to flush the buffer, until enough free space is available.
+    /// If buffer is not big enough after a complete flush, it should allocate more space.
+    fn poll_write_to_reserve<'a>(
+        self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+        demand: usize,
+        demand_fd: usize,
+        f: impl FnOnce(&mut WriteBuf<'_>) -> std::io::Result<()>,
+    ) -> Poll<Result<()>>;
+}
 
 pin_project! {
 /// A buffered reader for reading data with file descriptors.
@@ -22,6 +164,7 @@ pin_project! {
 /// Also, users are encouraged to use up all the available data before calling
 /// poll_fill_buf/poll_fill_buf_until again, otherwise there is potential for causing a lot of
 /// allocations and memcpys.
+#[derive(Debug)]
 pub struct BufReaderWithFd<T> {
     #[pin]
     inner: T,
@@ -87,7 +230,7 @@ impl<T> BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFds> AsyncRead for BufReaderWithFd<T> {
+impl<T: AsyncReadWithFd> AsyncRead for BufReaderWithFd<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -97,7 +240,7 @@ impl<T: AsyncReadWithFds> AsyncRead for BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFds> AsyncBufReadWithFds for BufReaderWithFd<T> {
+impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
     fn poll_fill_buf_until(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -142,7 +285,7 @@ impl<T: AsyncReadWithFds> AsyncBufReadWithFds for BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFds> AsyncBufRead for BufReaderWithFd<T> {
+impl<T: AsyncReadWithFd> AsyncBufRead for BufReaderWithFd<T> {
     fn poll_fill_buf(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -155,7 +298,7 @@ impl<T: AsyncReadWithFds> AsyncBufRead for BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFds> AsyncReadWithFds for BufReaderWithFd<T> {
+impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
     fn poll_read_with_fds(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -230,13 +373,28 @@ impl<T> BufWriterWithFd<T> {
     }
 }
 
-impl<T: AsyncWriteWithFds> BufWriterWithFd<T> {
-    fn poll_flush_buf(
+impl<T: AsyncWriteWithFd> BufWriterWithFd<T> {
+    /// Flush until there is at least `len` bytes free at the end of the buffer capacity.
+    fn poll_flush_buf_until(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
+        demand: usize,
+        demand_fd: usize,
     ) -> Poll<std::io::Result<()>> {
         let mut this = self.as_mut().project();
-        while *this.written < this.buf.len() {
+        // Do we have extra capacity left at the end?
+        let remaining_cap = this.buf.capacity() - this.buf.len();
+        let remaining_cap_fd = this.fd_buf.capacity() - this.fd_buf.len();
+        if remaining_cap >= demand && remaining_cap_fd >= demand_fd {
+            return Poll::Ready(Ok(()));
+        }
+        let mut aim = demand - (this.buf.capacity() - this.buf.len());
+        if aim <= *this.written && remaining_cap_fd < demand_fd {
+            // If we need free file descriptor capacity, we need to write some data even if
+            // we already met the data buffer capacity demand.
+            aim = *this.written + 1;
+        }
+        while *this.written < this.buf.len() && *this.written < aim {
             match ready!(this.inner.as_mut().poll_write_with_fds(
                 cx,
                 &this.buf[*this.written..],
@@ -256,13 +414,37 @@ impl<T: AsyncWriteWithFds> BufWriterWithFd<T> {
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }
-        this.buf.clear();
-        *this.written = 0;
+        let remaining_cap_fd = this.fd_buf.capacity() - this.fd_buf.len();
+        if remaining_cap_fd < demand_fd {
+            // This only happens if we have no data to write but somehow still have file descriptors.
+            this.fd_buf.reserve(demand_fd);
+        }
+        if *this.written == this.buf.len() {
+            // All written, no need to copy
+            *this.written = 0;
+            this.buf.clear();
+            if demand > this.buf.len() {
+                this.buf.reserve(demand - this.buf.len());
+            }
+        } else {
+            // Move data to the front
+            let len = this.buf.len() - *this.written;
+            this.buf.copy_within(*this.written.., 0);
+            this.buf.truncate(len);
+        }
         Poll::Ready(Ok(()))
+    }
+    fn poll_flush_buf(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let cap = self.buf.capacity();
+        let cap_fd = self.fd_buf.capacity();
+        self.poll_flush_buf_until(cx, cap, cap_fd)
     }
 }
 
-impl<T: AsyncWriteWithFds> AsyncWrite for BufWriterWithFd<T> {
+impl<T: AsyncWriteWithFd> AsyncWrite for BufWriterWithFd<T> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -286,7 +468,29 @@ impl<T: AsyncWriteWithFds> AsyncWrite for BufWriterWithFd<T> {
     }
 }
 
-impl<T: AsyncWriteWithFds> AsyncWriteWithFds for BufWriterWithFd<T> {
+impl<T: AsyncWriteWithFd> AsyncBufWriteWithFd for BufWriterWithFd<T> {
+    fn poll_write_to_reserve<'a>(
+            mut self: Pin<&'a mut Self>,
+            cx: &mut Context<'_>,
+            demand: usize,
+            demand_fd: usize,
+            f: impl FnOnce(&mut WriteBuf<'_>) -> std::io::Result<()>,
+        ) -> Poll<Result<()>> {
+        ready!(self.as_mut().poll_flush_buf_until(cx, demand, demand_fd))?;
+        let this = self.project();
+        let mut write_buf = WriteBuf::from_spare(this.buf, this.fd_buf);
+        f(&mut write_buf)?;
+        let filled = write_buf.filled();
+        let filled_fd = write_buf.filled_fd();
+        unsafe {
+            this.buf.set_len(this.buf.len() + filled);
+            this.fd_buf.set_len(this.fd_buf.len() + filled_fd);
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<T: AsyncWriteWithFd> AsyncWriteWithFd for BufWriterWithFd<T> {
     fn poll_write_with_fds(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

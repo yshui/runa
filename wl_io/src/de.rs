@@ -1,4 +1,4 @@
-use crate::AsyncBufReadWithFds;
+use crate::AsyncBufReadWithFd;
 use futures_lite::{ready, AsyncBufRead};
 use serde::de::{value, Deserializer, Error, Visitor};
 use std::{
@@ -17,7 +17,7 @@ pub const WAYLAND_FD_NEWTYPE_NAME: &str = "__WaylandFd__";
 /// This prevents the reader from being used again while this accessor is alive.
 /// Also this accessor will advance the reader to the next message when dropped.
 #[derive(Debug)]
-pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFds + ?Sized + 'a> {
+pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFd + ?Sized + 'a> {
     read: &'a [u8],
     fds: &'a [RawFd],
     reader: NonNull<R>,
@@ -29,7 +29,7 @@ pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFds + ?Sized + 'a> {
 
 impl<'a, R> Drop for WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + ?Sized + 'a,
+    R: AsyncBufReadWithFd + ?Sized + 'a,
 {
     fn drop(&mut self) {
         // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
@@ -43,7 +43,7 @@ where
 
 impl<'a, R> WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + ?Sized + 'a,
+    R: AsyncBufReadWithFd + ?Sized + 'a,
 {
     /// Safety: result must be borrowing from `reader`, `reader` must be valid. (i.e. reader
     /// must outlive result). _And_ `reader` must have already been pinned
@@ -114,11 +114,19 @@ where
     pub fn next_message(reader: &mut R) -> NextMessage<'_, R> where R: Unpin {
         NextMessage(Some(reader))
     }
+
+    pub fn deserialize<T>(&mut self) -> Result<T, serde::de::value::Error>
+    where
+        T: serde::de::Deserialize<'a>,
+        R: Sized
+    {
+        T::deserialize(self)
+    }
 }
 
 impl<'a, R> WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + ?Sized + 'a,
+    R: AsyncBufReadWithFd + ?Sized + 'a,
 {
     fn pop_i32(&mut self) -> Result<i32, value::Error> {
         let slice = self
@@ -261,7 +269,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
 
 impl<'de, 'b, 'a: 'de + 'b, R> Deserializer<'de> for &'b mut WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + 'a,
+    R: AsyncBufReadWithFd + 'a,
 {
     type Error = serde::de::value::Error;
     not_implemented_deserialize!(
@@ -297,7 +305,7 @@ where
     {
         impl<'de, 'b, 'a: 'de + 'b, R> serde::de::EnumAccess<'de> for &'b mut WaylandBufAccess<'a, R>
         where
-            R: AsyncBufReadWithFds + 'a,
+            R: AsyncBufReadWithFd + 'a,
         {
             type Error = serde::de::value::Error;
             type Variant = Self;
@@ -374,14 +382,14 @@ where
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, R: AsyncBufReadWithFds + 'a> {
+        struct Access<'a, 'b, R: AsyncBufReadWithFd + 'a> {
             deserializer: &'b mut WaylandBufAccess<'a, R>,
             len: usize,
         }
 
         impl<'de, 'b, 'a: 'de + 'b, R> serde::de::SeqAccess<'de> for Access<'a, 'b, R>
         where
-            R: AsyncBufReadWithFds + 'a,
+            R: AsyncBufReadWithFd + 'a,
         {
             type Error = value::Error;
 
@@ -437,7 +445,7 @@ where
 }
 impl<'de, 'b, 'a: 'de + 'b, R> serde::de::VariantAccess<'de> for &'b mut WaylandBufAccess<'a, R>
 where
-    R: AsyncBufReadWithFds + 'a,
+    R: AsyncBufReadWithFd + 'a,
 {
     type Error = serde::de::value::Error;
     fn unit_variant(self) -> Result<(), Self::Error> {
@@ -470,7 +478,7 @@ where
 pub struct NextMessage<'a, R: Unpin + ?Sized>(Option<&'a mut R>);
 impl<'a, R: Unpin + std::fmt::Debug> std::future::Future for NextMessage<'a, R>
 where
-    R: AsyncBufReadWithFds,
+    R: AsyncBufReadWithFd,
 {
     type Output = std::io::Result<(u32, u32, WaylandBufAccess<'a, R>)>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -479,6 +487,8 @@ where
         let x = WaylandBufAccess::poll_next_message(Pin::new(&mut *reader), cx).map(|r| {
             r.map(|a| {
                 // Don't advance the buffer when this access is dropped because we will be polling again
+                // Also without this `x` would life through the whole `match` and we won't be able
+                // to assign to `this.0` or use `reader` again.
                 ManuallyDrop::new(a)
             })
         });

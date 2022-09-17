@@ -1,11 +1,14 @@
 [workspace]
 members = [
+  "wl_common",
+  "wl_server",
   "wl_spec",
   "wl_scanner",
   "wl_scanner_support",
-  "wl_scanner_macros",
+  "wl_macros",
   "wl_io",
   "wl_protocol",
+  "crescent",
 ]
 exclude = [
   "testbench"

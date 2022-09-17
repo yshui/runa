@@ -1,0 +1,7 @@
+[toolchain]
+# Blocked by https://github.com/rust-lang/rust/issues/100267
+channel = "nightly-2022-08-03"
+components = [ "rustfmt", "rust-src" ]
+targets = [ "x86_64-unknown-linux-gnu" ]
+profile = "minimal"
+

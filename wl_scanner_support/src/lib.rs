@@ -8,129 +8,6 @@ pub enum Error {
     UnknownOpcode(u32),
 }
 
-pub mod wayland_types {
-    use std::ffi::{CStr, CString};
-    use std::os::unix::io::OwnedFd;
-    use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
-
-    use fixed::types::extra::U8;
-    use serde::{de, Deserialize};
-    #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct NewId(pub u32);
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Fixed(pub fixed::FixedI32<U8>);
-    #[derive(Debug)]
-    pub enum Fd {
-        Raw(RawFd),
-        Owned(OwnedFd),
-    }
-    #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Object(pub u32);
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct Str<'a>(pub &'a CStr);
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct String(pub CString);
-
-    impl AsRawFd for Fd {
-        fn as_raw_fd(&self) -> RawFd {
-            match self {
-                Fd::Raw(fd) => *fd,
-                Fd::Owned(fd) => fd.as_raw_fd(),
-            }
-        }
-    }
-
-    impl ::std::cmp::PartialEq for Fd {
-        fn eq(&self, other: &Self) -> bool {
-            self.as_raw_fd() == other.as_raw_fd()
-        }
-    }
-
-    impl ::std::cmp::Eq for Fd {
-    }
-
-    impl Fd {
-        pub unsafe fn assume_owned(&mut self) -> &mut OwnedFd {
-            match self {
-                Fd::Raw(fd) => {
-                    *self = Fd::Owned(OwnedFd::from_raw_fd(*fd));
-                    match self {
-                        Fd::Owned(fd) => fd,
-                        // Safety: we just assigned OwnedFd to self
-                        Fd::Raw(_) => unsafe { std::hint::unreachable_unchecked() },
-                    }
-                }
-                Fd::Owned(fd) => fd,
-            }
-        }
-        pub fn unwrap_owned(self) -> OwnedFd {
-            match self {
-                Fd::Raw(_) => panic!("file descriptor was not owned"),
-                Fd::Owned(fd) => fd,
-            }
-        }
-        pub fn unwrap_owned_mut(&mut self) -> &mut OwnedFd {
-            match self {
-                Fd::Raw(_) => panic!("file descriptor was not owned"),
-                Fd::Owned(fd) => fd,
-            }
-        }
-    }
-
-    impl<'de> de::Deserialize<'de> for Fd {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            struct Visitor;
-            impl<'de> de::Visitor<'de> for Visitor {
-                type Value = Fd;
-                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                    write!(formatter, "file descriptor")
-                }
-
-                fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-                where
-                    E: de::Error,
-                {
-                    Ok(Fd::Raw(v))
-                }
-            }
-            let visitor = Visitor;
-            deserializer.deserialize_newtype_struct(::wl_io::de::WAYLAND_FD_NEWTYPE_NAME, visitor)
-        }
-    }
-
-    impl<'a, 'de: 'a> de::Deserialize<'de> for Str<'a> {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            use serde::de::Error;
-            let s: &[u8] = Deserialize::deserialize(deserializer)?;
-            Ok(Str(CStr::from_bytes_with_nul(s).map_err(D::Error::custom)?))
-        }
-    }
-    impl<'de> de::Deserialize<'de> for Fixed {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let s: i32 = Deserialize::deserialize(deserializer)?;
-            Ok(Self(fixed::FixedI32::from_bits(s)))
-        }
-    }
-    impl<'de> de::Deserialize<'de> for String {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            let s: Str = Deserialize::deserialize(deserializer)?;
-            Ok(Self(s.0.into()))
-        }
-    }
-}
-
 pub mod io {
     pub use futures_lite::AsyncBufRead;
 
@@ -141,6 +18,7 @@ pub use futures_lite::ready;
 pub use serde;
 pub use bitflags::bitflags;
 pub use num_enum;
+pub use wl_common::types as wayland_types;
 
 pub mod future {
     use std::{pin::Pin, task::Poll};

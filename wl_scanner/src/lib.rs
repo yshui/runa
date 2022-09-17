@@ -260,7 +260,7 @@ fn generate_message_variant(
         impl #lifetime #name #lifetime {
             pub const OPCODE: u16 = #opcode;
         }
-        impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFds + 'a>
+        impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFd + 'a>
         ::wl_scanner_support::io::Serialize<'a, T> for #name #lifetime {
             type Error = ::wl_scanner_support::Error;
             type Serialize = super::internal::#serialize_name <'a, T>;
@@ -287,7 +287,7 @@ fn generate_message_variant(
         }
         impl<'a, T> ::std::future::Future for #serialize_name<'a, T>
         where
-            T: ::wl_scanner_support::io::AsyncWriteWithFds {
+            T: ::wl_scanner_support::io::AsyncWriteWithFd {
             type Output = ::std::result::Result<(), ::wl_scanner_support::Error>;
             fn poll(mut self: ::std::pin::Pin<&mut Self>, cx: &mut ::std::task::Context<'_>) ->
                 ::std::task::Poll<Self::Output> {
@@ -396,14 +396,15 @@ fn generate_dispatch_trait(
             } else {
                 format_ident!("{}", m.name)
             };
+            let retty = format_ident!("{}Fut", m.name.to_pascal_case());
             let args = m
                 .args
                 .iter()
                 .map(|arg| {
                     let name = format_ident!("{}", arg.name);
-                    let typ = generate_arg_type_with_lifetime(
+                    let typ = generate_arg_type(
                         &arg,
-                        &Some(Lifetime::new("'_", Span::call_site())),
+                        false,
                         iface_version,
                     )?;
                     Ok(quote! {
@@ -414,60 +415,28 @@ fn generate_dispatch_trait(
             let doc_comment = generate_doc_comment(&m.description);
             Ok(quote! {
                 #doc_comment
-                fn #name(
-                    ctx: &mut D,
-                    client_ctx: &mut C,
-                    object: ::wl_scanner_support::wayland_types::Object,
+                fn #name<'a>(
+                    &'a self,
+                    ctx: &'a Ctx,
                     #(#args),*
                 )
-                -> ::std::result::Result<(), Self::Error>;
+                -> Self::#retty<'a>;
             })
         })
         .collect::<Result<TokenStream>>()?;
+    let futs = messages
+        .iter()
+        .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
     Ok(quote! {
-        pub trait #ty<D, C> {
+        pub trait #ty<Ctx> {
             type Error;
+            #(
+                type #futs<'a>: ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
+                    where Ctx: 'a, Self: 'a;
+            )*
             #methods
         }
     })
-}
-
-fn generate_dispatch_impl(messages: &[Message], event_or_request: EventOrRequest) -> TokenStream {
-    let (ty, mod_name) = match event_or_request {
-        EventOrRequest::Event => (format_ident!("Event"), format_ident!("events")),
-        EventOrRequest::Request => (format_ident!("Request"), format_ident!("requests")),
-    };
-    let trait_ = match event_or_request {
-        EventOrRequest::Event => format_ident!("EventDispatch"),
-        EventOrRequest::Request => format_ident!("RequestDispatch"),
-    };
-    let variants = messages.iter().map(|v| {
-        let vname = format_ident!("{}", v.name.to_pascal_case());
-        let mname = if v.name == "move" || v.name == "type" {
-            format_ident!("{}_", v.name)
-        } else {
-            format_ident!("{}", v.name)
-        };
-        let args = v.args.iter().map(|a| format_ident!("{}", a.name));
-        let args2 = args.clone();
-        quote! {
-            #ty::#vname(#mod_name::#vname { #(#args),* }) => {
-                Visitor::#mname(ctx, client_ctx, object, #(#args2),*)
-            }
-        }
-    });
-    quote! {
-        pub fn dispatch<D, C, Visitor: #trait_<D, C>>(
-            self,
-            ctx: &mut D,
-            client_ctx: &mut C,
-            object: ::wl_scanner_support::wayland_types::Object
-        ) -> Result<(), Visitor::Error> {
-            match self {
-                #(#variants),*
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -571,7 +540,6 @@ fn generate_event_or_request(
             })
             .collect::<TokenStream>();
         let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version)?;
-        let dispatch_impl = generate_dispatch_impl(messages, event_or_request);
         let public = quote! {
             pub mod #mod_name {
                 #[allow(unused_imports)]
@@ -588,10 +556,7 @@ fn generate_event_or_request(
                 #enum_members
             }
             #dispatch
-            impl #enum_lifetime #type_name #enum_lifetime {
-                #dispatch_impl
-            }
-            impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFds + 'a>
+            impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFd + 'a>
             ::wl_scanner_support::io::Serialize<'a, T> for #type_name #enum_lifetime {
                 type Error = ::wl_scanner_support::Error;
                 type Serialize = internal::#enum_serialize_name <'a, T>;
@@ -609,7 +574,7 @@ fn generate_event_or_request(
             }
             impl<'a, T> ::std::future::Future for #enum_serialize_name<'a, T>
             where
-                T: ::wl_scanner_support::io::AsyncWriteWithFds {
+                T: ::wl_scanner_support::io::AsyncWriteWithFd {
                 type Output = ::std::result::Result<(), ::wl_scanner_support::Error>;
                 fn poll(mut self: ::std::pin::Pin<&mut Self>, cx: &mut ::std::task::Context<'_>) ->
                     ::std::task::Poll<Self::Output> {

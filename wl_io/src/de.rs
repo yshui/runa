@@ -1,151 +1,132 @@
-use crate::AsyncBufReadWithFd;
-use futures_lite::{ready, AsyncBufRead};
-use serde::de::{value, Deserializer, Error, Visitor};
 use std::{
-    mem::ManuallyDrop,
-    os::unix::io::RawFd,
+    future::Future,
     pin::Pin,
-    ptr::NonNull,
     task::{Context, Poll},
 };
 
+use futures_lite::ready;
+use serde::de::{self, value, Deserializer as _, Error, Visitor};
+
+use crate::{AsyncBufReadWithFd, AsyncReadWithFd};
+
 /// When passed this string as name, deserialize_newtype_struct will try
 /// to deserialize a file descriptor.
-pub const WAYLAND_FD_NEWTYPE_NAME: &str = "__WaylandFd__";
+pub const WAYLAND_FD_NEWTYPE_NAME: &str = "\0__WaylandFd__";
 
 /// Holds a value that is deserialized from borrowed data from `reader`.
 /// This prevents the reader from being used again while this accessor is alive.
 /// Also this accessor will advance the reader to the next message when dropped.
 #[derive(Debug)]
-pub struct WaylandBufAccess<'a, R: AsyncBufReadWithFd + ?Sized + 'a> {
-    read: &'a [u8],
-    fds: &'a [RawFd],
-    reader: NonNull<R>,
-    fds_used: usize,
-    read_len: usize,
-
+pub struct Deserializer<'a, R> {
+    // XXX: can't be &mut here, because borrowing from &'b &'a mut shortens the lifetime to 'b
+    //      has to be &, but also need to be able to pop file descriptors.
+    //      this requires RefCell inside the BufReaderWithFd??
+    //      also can't own the BufReaderWithFd, otherwise we have trouble in SeqAccess
+    reader:            &'a R,
+    bytes_read:        usize,
     enum_deserialized: bool,
 }
 
-impl<'a, R> Drop for WaylandBufAccess<'a, R>
+impl<'a, R> Deserializer<'a, R>
 where
-    R: AsyncBufReadWithFd + ?Sized + 'a,
+    R: AsyncBufReadWithFd,
 {
-    fn drop(&mut self) {
-        // Safety: based on contrat of `new`, `reader` must outlive `result`, which we borrow.
-        // And `reader` must be pinned already.
-        unsafe {
-            ::std::pin::Pin::new_unchecked(self.reader.as_mut())
-                .consume_with_fds(self.read_len, self.fds_used);
-        }
-    }
-}
-
-impl<'a, R> WaylandBufAccess<'a, R>
-where
-    R: AsyncBufReadWithFd + ?Sized + 'a,
-{
-    /// Safety: result must be borrowing from `reader`, `reader` must be valid. (i.e. reader
-    /// must outlive result). _And_ `reader` must have already been pinned
-    pub unsafe fn new(reader: NonNull<R>, read: &'a [u8], fds: &'a [RawFd]) -> Self {
-        Self {
-            read,
-            reader,
-            fds,
-            fds_used: 0,
-            read_len: read.len(),
-            enum_deserialized: false,
-        }
-    }
-
-    pub fn into_inner(mut self) -> Pin<&'a mut R> {
-        unsafe { Pin::new_unchecked(self.reader.as_mut()) }
-    }
-    /// Poll the reader until it has `len` bytes in the buffer. Then wrap
-    /// the buffer and the reader in a `BufAccessor`. When the `BufAccessor`
-    /// is dropped, the reader will be advanced by buf.len() bytes.
-    pub fn poll_fill_buf_until(
-        reader: Pin<&'a mut R>,
-        cx: &mut Context<'_>,
-        len: usize,
-    ) -> Poll<std::io::Result<Self>> {
-        // Safety:
-        // 1. reader was pinned and we didn't move it.
-        // 2. poll_fill_buf_until must originate from the raw reader pointer to not
-        //    violate stacked borrow rules.
-        // 3. Self has a 'a lifetime so it borrows reader
-        unsafe {
-            let mut reader = NonNull::from(reader.get_unchecked_mut());
-            let (read, fds) =
-                ready!(Pin::new_unchecked(reader.as_mut()).poll_fill_buf_until(cx, len))?;
-            Poll::Ready(Ok(Self::new(reader, read, fds)))
-        }
+    pub fn into_inner(self) -> &'a R {
+        self.reader
     }
 
     pub fn poll_next_message(
         mut reader: Pin<&'a mut R>,
         cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<(u32, u32, Self)>> {
+    ) -> Poll<std::io::Result<(u32, usize, Self)>> {
         // Wait until we have the message header ready at least.
-        let (object_id, opcode, len) = {
-            let (buf, _) = ready!(reader.as_mut().poll_fill_buf_until(cx, 8))?;
-            let object_id = buf
+        let (object_id, len) = {
+            ready!(reader.as_mut().poll_fill_buf_until(cx, 8))?;
+            let object_id = reader
+                .buffer()
                 .get(..4)
                 .expect("Bug in poll_fill_buf_until implementation");
             // Safety: get is guaranteed to return a slice of 4 bytes.
             let object_id = unsafe { u32::from_ne_bytes(*(object_id.as_ptr() as *const [u8; 4])) };
-            let header = buf
+            let header = reader
+                .buffer()
                 .get(4..8)
                 .expect("Bug in poll_fill_buf_until implementation");
             let header = unsafe { u32::from_ne_bytes(*(header.as_ptr() as *const [u8; 4])) };
-            (object_id, header & 0xffff, (header >> 16) as usize)
+            (object_id, (header >> 16) as usize)
         };
 
         ready!(reader.as_mut().poll_fill_buf_until(cx, len))?;
-        Poll::Ready(match Self::poll_fill_buf_until(reader, cx, len) {
-            Poll::Ready(v) => v.map(|a| {
-                (object_id, opcode, a)
-            }),
-            Poll::Pending => panic!(
-                "Bug in poll_fill_buf_until implementation: returned Pending after returning Ready"
-            ),
-        })
+        Poll::Ready(Ok((object_id, len, Self {
+            reader:            reader.into_ref().get_ref(),
+            bytes_read:        0,
+            enum_deserialized: false,
+        })))
     }
-    pub fn next_message(reader: &mut R) -> NextMessage<'_, R> where R: Unpin {
+
+    pub fn next_message(
+        reader: Pin<&'a mut R>,
+    ) -> impl Future<Output = std::io::Result<(u32, usize, Deserializer<'a, R>)>> + 'a {
+        pub struct NextMessage<'a, R>(Option<Pin<&'a mut R>>);
+        impl<'a, R> std::future::Future for NextMessage<'a, R>
+        where
+            R: AsyncBufReadWithFd,
+        {
+            type Output = std::io::Result<(u32, usize, Deserializer<'a, R>)>;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let this = self.get_mut();
+                let mut reader = this.0.take().expect("NextMessage polled after completion");
+                match Deserializer::poll_next_message(reader.as_mut(), cx) {
+                    Poll::Pending => {
+                        this.0 = Some(reader);
+                        Poll::Pending
+                    },
+                    Poll::Ready(Ok(_)) => match Deserializer::poll_next_message(reader, cx) {
+                        Poll::Pending => {
+                            panic!("poll_next_message returned Ready, but then Pending again")
+                        },
+                        ready => ready,
+                    },
+                    Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                }
+            }
+        }
         NextMessage(Some(reader))
     }
 
-    pub fn deserialize<T>(&mut self) -> Result<T, serde::de::value::Error>
+    pub fn deserialize<'b, T>(&'b mut self) -> Result<T, serde::de::value::Error>
     where
         T: serde::de::Deserialize<'a>,
-        R: Sized
+        R: Sized,
     {
         T::deserialize(self)
     }
-}
 
-impl<'a, R> WaylandBufAccess<'a, R>
-where
-    R: AsyncBufReadWithFd + ?Sized + 'a,
-{
+    fn pop_bytes(&mut self, len: usize) -> Result<&'a [u8], serde::de::value::Error> {
+        let offset = self.bytes_read;
+        let buf = self.reader.buffer();
+        if buf.len() < len {
+            return Err(serde::de::value::Error::custom(
+                "Not enough bytes in buffer",
+            ))
+        }
+        let buf = &buf[offset..offset + len];
+        self.bytes_read += len;
+        Ok(buf)
+    }
+
     fn pop_i32(&mut self) -> Result<i32, value::Error> {
-        let slice = self
-            .read
-            .get(..4)
-            .ok_or_else(|| value::Error::custom("Unexpected end of buffer"))?;
+        let slice = self.pop_bytes(4)?;
         // Safety: slice is guaranteed to be 4 bytes long
         let ret = i32::from_ne_bytes(unsafe { *(slice.as_ptr() as *const [u8; 4]) });
-        self.read = &self.read[4..];
         Ok(ret)
     }
+
     fn pop_u32(&mut self) -> Result<u32, value::Error> {
-        let slice = self
-            .read
-            .get(..4)
-            .ok_or_else(|| value::Error::custom("Unexpected end of buffer"))?;
+        let slice = self.pop_bytes(4)?;
         // Safety: slice is guaranteed to be 4 bytes long
         let ret = u32::from_ne_bytes(unsafe { *(slice.as_ptr() as *const [u8; 4]) });
-        self.read = &self.read[4..];
         Ok(ret)
     }
 }
@@ -166,10 +147,11 @@ macro_rules! not_implemented_deserialize {
 }
 
 /// Supports deserializing an opcode from the header, into a enum variant
-struct WaylandHeaderDerserializer(u32);
+struct HeaderDerserializer(u32);
 
-impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
+impl<'de> de::Deserializer<'de> for HeaderDerserializer {
     type Error = serde::de::value::Error;
+
     not_implemented_deserialize!(
         deserialize_any,
         deserialize_bool,
@@ -193,12 +175,14 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
         deserialize_map,
         deserialize_ignored_any,
     );
+
     fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
         visitor.visit_u64((self.0 & 0xffff) as u64)
     }
+
     fn deserialize_enum<V>(
         self,
         _name: &str,
@@ -210,6 +194,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_unit_struct<V>(
         self,
         _name: &'static str,
@@ -220,6 +205,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_struct<V>(
         self,
         _name: &'static str,
@@ -238,6 +224,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
@@ -249,6 +236,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_newtype_struct<V>(
         self,
         _name: &'static str,
@@ -259,6 +247,7 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
@@ -267,11 +256,12 @@ impl<'de> Deserializer<'de> for WaylandHeaderDerserializer {
     }
 }
 
-impl<'de, 'b, 'a: 'de + 'b, R> Deserializer<'de> for &'b mut WaylandBufAccess<'a, R>
+impl<'de, 'a: 'de, R> de::Deserializer<'de> for &'_ mut Deserializer<'a, R>
 where
-    R: AsyncBufReadWithFd + 'a,
+    R: AsyncBufReadWithFd,
 {
     type Error = serde::de::value::Error;
+
     not_implemented_deserialize!(
         deserialize_any,
         deserialize_bool,
@@ -294,6 +284,7 @@ where
         deserialize_identifier,
         deserialize_ignored_any,
     );
+
     fn deserialize_enum<V>(
         self,
         _name: &str,
@@ -303,28 +294,30 @@ where
     where
         V: Visitor<'de>,
     {
-        impl<'de, 'b, 'a: 'de + 'b, R> serde::de::EnumAccess<'de> for &'b mut WaylandBufAccess<'a, R>
+        impl<'de, 'a: 'de, R> serde::de::EnumAccess<'de> for &'_ mut Deserializer<'a, R>
         where
-            R: AsyncBufReadWithFd + 'a,
+            R: AsyncBufReadWithFd,
         {
             type Error = serde::de::value::Error;
             type Variant = Self;
+
             fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
             where
                 V: serde::de::DeserializeSeed<'de>,
             {
                 let _object_id = self.pop_u32()?;
                 let variant = self.pop_u32()?;
-                let variant = seed.deserialize(WaylandHeaderDerserializer(variant))?;
+                let variant = seed.deserialize(HeaderDerserializer(variant))?;
                 Ok((variant, self))
             }
         }
         if self.enum_deserialized {
-            return Err(Self::Error::custom("Message header already deserialized"));
+            return Err(Self::Error::custom("Message header already deserialized"))
         }
         self.enum_deserialized = true;
         visitor.visit_enum(self)
     }
+
     fn deserialize_unit_struct<V>(
         self,
         _name: &'static str,
@@ -335,6 +328,7 @@ where
     {
         Err(Self::Error::custom("not implemented"))
     }
+
     fn deserialize_newtype_struct<V>(
         self,
         name: &'static str,
@@ -344,17 +338,18 @@ where
         V: Visitor<'de>,
     {
         if name == WAYLAND_FD_NEWTYPE_NAME {
-            let fd = *self
-                .fds
-                .get(0)
-                .ok_or_else(|| Self::Error::custom("Not enough file descriptors"))?;
-            self.fds = &self.fds[1..];
-            self.fds_used += 1;
-            visitor.visit_i32(fd as i32)
+            let fd = Pin::new(&mut self.reader).next_fd();
+            if let Some(fd) = fd {
+                use std::os::unix::io::IntoRawFd;
+                visitor.visit_i32(fd.into_raw_fd())
+            } else {
+                Err(Self::Error::custom("No fd available"))
+            }
         } else {
             visitor.visit_newtype_struct(self)
         }
     }
+
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
@@ -366,6 +361,7 @@ where
     {
         self.deserialize_tuple(len, visitor)
     }
+
     fn deserialize_struct<V>(
         self,
         _name: &str,
@@ -382,14 +378,14 @@ where
     where
         V: serde::de::Visitor<'de>,
     {
-        struct Access<'a, 'b, R: AsyncBufReadWithFd + 'a> {
-            deserializer: &'b mut WaylandBufAccess<'a, R>,
-            len: usize,
+        struct Access<'a, 'b, R: AsyncReadWithFd> {
+            deserializer: &'b mut Deserializer<'a, R>,
+            len:          usize,
         }
 
-        impl<'de, 'b, 'a: 'de + 'b, R> serde::de::SeqAccess<'de> for Access<'a, 'b, R>
+        impl<'de, 'a: 'de, R> serde::de::SeqAccess<'de> for Access<'a, '_, R>
         where
-            R: AsyncBufReadWithFd + 'a,
+            R: AsyncBufReadWithFd,
         {
             type Error = value::Error;
 
@@ -417,52 +413,56 @@ where
             len,
         })
     }
+
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
         visitor.visit_u32(self.pop_u32()?)
     }
+
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
         visitor.visit_i32(self.pop_i32()?)
     }
+
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
         let len = self.pop_u32()?;
         let read_len = (len + 3) & !3;
-        if self.read.len() < read_len as usize {
-            return Err(Self::Error::custom("Unexpected end of buffer"));
-        }
-        let (head, tail) = self.read.split_at(read_len as usize); // could use split_at_unchecked
-        self.read = tail;
-        visitor.visit_borrowed_bytes(&head[..len as usize]) // don't expose the padding bytes
+        let buf = self.pop_bytes(read_len as usize)?;
+        visitor.visit_borrowed_bytes(&buf[..len as usize]) // don't expose the
+                                                           // padding bytes
     }
 }
-impl<'de, 'b, 'a: 'de + 'b, R> serde::de::VariantAccess<'de> for &'b mut WaylandBufAccess<'a, R>
+impl<'de, 'a: 'de, R> serde::de::VariantAccess<'de> for &'_ mut Deserializer<'a, R>
 where
-    R: AsyncBufReadWithFd + 'a,
+    R: AsyncBufReadWithFd,
 {
     type Error = serde::de::value::Error;
+
     fn unit_variant(self) -> Result<(), Self::Error> {
         Ok(())
     }
+
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
     where
         T: serde::de::DeserializeSeed<'de>,
     {
         seed.deserialize(self)
     }
+
     fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
         self.deserialize_tuple(len, visitor)
     }
+
     fn struct_variant<V>(
         self,
         fields: &'static [&'static str],
@@ -472,39 +472,5 @@ where
         V: serde::de::Visitor<'de>,
     {
         self.deserialize_tuple(fields.len(), visitor)
-    }
-}
-
-pub struct NextMessage<'a, R: Unpin + ?Sized>(Option<&'a mut R>);
-impl<'a, R: Unpin + std::fmt::Debug> std::future::Future for NextMessage<'a, R>
-where
-    R: AsyncBufReadWithFd,
-{
-    type Output = std::io::Result<(u32, u32, WaylandBufAccess<'a, R>)>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        let reader = this.0.take().expect("NextMessage polled after completion");
-        let x = WaylandBufAccess::poll_next_message(Pin::new(&mut *reader), cx).map(|r| {
-            r.map(|a| {
-                // Don't advance the buffer when this access is dropped because we will be polling again
-                // Also without this `x` would life through the whole `match` and we won't be able
-                // to assign to `this.0` or use `reader` again.
-                ManuallyDrop::new(a)
-            })
-        });
-        match x {
-            Poll::Pending => {
-                this.0 = Some(reader);
-                Poll::Pending
-            }
-            Poll::Ready(Ok(_)) => match WaylandBufAccess::poll_next_message(Pin::new(reader), cx) {
-                Poll::Ready(Ok(access)) => Poll::Ready(Ok(access)),
-                other => panic!(
-                    "Bug in poll_fill_buf_until, returned pending after returning ready: {:?}",
-                    other
-                ),
-            },
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-        }
     }
 }

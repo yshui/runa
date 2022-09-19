@@ -4,10 +4,10 @@ use std::os::unix::ffi::OsStrExt;
 use wl_scanner::generate_protocol;
 
 fn main() {
-    use rust_format::Formatter;
+    //use rust_format::Formatter;
     use std::io::Write;
 
-    let fmt = rust_format::RustFmt::new();
+    //let fmt = rust_format::RustFmt::new();
     let protocols =
         std::path::Path::new(&std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("protocols");
     let out_dir = std::env::var("OUT_DIR").unwrap();

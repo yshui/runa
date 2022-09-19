@@ -15,3 +15,10 @@ nix = "0.25.0"
 pin-project-lite = "0.2.9"
 serde = "1.0.144"
 smol = "1.2.5"
+tinyvec = "1.6.0"
+
+[dev-dependencies]
+anyhow = "1.0.65"
+arbitrary = "1.1.6"
+rand = { version = "0.8.5", features = ["small_rng", "std"], default-features = false }
+smol = "1.2.5"

@@ -119,8 +119,10 @@ fn generate_serialize_for_type(
     use wl_spec::protocol::Type::*;
     if let Fd = arg.typ {
         return Ok(quote! {
-            use ::std::os::unix::io::AsRawFd;
-            let fd = #name.as_raw_fd();
+            use ::std::os::unix::io::{AsRawFd, BorrowedFd};
+            let fd = unsafe { BorrowedFd::borrow_raw(#name.as_raw_fd()) };
+            // TODO: maybe transfer the ownership of the fd, so the serializer doesn't have to dup
+            // it.
             ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, &[], &[fd]))?;
         });
     }

@@ -1,9 +1,7 @@
 #![feature(type_alias_impl_trait, generic_associated_types)]
+use std::pin::Pin;
+
 use futures_lite::{stream::StreamExt, Future};
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
 use thiserror::Error;
 use wl_io::AsyncBufReadWithFd;
 
@@ -23,7 +21,7 @@ pub enum Error<SE, LE> {
 
 pub struct ConnectionManager<S, Ctx> {
     listeners: S,
-    ctx: Ctx,
+    ctx:       Ctx,
 }
 
 pub trait Server<Conn> {
@@ -88,16 +86,16 @@ pub fn wayland_listener(
         lock.as_fd(),
         rustix::fs::FlockOperation::NonBlockingLockExclusive,
     )?;
-    // We successfully locked the file, so we can remove the socket file if that exists.
+    // We successfully locked the file, so we can remove the socket file if that
+    // exists.
     let _ = std::fs::remove_file(&path);
-    Ok((
-        std::os::unix::net::UnixListener::bind(path)?,
-        FlockGuard { fd: lock },
-    ))
+    Ok((std::os::unix::net::UnixListener::bind(path)?, FlockGuard {
+        fd: lock,
+    }))
 }
 
-pub fn wayland_listener_auto() -> Result<(std::os::unix::net::UnixListener, FlockGuard), ListenerError>
-{
+pub fn wayland_listener_auto(
+) -> Result<(std::os::unix::net::UnixListener, FlockGuard), ListenerError> {
     const MAX_DISPLAYNO: u32 = 32;
     let mut last_err = None;
     for i in 0..MAX_DISPLAYNO {
@@ -106,27 +104,29 @@ pub fn wayland_listener_auto() -> Result<(std::os::unix::net::UnixListener, Floc
             Ok((listener, guard)) => return Ok((listener, guard)),
             e @ Err(_) => {
                 last_err = Some(e);
-            }
+            },
         }
     }
     last_err.unwrap()
 }
 
-/// A server implementation that spawn a new async task for each new connection. The task is
-/// created by the AsyncContext implementation of `Ctx`.
-/// If E is the LocalExecutor, then the Task created by `Ctx` doesn't need to be Send + 'static.
-/// For now, AsyncServer is only implemented for E = LocalExecutor.
+/// A server implementation that spawn a new async task for each new connection.
+/// The task is created by the AsyncContext implementation of `Ctx`.
+/// If E is the LocalExecutor, then the Task created by `Ctx` doesn't need to be
+/// Send + 'static. For now, AsyncServer is only implemented for E =
+/// LocalExecutor.
 pub struct AsyncServer<'exe, Ctx, E> {
-    ctx: Ctx,
+    ctx:      Ctx,
     executor: &'exe E,
 }
 
-/// A trait implemented by the context used in AsyncServer. `new_connection` is called for each new
-/// connection, and returns an async task that will be spawned by the AsyncServer.
+/// A trait implemented by the context used in AsyncServer. `new_connection` is
+/// called for each new connection, and returns an async task that will be
+/// spawned by the AsyncServer.
 ///
-/// 'a is the lifetime of futures returned by `new_connection`, and errors returned by the futures.
-/// For using with LocalExecutor, 'a should outlive the LocalExecutor. For a threaded executor, 'a
-/// needs to be 'static.
+/// 'a is the lifetime of futures returned by `new_connection`, and errors
+/// returned by the futures. For using with LocalExecutor, 'a should outlive the
+/// LocalExecutor. For a threaded executor, 'a needs to be 'static.
 pub trait AsyncContext<'a, Conn> {
     type Error: 'a;
     type Task: Future<Output = Result<(), Self::Error>> + Unpin + 'a;
@@ -172,18 +172,7 @@ where
     type Error = AsyncDispatchServerError<Ctx::Error>;
     type Task = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + 'a>>;
 
-    fn new_connection(&mut self, mut conn: Conn) -> Self::Task {
-        let mut ctx = self.ctx.clone();
-        Box::pin(async move {
-            while let (object_id, opcode, mut buf) =
-                wl_io::de::WaylandBufAccess::next_message(&mut conn).await?
-            {
-                // should dispatch be async?
-                ctx.dispatch(object_id, &mut buf)
-                    .await
-                    .map_err(AsyncDispatchServerError::Dispatch)?;
-            }
-            Ok(())
-        })
+    fn new_connection(&mut self, _conn: Conn) -> Self::Task {
+        unimplemented!();
     }
 }

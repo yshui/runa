@@ -1,27 +1,25 @@
 #![feature(generic_associated_types)]
+use std::pin::Pin;
+
 use futures_lite::Future;
-pub use wl_io::de::WaylandBufAccess;
+pub use wl_io::de::Deserializer;
 
 #[doc(hidden)]
 pub mod __private {
-    pub use ::wl_io::AsyncBufReadWithFdExt;
+    pub use ::wl_io::AsyncBufReadWithFd;
 }
 
 /// The entry point of a wayland application, either a client or a server.
 pub trait MessageDispatch {
     type Error;
     type Fut<'a>: Future<Output = Result<(), Self::Error>> + 'a;
-    fn dispatch<'a, R>(
-        &self,
-        object_id: u32,
-        buf: &mut WaylandBufAccess<'a, R>,
-    ) -> Self::Fut<'a>
+    fn dispatch<'a, R>(&self, reader: Pin<&mut R>) -> Self::Fut<'a>
     where
-        R: wl_io::AsyncBufReadWithFd;
+        R: wl_io::AsyncBufReadWithFd + 'a;
 }
 
-/// The entry point of an interface implementation, called when message of a certain interface is
-/// received
+/// The entry point of an interface implementation, called when message of a
+/// certain interface is received
 pub trait InterfaceMessageDispatch<Ctx> {
     type Error;
     // TODO: the R parameter might be unnecessary, see:
@@ -34,7 +32,7 @@ pub trait InterfaceMessageDispatch<Ctx> {
     fn dispatch<'a, 'b, R>(
         &'a self,
         ctx: &'a Ctx,
-        buf: &'_ mut WaylandBufAccess<'b, R>,
+        reader: &mut Deserializer<'b, R>,
     ) -> Self::Fut<'a, R>
     where
         R: wl_io::AsyncBufReadWithFdExt,
@@ -43,9 +41,13 @@ pub trait InterfaceMessageDispatch<Ctx> {
 
 pub use wl_macros::{interface_message_dispatch, message_broker};
 pub mod types {
-    use std::ffi::{CStr, CString};
-    use std::os::unix::io::OwnedFd;
-    use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
+    use std::{
+        ffi::{CStr, CString},
+        os::unix::{
+            io::OwnedFd,
+            prelude::{AsRawFd, FromRawFd, RawFd},
+        },
+    };
 
     use fixed::types::extra::U8;
     use serde::{de, Deserialize};
@@ -96,18 +98,20 @@ pub mod types {
                     match self {
                         Fd::Owned(fd) => fd,
                         // Safety: we just assigned OwnedFd to self
-                        Fd::Raw(_) => unsafe { std::hint::unreachable_unchecked() },
+                        Fd::Raw(_) => std::hint::unreachable_unchecked(),
                     }
-                }
+                },
                 Fd::Owned(fd) => fd,
             }
         }
+
         pub fn unwrap_owned(self) -> OwnedFd {
             match self {
                 Fd::Raw(_) => panic!("file descriptor was not owned"),
                 Fd::Owned(fd) => fd,
             }
         }
+
         pub fn unwrap_owned_mut(&mut self) -> &mut OwnedFd {
             match self {
                 Fd::Raw(_) => panic!("file descriptor was not owned"),
@@ -124,6 +128,7 @@ pub mod types {
             struct Visitor;
             impl<'de> de::Visitor<'de> for Visitor {
                 type Value = Fd;
+
                 fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                     write!(formatter, "file descriptor")
                 }

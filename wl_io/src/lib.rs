@@ -1,7 +1,8 @@
+#![feature(generic_associated_types, type_alias_impl_trait)]
 use futures_core::TryFuture;
 use futures_lite::{ready, AsyncRead, AsyncWrite};
 use std::io::{Read, Result, Write};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -38,7 +39,7 @@ pub trait AsyncWriteWithFd: AsyncWrite {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[RawFd],
+        fds: &[BorrowedFd<'_>],
     ) -> Poll<Result<usize>>;
 }
 
@@ -47,7 +48,7 @@ impl<T: AsyncWriteWithFd + Unpin> AsyncWriteWithFd for &mut T {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[RawFd],
+        fds: &[BorrowedFd<'_>],
     ) -> Poll<Result<usize>> {
         Pin::new(&mut **self).poll_write_with_fds(cx, buf, fds)
     }
@@ -55,7 +56,19 @@ impl<T: AsyncWriteWithFd + Unpin> AsyncWriteWithFd for &mut T {
 
 /// A extension trait of `AsyncRead` that supports receiving file descriptors along with data.
 pub trait AsyncReadWithFd: AsyncRead {
-    /// Reads data and file descriptors from the stream.
+    /// Reads data and file descriptors from the stream. This is generic over how you store the
+    /// file descriptors. Use something like tinyvec if you want to avoid heap allocations.
+    ///
+    /// This cumbersome interface mainly originates from the fact kernel would drop file
+    /// descriptors if you don't give it a buffer big enough. Otherwise it would be easy to have
+    /// read_data and read_fd be separate functions.
+    ///
+    /// # Arguments
+    ///
+    /// * `fds`     : Storage for the file descriptors.
+    /// * `fd_limit`: Maximum number of file descriptors to receive. If more are received, they
+    ///               could be closed or stored in a buffer, depends on the implementation. None
+    ///               means no limit.
     ///
     /// # Note
     ///
@@ -70,8 +83,9 @@ pub trait AsyncReadWithFd: AsyncRead {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>>;
+        fds: &mut impl Extend<OwnedFd>,
+        fd_limit: Option<usize>,
+    ) -> Poll<Result<usize>>;
 }
 
 impl<T: AsyncReadWithFd + Unpin> AsyncReadWithFd for &mut T {
@@ -79,9 +93,10 @@ impl<T: AsyncReadWithFd + Unpin> AsyncReadWithFd for &mut T {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>> {
-        Pin::new(&mut **self).poll_read_with_fds(cx, buf, fds)
+        fds: &mut impl Extend<OwnedFd>,
+        fd_limit: Option<usize>,
+    ) -> Poll<Result<usize>> {
+        Pin::new(&mut **self).poll_read_with_fds(cx, buf, fds, fd_limit)
     }
 }
 
@@ -167,17 +182,20 @@ impl<T: Write + AsRawFd> AsyncWriteWithFd for WithFd<T> {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[RawFd],
+        fds: &[BorrowedFd<'_>],
     ) -> Poll<Result<usize>> {
         use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
         ready!(self.inner.poll_writable(cx)?);
         let fd = self.inner.as_raw_fd();
+        let fd_len = fds.len();
 
         match sendmsg::<()>(
             fd,
             &[std::io::IoSlice::new(buf)],
-            &[ControlMessage::ScmRights(fds)],
+            &[ControlMessage::ScmRights(unsafe {
+                std::slice::from_raw_parts(fds.as_ptr().cast::<RawFd>(), fd_len)
+            })],
             MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
             None,
         ) {
@@ -377,13 +395,16 @@ where
 }
 
 impl<T: Read + AsRawFd> AsyncReadWithFd for WithFd<T> {
+    /// This implementation will close extra file descriptors if fd_limit is reached.
     fn poll_read_with_fds(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>> {
+        fds: &mut impl Extend<OwnedFd>,
+        fd_limit: Option<usize>,
+    ) -> Poll<Result<usize>> {
         use nix::sys::socket::MsgFlags;
+        use std::os::unix::io::FromRawFd;
         ready!(self.inner.poll_readable(cx)?);
         let fd = self.inner.as_raw_fd();
 
@@ -396,18 +417,19 @@ impl<T: Read + AsRawFd> AsyncReadWithFd for WithFd<T> {
             Err(nix::errno::Errno::EWOULDBLOCK) => Poll::Pending,
             Err(e) => Poll::Ready(Err(e.into())),
             Ok(msg) => {
-                let mut count = 0;
-                for ifd in msg.scm_rights() {
-                    for fd in ifd {
-                        if count < fds.len() {
-                            fds[count] = fd;
-                            count += 1;
-                        } else {
-                            _ = nix::unistd::close(fd);
-                        }
-                    }
+                let ifds = msg
+                    .scm_rights()
+                    .map(|ifds| {
+                        // Safety: the file descriptor was just received from the kernel.
+                        ifds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+                    })
+                    .flatten();
+                if let Some(limit) = fd_limit {
+                    fds.extend(ifds.take(limit));
+                } else {
+                    fds.extend(ifds);
                 }
-                Poll::Ready(Ok((msg.bytes, count)))
+                Poll::Ready(Ok(msg.bytes))
             }
         }
     }

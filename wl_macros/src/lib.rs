@@ -47,33 +47,41 @@ impl darling::FromField for Reject {
     }
 }
 
-/// Generate implementation of `MessageBroker` for a give collection of interfaces. Each interface
-/// in this enum should have a `#[wayland(impl = ...)]` attribute, pointing to the implementation
-/// type of the interface. Each of the implementation types must implement the `InterfaceMessageDispatch`
-/// trait, with `Ctx = server_context`. And all of these implementations must share the same Error type.
+/// Generate implementation of `MessageBroker` for a give collection of
+/// interfaces. Each interface in this enum should have a `#[wayland(impl =
+/// ...)]` attribute, pointing to the implementation type of the interface. Each
+/// of the implementation types must implement the `InterfaceMessageDispatch`
+/// trait, with `Ctx = connection_context`. And all of these implementations
+/// must share the same Error type. This Error type must accept conversion from `std::io::Error`.
 ///
-/// (The `InterfaceMessageDispatch` can be generated using the `interface_message_dispatch` macro.)
+/// (The `InterfaceMessageDispatch` can be generated using the
+/// `interface_message_dispatch` macro.)
 ///
-/// Your crate must depends the `wl_protocol` and the `wl_common` crate to use this. (TODO: allow override)
+/// Your crate must depends the `wl_protocol` and the `wl_common` crate to use
+/// this. (TODO: allow override)
 ///
 /// # Field arguments
 ///
-/// * `impl`:     The implementation type of the interface. It must implement the <interface>::Dispatch
-///               trait.
+/// * `impl`: The implementation type of the interface. It must implement the
+///   <interface>::Dispatch trait.
 ///
 /// # Enum arguments
 ///
-/// * `server_context`: The context type that is passed to `dispatch` functions.
-///                     MessageBroker<ServerContext> will be the trait implemented. Also, all the
-///                     type argument `Ctx` in the field arguments will be replaced with this type.
+/// * `connection_context`: The context type that is passed to `dispatch`
+///   functions. All the type argument `Ctx` in the field arguments will be
+///   replaced with this type.
 ///
 /// # Example
 ///
 /// ```rust
 /// #[message_broker]
-/// #[wayland(server_context = "crate::MyServer")]
+/// #[wayland(connection_context = "crate::MyServer")]
 /// enum Interfaces {
-///     #[wayland(impl = "wl_compositor::WlCompositor", version = 1, protocol = "wayland")]
+///     #[wayland(
+///         impl = "wl_compositor::WlCompositor",
+///         version = 1,
+///         protocol = "wayland"
+///     )]
 ///     WlCompositor,
 /// }
 /// ```
@@ -82,7 +90,6 @@ pub fn message_broker(
     _attrs: proc_macro::TokenStream,
     tokens: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    use proc_macro2::TokenStream;
     use quote::quote;
     use syn::Error;
 
@@ -90,8 +97,8 @@ pub fn message_broker(
     #[darling(attributes(wayland))]
     struct Interface {
         #[darling(rename = "impl")]
-        imp: syn::TypePath,
-        ident: syn::Ident,
+        imp:    syn::TypePath,
+        ident:  syn::Ident,
         #[allow(unused)]
         fields: darling::ast::Fields<Reject>,
     }
@@ -99,9 +106,9 @@ pub fn message_broker(
     #[derive(FromDeriveInput)]
     #[darling(attributes(wayland))]
     struct Interfaces {
-        ident: syn::Ident,
-        data: darling::ast::Data<Interface, Reject>,
-        server_context: syn::Type,
+        ident:              syn::Ident,
+        data:               darling::ast::Data<Interface, Reject>,
+        connection_context: syn::Type,
     }
     impl syn::parse::Parse for Interfaces {
         fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
@@ -135,20 +142,19 @@ pub fn message_broker(
             if let syn::PathArguments::AngleBracketed(ref mut args) = seg.arguments {
                 for arg in args.args.iter_mut() {
                     match arg {
-                        syn::GenericArgument::Type(ty) => {
+                        syn::GenericArgument::Type(ty) =>
                             if let syn::Type::Path(path) = ty {
                                 if path.path.is_ident("Ctx") {
-                                    *ty = input.server_context.clone();
+                                    *ty = input.connection_context.clone();
                                 }
-                            }
-                        }
+                            },
                         syn::GenericArgument::Binding(binding) => {
                             if let syn::Type::Path(path) = &mut binding.ty {
                                 if path.path.is_ident("Ctx") && path.qself.is_none() {
-                                    binding.ty = input.server_context.clone();
+                                    binding.ty = input.connection_context.clone();
                                 }
                             }
-                        }
+                        },
                         _ => (),
                     }
                 }
@@ -156,26 +162,26 @@ pub fn message_broker(
         }
     }
     let name = &input.ident;
-    let ret = enum_
-        .iter()
-        .map(|i| {
-            use heck::ToSnakeCase;
-            let iface = i.ident.to_string().to_snake_case();
-            let imp = &i.imp;
-            quote! {
-                #iface => {
-                    let real_obj: &#imp = obj
-                        .as_any()
-                        .downcast_ref()
-                        .expect("Wrong InterfaceMeta impl");
-                    ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, buf).await.map_err(Error::Dispatch)
-                }
+    let ret = enum_.iter().map(|i| {
+        use heck::ToSnakeCase;
+        let iface = i.ident.to_string().to_snake_case();
+        let imp = &i.imp;
+        quote! {
+            #iface => {
+                let real_obj: &#imp = obj
+                    .as_any()
+                    .downcast_ref()
+                    .expect("Wrong InterfaceMeta impl");
+                let _: () = ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, &mut de)
+                    .await?;
             }
-        });
+        }
+    });
 
-    // Get the error type of the first interface. They are all supposed to be the same.
+    // Get the error type of the first interface. They are all supposed to be the
+    // same.
     let imp0 = &enum_[0].imp;
-    let ctx = &input.server_context;
+    let ctx = &input.connection_context;
     let error = quote! {
         <#imp0 as ::wl_common::InterfaceMessageDispatch<#ctx>>::Error
     };
@@ -185,38 +191,17 @@ pub fn message_broker(
             #(#orig_var),*
         }
         const _: () = {
-            #[derive(Debug)]
-            pub enum Error {
-                ObjectNotFound(u32),
-                Dispatch(#error),
-            }
-            impl ::std::fmt::Display for Error {
-                fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                    match self {
-                        Error::ObjectNotFound(id) => write!(f, "Object not found: {}", id),
-                        Error::Dispatch(e) => write!(f, "{}", e),
-                    }
-                }
-            }
-            impl ::std::error::Error for Error {
-                fn source(&self) -> Option<&(dyn ::std::error::Error + 'static)> {
-                    match self {
-                        Error::ObjectNotFound(_) => None,
-                        Error::Dispatch(e) => Some(e),
-                    }
-                }
-            }
-            // TODO: we are not impl MessageBroker here, because async in trait requires
-            // allocation. we need to wait for TAIT.
+            use std::pin::Pin;
             impl #name {
-                async fn dispatch<'a, R>(
+                /// `ctx` must implement ObjectStore
+                async fn dispatch<'a, 'b: 'a, R>(
                     ctx: &'a #ctx,
-                    object_id: u32,
-                    buf: &'_ mut ::wl_common::WaylandBufAccess<'a, R>
-                ) -> Result<(), Error>
+                    mut reader: Pin<&mut R>
+                ) -> Result<(), #error>
                 where
-                    R: ::wl_common::__private::AsyncBufReadWithFdExt,
+                    R: ::wl_common::__private::AsyncBufReadWithFd + 'b,
                 {
+                    let (object_id, len, mut de) = ::wl_common::Deserializer::next_message(reader.as_mut()).await?;
                     let obj = ::wl_server::object_store::ObjectStore::get(ctx, object_id);
                     match &obj {
                         Some(ref obj) => {
@@ -225,8 +210,10 @@ pub fn message_broker(
                                 _ => unreachable!(),
                             }
                         },
-                        None => Err(Error::ObjectNotFound(object_id)),
+                        None => unimplemented!("Send invalid object error"),
                     }
+                    reader.consume(len);
+                    Ok(())
                 }
             }
         };
@@ -236,15 +223,15 @@ pub fn message_broker(
 
 struct DispatchItem {
     ident: syn::Ident,
-    args: Vec<syn::Ident>,
+    args:  Vec<syn::Ident>,
 }
 
 struct DispatchImpl {
     generics: syn::Generics,
-    trait_: syn::Path,
-    self_ty: syn::Type,
-    items: Vec<DispatchItem>,
-    error: syn::Type,
+    trait_:   syn::Path,
+    self_ty:  syn::Type,
+    items:    Vec<DispatchItem>,
+    error:    syn::Type,
 }
 
 impl Parse for DispatchImpl {
@@ -265,14 +252,13 @@ impl Parse for DispatchImpl {
                 die!(trait_ =>
                     "Trait must have exactly one type parameter (the Ctx type)"
                 );
-            }
-            syn::PathArguments::AngleBracketed(ref args) => {
+            },
+            syn::PathArguments::AngleBracketed(ref args) =>
                 if args.args.len() != 1 {
                     die!(trait_ =>
                         "Trait must have exactly one type parameter (the Ctx type)"
                     );
-                }
-            }
+                },
         }
 
         let mut error = None;
@@ -289,11 +275,10 @@ impl Parse for DispatchImpl {
                                     // Ignore the context argument
                                     match &*patty.ty {
                                         syn::Type::Reference(ref_) => match &*ref_.elem {
-                                            syn::Type::Path(path) => {
+                                            syn::Type::Path(path) =>
                                                 if path.path.is_ident("Ctx") {
-                                                    continue;
-                                                }
-                                            }
+                                                    continue
+                                                },
                                             _ => (),
                                         },
                                         _ => (),
@@ -304,15 +289,15 @@ impl Parse for DispatchImpl {
                                         "Argument must be a simple identifier"
                                     );
                                 }
-                            }
+                            },
                         }
                     }
                     items.push(DispatchItem {
                         ident: method.sig.ident.clone(),
                         args,
                     });
-                }
-                syn::ImplItem::Type(ty) => {
+                },
+                syn::ImplItem::Type(ty) =>
                     if ty.ident == "Error" {
                         if error.is_none() {
                             error = Some(ty.ty.clone());
@@ -325,8 +310,7 @@ impl Parse for DispatchImpl {
                         die!(ty=>
                             "Only Error and *Fut type items are allowed"
                         );
-                    }
-                }
+                    },
                 _ => die!(item=>
                     "Unrecognized item"
                 ),
@@ -360,24 +344,24 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
         .for_each(|seg| match &mut seg.arguments {
             syn::PathArguments::AngleBracketed(ref mut args) => {
                 args.colon2_token = Some(Default::default());
-            }
+            },
             _ => (),
         });
     path
 }
 
-/// Generate `wl_common::InterfaceMessageDispatch` for types that implement `RequestDispatch` for a
-/// certain interface. The should be put on top of the `RequestDispatch` impl. Your impl of
-/// `RequestDispatch` should contains an error type that can be converted from serde
-/// deserailization error.
+/// Generate `wl_common::InterfaceMessageDispatch` for types that implement
+/// `RequestDispatch` for a certain interface. The should be put on top of the
+/// `RequestDispatch` impl. Your impl of `RequestDispatch` should contains an
+/// error type that can be converted from serde deserailization error.
 ///
 /// You need to import the `wl_common` crate to use this macro.
 ///
 /// # Arguments
 ///
-/// * `message` - The message type. By default, this attribute try to cut the "Dispatch" suffix
-///               from the trait name. i.e. `wl_buffer::v1::RequestDispatch` will become
-///               `wl_buffer::v1::Request`.
+/// * `message` - The message type. By default, this attribute try to cut the
+///   "Dispatch" suffix from the trait name. i.e.
+///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1::Request`.
 #[proc_macro_attribute]
 pub fn interface_message_dispatch(
     attr: proc_macro::TokenStream,
@@ -418,8 +402,8 @@ pub fn interface_message_dispatch(
         Result::Ok
     ));
 
-    // Generate InterfaceMessageDispatch impl. We just need to replace the trait name with
-    // InterfaceMessageDispatch.
+    // Generate InterfaceMessageDispatch impl. We just need to replace the trait
+    // name with InterfaceMessageDispatch.
     let DispatchImpl {
         generics,
         trait_,
@@ -434,12 +418,11 @@ pub fn interface_message_dispatch(
         .ok_or_else(|| { syn::Error::new_spanned(&trait_, "Trait path must not be empty") }))
     .clone();
     last_seg.ident = format_ident!("InterfaceMessageDispatch");
-    let ctx_param = match last_seg.arguments {
-        syn::PathArguments::Parenthesized(_) | syn::PathArguments::None => {
+    match last_seg.arguments {
+        syn::PathArguments::Parenthesized(_) | syn::PathArguments::None =>
             return syn::Error::new_spanned(&last_seg, "Trait must have a single type parameter")
                 .to_compile_error()
-                .into()
-        },
+                .into(),
         syn::PathArguments::AngleBracketed(ref args) => {
             if args.args.len() != 1 {
                 return syn::Error::new_spanned(&last_seg, "Trait must have a single type parameter")
@@ -448,19 +431,21 @@ pub fn interface_message_dispatch(
             }
             match args.args[0] {
                 syn::GenericArgument::Type(syn::Type::Path(ref path)) => path.path.clone(),
-                _ => {
-                    return syn::Error::new_spanned(&last_seg, "Trait must have a single type parameter")
-                        .to_compile_error()
-                        .into()
-                }
+                _ =>
+                    return syn::Error::new_spanned(
+                        &last_seg,
+                        "Trait must have a single type parameter",
+                    )
+                    .to_compile_error()
+                    .into(),
             }
         },
     };
     let our_trait = syn::Path {
         leading_colon: Some(syn::token::Colon2::default()),
-        segments: [
+        segments:      [
             syn::PathSegment {
-                ident: format_ident!("wl_common"),
+                ident:     format_ident!("wl_common"),
                 arguments: syn::PathArguments::None,
             },
             last_seg,
@@ -520,17 +505,17 @@ pub fn interface_message_dispatch(
                 where
                     Self: 'a,
                     Ctx: 'a,
-                    R: 'a + ::wl_common::__private::AsyncBufReadWithFdExt;
+                    R: 'a + ::wl_common::__private::AsyncBufReadWithFd;
                 fn dispatch<'a, 'b, R>(
                     &'a self,
                     ctx: &'a Ctx,
-                    buf: &'_ mut ::wl_common::WaylandBufAccess<'b, R>
+                    reader: &mut ::wl_common::Deserializer<'b, R>,
                 ) -> Self::Fut<'a, R>
                 where
-                    R: ::wl_common::__private::AsyncBufReadWithFdExt,
+                    R: ::wl_common::__private::AsyncBufReadWithFd,
                     'b: 'a
                 {
-                    let msg: ::std::result::Result<#message_ty, _> = buf.deserialize();
+                    let msg: ::std::result::Result<#message_ty, _> = reader.deserialize();
                     async move {
                         let msg = msg?;
                         match msg {

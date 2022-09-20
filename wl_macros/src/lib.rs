@@ -202,7 +202,7 @@ pub fn message_broker(
                     R: ::wl_common::__private::AsyncBufReadWithFd + 'b,
                 {
                     let (object_id, len, mut de) = ::wl_common::Deserializer::next_message(reader.as_mut()).await?;
-                    let obj = ::wl_server::object_store::ObjectStore::get(ctx, object_id);
+                    let obj = ::wl_server::connection::Objects::get(ctx, object_id);
                     match &obj {
                         Some(ref obj) => {
                             match obj.interface() {
@@ -453,6 +453,7 @@ pub fn interface_message_dispatch(
         .into_iter()
         .collect(),
     };
+    let where_clause = generics.where_clause.as_ref();
 
     let match_items = items.iter().map(|item| {
         let var = format_ident!("{}", item.ident.to_string().to_pascal_case());
@@ -499,7 +500,7 @@ pub fn interface_message_dispatch(
             //        }
             //    }
             //}
-            impl #generics #our_trait for #self_ty {
+            impl #generics #our_trait for #self_ty #where_clause {
                 type Error = #error;
                 type Fut<'a, R> = impl ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
                 where

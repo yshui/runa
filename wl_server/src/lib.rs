@@ -5,9 +5,10 @@ use futures_lite::{stream::StreamExt, Future};
 use thiserror::Error;
 use wl_io::AsyncBufReadWithFd;
 
-pub mod display;
+pub mod objects;
 pub mod error;
-pub mod object_store;
+pub mod connection;
+pub mod server;
 
 #[derive(Error, Debug)]
 pub enum Error<SE, LE> {

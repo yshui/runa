@@ -100,7 +100,7 @@ fn fixed_length_write() -> TokenStream {
                 break;
             }
             let to_write = &buf[offset..];
-            let written = ::wl_scanner_support::ready!(self.writer.as_mut().poll_write(cx, to_write))?;
+            let written = ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, to_write, &[]))?;
             if written == 0 {
                 return ::std::task::Poll::Ready(
                     Err(::std::io::Error::new(::std::io::ErrorKind::WriteZero, "Write zero").into()));
@@ -195,7 +195,8 @@ fn generate_serialize_for_type(
                 } else {
                     break;
                 };
-                let written = ::wl_scanner_support::ready!(self.writer.as_mut().poll_write(cx, to_write))?;
+                let written = ::wl_scanner_support::ready!(self.writer.as_mut()
+                    .poll_write_with_fds(cx, to_write, &[]))?;
                 if written == 0 {
                     return ::std::task::Poll::Ready(
                         Err(::std::io::Error::new(::std::io::ErrorKind::WriteZero, "Write zero").into()));

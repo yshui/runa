@@ -1,11 +1,16 @@
 #![feature(generic_associated_types, type_alias_impl_trait)]
+use std::{
+    io::Result,
+    os::unix::{
+        io::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
+        net::UnixStream as StdUnixStream,
+    },
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use futures_core::TryFuture;
-use futures_lite::{ready, AsyncRead, AsyncWrite};
-use std::io::{Read, Result, Write};
-use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
-use std::os::unix::net::UnixStream as StdUnixStream;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use futures_lite::ready;
 
 pub mod buf;
 pub mod de;
@@ -13,28 +18,31 @@ pub mod utils;
 
 pub use buf::*;
 
-/// Maximum number of file descriptors that can be sent in a write by the wayland protocol. As
-/// defined in libwayland.
+/// Maximum number of file descriptors that can be sent in a write by the
+/// wayland protocol. As defined in libwayland.
 #[allow(dead_code)]
 const MAX_FDS_OUT: usize = 28;
 
 pub(crate) const SCM_MAX_FD: usize = 253;
 
-/// A extension trait of `AsyncWrite` that supports sending file descriptors along with data.
-pub trait AsyncWriteWithFd: AsyncWrite {
+/// A extension trait of `AsyncWrite` that supports sending file descriptors
+/// along with data.
+pub trait AsyncWriteWithFd {
     /// Writes the given buffer and file descriptors to the stream.
     ///
     /// # Note
     ///
-    /// To send file descriptors, usually at least one byte of data must be sent. Unless, for
-    /// example, the implementation choose to buffer the file descriptors until flush is called.
-    /// Check the documentation of the specific implementation to see if this is the case.
+    /// To send file descriptors, usually at least one byte of data must be
+    /// sent. Unless, for example, the implementation choose to buffer the
+    /// file descriptors until flush is called. Check the documentation of
+    /// the specific implementation to see if this is the case.
     ///
     /// # Returns
     ///
-    /// Returns the number of bytes written on success. The file descriptors will all be sent as
-    /// long as they don't exceed the maximum number of file descriptors that can be sent in a
-    /// message, in which case an error is returned.
+    /// Returns the number of bytes written on success. The file descriptors
+    /// will all be sent as long as they don't exceed the maximum number of
+    /// file descriptors that can be sent in a message, in which case an
+    /// error is returned.
     fn poll_write_with_fds(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -54,31 +62,36 @@ impl<T: AsyncWriteWithFd + Unpin> AsyncWriteWithFd for &mut T {
     }
 }
 
-/// A extension trait of `AsyncRead` that supports receiving file descriptors along with data.
-pub trait AsyncReadWithFd: AsyncRead {
-    /// Reads data and file descriptors from the stream. This is generic over how you store the
-    /// file descriptors. Use something like tinyvec if you want to avoid heap allocations.
+/// A extension trait of `AsyncRead` that supports receiving file descriptors
+/// along with data.
+pub trait AsyncReadWithFd {
+    /// Reads data and file descriptors from the stream. This is generic over
+    /// how you store the file descriptors. Use something like tinyvec if
+    /// you want to avoid heap allocations.
     ///
-    /// This cumbersome interface mainly originates from the fact kernel would drop file
-    /// descriptors if you don't give it a buffer big enough. Otherwise it would be easy to have
-    /// read_data and read_fd be separate functions.
+    /// This cumbersome interface mainly originates from the fact kernel would
+    /// drop file descriptors if you don't give it a buffer big enough.
+    /// Otherwise it would be easy to have read_data and read_fd be separate
+    /// functions.
     ///
     /// # Arguments
     ///
     /// * `fds`     : Storage for the file descriptors.
-    /// * `fd_limit`: Maximum number of file descriptors to receive. If more are received, they
-    ///               could be closed or stored in a buffer, depends on the implementation. None
-    ///               means no limit.
+    /// * `fd_limit`: Maximum number of file descriptors to receive. If more are
+    ///   received, they could be closed or stored in a buffer, depends on the
+    ///   implementation. None means no limit.
     ///
     /// # Note
     ///
-    /// If the `fds` buffer is too small to hold all the file descriptors, the extra file descriptors
-    /// MAY be CLOSED. Some implementation might hold a buffer of file descriptors to prevent this
-    /// from happening. You should check the documentation of the implementor.
+    /// If the `fds` buffer is too small to hold all the file descriptors, the
+    /// extra file descriptors MAY be CLOSED. Some implementation might hold
+    /// a buffer of file descriptors to prevent this from happening. You
+    /// should check the documentation of the implementor.
     ///
     /// # Returns
     ///
-    /// The number of bytes read and the number of file descriptors read, respectively.
+    /// The number of bytes read and the number of file descriptors read,
+    /// respectively.
     fn poll_read_with_fds(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -104,25 +117,27 @@ pub use buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt};
 
 /// A serialization trait, implemented by wayland message types.
 ///
-/// We can't use serde, because it doesn't support passing file descriptors. Most of the
-/// serialization code is expected to be generated by `wl_scanner`.
+/// We can't use serde, because it doesn't support passing file descriptors.
+/// Most of the serialization code is expected to be generated by `wl_scanner`.
 ///
-/// For now instead of a Serializer trait, we take types that impls AsyncWriteWithFd directly,
-/// because we expect to only serialize to binary, but this might change in the future.
+/// For now instead of a Serializer trait, we take types that impls
+/// AsyncWriteWithFd directly, because we expect to only serialize to binary,
+/// but this might change in the future.
 pub trait Serialize<'a, T> {
     type Error;
     type Serialize: TryFuture<Ok = (), Error = Self::Error>;
     fn serialize(&'a self, writer: Pin<&'a mut T>) -> Self::Serialize;
 }
 
-/// A borrowed deserialization trait. This is modeled after serde's Deserialize trait, with ability
-/// to deserialize file descriptors added.
+/// A borrowed deserialization trait. This is modeled after serde's Deserialize
+/// trait, with ability to deserialize file descriptors added.
 ///
-/// We have a Deserializer trait here instead of AsyncReadWithFd. The intention is that the
-/// deserializer could have a buffer, and the deserialization result can borrow from it, to avoid
-/// allocating a new string every time.
+/// We have a Deserializer trait here instead of AsyncReadWithFd. The intention
+/// is that the deserializer could have a buffer, and the deserialization result
+/// can borrow from it, to avoid allocating a new string every time.
 pub trait Deserialize<'de, D> {
-    // TODO: use generic associated types, and type alias impl trait when they are stable.
+    // TODO: use generic associated types, and type alias impl trait when they are
+    // stable.
     type Error;
     fn poll_deserialize(
         reader: Pin<&'de mut D>,
@@ -132,51 +147,56 @@ pub trait Deserialize<'de, D> {
         Self: Sized;
 }
 
+use std::rc::Rc;
 #[derive(Debug)]
-pub struct WithFd<T> {
-    inner: async_io::Async<T>,
+struct RcAsRawFd<T>(Rc<T>);
+
+impl<T> Clone for RcAsRawFd<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> AsRawFd for RcAsRawFd<T>
+where
+    T: AsRawFd,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+#[derive(Debug)]
+pub struct ReadWithFd {
+    inner: async_io::Async<RcAsRawFd<OwnedFd>>,
 
     /// Temporary buffer used for recvmsg.
     buf: Vec<u8>,
 }
 
-impl TryFrom<StdUnixStream> for WithFd<StdUnixStream> {
-    type Error = std::io::Error;
-    fn try_from(stream: StdUnixStream) -> Result<Self> {
-        Ok(Self {
-            inner: async_io::Async::new(stream)?,
-            buf: nix::cmsg_space!([RawFd; SCM_MAX_FD]),
-        })
-    }
+#[derive(Debug)]
+pub struct WriteWithFd {
+    inner: async_io::Async<RcAsRawFd<OwnedFd>>,
 }
 
-impl<T: Write> AsyncWrite for WithFd<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        Pin::new(&mut self.inner).poll_close(cx)
-    }
+pub fn split_unixstream(stream: StdUnixStream) -> Result<(ReadWithFd, WriteWithFd)> {
+    let raw_fd = RcAsRawFd(Rc::new(stream.into()));
+    Ok((
+        ReadWithFd {
+            inner: async_io::Async::new(raw_fd.clone())?,
+            buf:   nix::cmsg_space!([RawFd; SCM_MAX_FD]),
+        },
+        WriteWithFd {
+            inner: async_io::Async::new(raw_fd)?,
+        },
+    ))
 }
 
-impl<T: Write + AsRawFd> AsyncWriteWithFd for WithFd<T> {
-    /// Writes the given buffer and file descriptors to a unix stream. `buf` must contain at least one
-    /// byte of data. This function should not be called concurrently from different tasks.
-    /// Otherwise you risk interleaving data, as well as causing tasks to wake each other up and
+impl AsyncWriteWithFd for WriteWithFd {
+    /// Writes the given buffer and file descriptors to a unix stream. `buf`
+    /// must contain at least one byte of data. This function should not be
+    /// called concurrently from different tasks. Otherwise you risk
+    /// interleaving data, as well as causing tasks to wake each other up and
     /// eatting CPU.
     fn poll_write_with_fds(
         self: Pin<&mut Self>,
@@ -203,23 +223,6 @@ impl<T: Write + AsRawFd> AsyncWriteWithFd for WithFd<T> {
             Err(e) => Poll::Ready(Err(e.into())),
             Ok(n) => Poll::Ready(Ok(n)),
         }
-    }
-}
-
-impl<T: Read> AsyncRead for WithFd<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize>> {
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-    fn poll_read_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &mut [std::io::IoSliceMut<'_>],
-    ) -> Poll<Result<usize>> {
-        Pin::new(&mut self.inner).poll_read_vectored(cx, bufs)
     }
 }
 
@@ -259,11 +262,11 @@ where
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecvMsg<'a, S> {
-    bytes: usize,
+    bytes:   usize,
     cmsghdr: Option<&'a libc::cmsghdr>,
     address: Option<S>,
-    flags: nix::sys::socket::MsgFlags,
-    mhdr: libc::msghdr,
+    flags:   nix::sys::socket::MsgFlags,
+    mhdr:    libc::msghdr,
 }
 impl<'a, S> RecvMsg<'a, S> {
     /// Iterate over the valid control messages pointed to by this
@@ -271,7 +274,7 @@ impl<'a, S> RecvMsg<'a, S> {
     pub fn scm_rights(&self) -> ScmRightsIterator {
         ScmRightsIterator {
             cmsghdr: self.cmsghdr,
-            mhdr: &self.mhdr,
+            mhdr:    &self.mhdr,
         }
     }
 }
@@ -280,12 +283,12 @@ impl<'a, S> RecvMsg<'a, S> {
 pub struct ScmRightsIterator<'a> {
     /// Control message buffer to decode from. Must adhere to cmsg alignment.
     cmsghdr: Option<&'a libc::cmsghdr>,
-    mhdr: &'a libc::msghdr,
+    mhdr:    &'a libc::msghdr,
 }
 
 pub struct FdIter<'a> {
     cmsghdr: &'a libc::cmsghdr,
-    idx: usize,
+    idx:     usize,
 }
 
 impl<'a> Iterator for ScmRightsIterator<'a> {
@@ -300,17 +303,17 @@ impl<'a> Iterator for ScmRightsIterator<'a> {
                     // Safe if cmsghdr points to valid data returned by recvmsg(2)
                     let ret = FdIter {
                         cmsghdr: hdr,
-                        idx: 0,
+                        idx:     0,
                     };
                     self.cmsghdr = unsafe {
                         let p = libc::CMSG_NXTHDR(self.mhdr as *const _, hdr as *const _);
                         p.as_ref()
                     };
                     if hdr.cmsg_type != libc::SCM_RIGHTS || hdr.cmsg_level != libc::SOL_SOCKET {
-                        continue;
+                        continue
                     }
-                    break Some(ret);
-                }
+                    break Some(ret)
+                },
             }
         }
     }
@@ -318,6 +321,7 @@ impl<'a> Iterator for ScmRightsIterator<'a> {
 
 impl Iterator for FdIter<'_> {
     type Item = RawFd;
+
     fn next(&mut self) -> Option<Self::Item> {
         let p = unsafe { libc::CMSG_DATA(self.cmsghdr as *const _) };
         let data_len =
@@ -394,8 +398,9 @@ where
     })
 }
 
-impl<T: Read + AsRawFd> AsyncReadWithFd for WithFd<T> {
-    /// This implementation will close extra file descriptors if fd_limit is reached.
+impl AsyncReadWithFd for ReadWithFd {
+    /// This implementation will close extra file descriptors if fd_limit is
+    /// reached.
     fn poll_read_with_fds(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -403,8 +408,9 @@ impl<T: Read + AsRawFd> AsyncReadWithFd for WithFd<T> {
         fds: &mut impl Extend<OwnedFd>,
         fd_limit: Option<usize>,
     ) -> Poll<Result<usize>> {
-        use nix::sys::socket::MsgFlags;
         use std::os::unix::io::FromRawFd;
+
+        use nix::sys::socket::MsgFlags;
         ready!(self.inner.poll_readable(cx)?);
         let fd = self.inner.as_raw_fd();
 
@@ -430,7 +436,7 @@ impl<T: Read + AsRawFd> AsyncReadWithFd for WithFd<T> {
                     fds.extend(ifds);
                 }
                 Poll::Ready(Ok(msg.bytes))
-            }
+            },
         }
     }
 }

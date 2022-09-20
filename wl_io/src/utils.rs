@@ -3,7 +3,7 @@
 use std::{
     cell::RefCell,
     os::unix::io::{BorrowedFd, OwnedFd},
-    task::Poll,
+    task::Poll, pin::Pin,
 };
 
 use super::{AsyncReadWithFd, AsyncWriteWithFd};
@@ -16,7 +16,7 @@ pub struct WritePool {
 
 impl futures_lite::AsyncWrite for WritePool {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
@@ -25,14 +25,14 @@ impl futures_lite::AsyncWrite for WritePool {
     }
 
     fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
     fn poll_close(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
@@ -41,7 +41,7 @@ impl futures_lite::AsyncWrite for WritePool {
 
 impl AsyncWriteWithFd for WritePool {
     fn poll_write_with_fds(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &[u8],
         fds: &[BorrowedFd<'_>],
@@ -83,7 +83,7 @@ impl std::io::Read for ReadPool {
 
 impl futures_lite::AsyncRead for ReadPool {
     fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
@@ -94,20 +94,20 @@ impl futures_lite::AsyncRead for ReadPool {
 
 impl futures_lite::AsyncBufRead for ReadPool {
     fn poll_fill_buf(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<&[u8]>> {
         Poll::Ready(Ok(self.get_mut().inner.as_slice()))
     }
 
-    fn consume(mut self: std::pin::Pin<&mut Self>, amt: usize) {
+    fn consume(mut self: Pin<&mut Self>, amt: usize) {
         self.inner.drain(..amt);
     }
 }
 
 impl crate::AsyncBufReadWithFd for ReadPool {
     fn poll_fill_buf_until<'a>(
-        self: std::pin::Pin<&'a mut Self>,
+        self: Pin<&'a mut Self>,
         _cx: &mut std::task::Context<'_>,
         len: usize,
     ) -> Poll<std::io::Result<()>> {
@@ -128,11 +128,14 @@ impl crate::AsyncBufReadWithFd for ReadPool {
     fn buffer(&self) -> &[u8] {
         &self.inner[..]
     }
+    fn consume(mut self: Pin<&mut Self>, amt: usize) {
+        self.inner.drain(..amt);
+    }
 }
 
 impl AsyncReadWithFd for ReadPool {
     fn poll_read_with_fds(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
         fds: &mut impl Extend<OwnedFd>,

@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 async-io = "1.9.0"
+backtrace = "0.3.66"
 byteorder = "1.4.3"
 futures-core = "0.3.24"
 futures-lite = "1.11.0"
@@ -16,7 +17,7 @@ pin-project-lite = "0.2.9"
 serde = "1.0.144"
 smol = "1.2.5"
 tinyvec = "1.6.0"
-tracing = { version = "0.1.36", default-features = false, features = ["std"] }
+tracing = "0.1.36"
 
 [dev-dependencies]
 anyhow = "1.0.65"

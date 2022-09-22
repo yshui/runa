@@ -5,10 +5,12 @@ use futures_lite::{stream::StreamExt, Future};
 use thiserror::Error;
 use wl_io::AsyncBufReadWithFd;
 
-pub mod objects;
-pub mod error;
 pub mod connection;
+pub mod error;
+pub mod objects;
 pub mod server;
+pub mod events;
+pub mod provider_any;
 
 #[derive(Error, Debug)]
 pub enum Error<SE, LE> {
@@ -129,7 +131,7 @@ pub struct AsyncServer<'exe, Ctx, E> {
 /// returned by the futures. For using with LocalExecutor, 'a should outlive the
 /// LocalExecutor. For a threaded executor, 'a needs to be 'static.
 pub trait AsyncContext<'a, Conn> {
-    type Error: 'a;
+    type Error: std::error::Error + 'a;
     type Task: Future<Output = Result<(), Self::Error>> + Unpin + 'a;
     fn new_connection(&mut self, conn: Conn) -> Self::Task;
 }
@@ -147,7 +149,14 @@ where
     type Error = Ctx::Error;
 
     fn new_connection(&mut self, conn: Conn) -> Result<(), Self::Error> {
-        self.executor.spawn(self.ctx.new_connection(conn)).detach();
+        use futures_util::future::TryFutureExt;
+        self.executor
+            .spawn(
+                self.ctx
+                    .new_connection(conn)
+                    .map_err(|e| tracing::error!("Error while handling connection: {}", e)),
+            )
+            .detach();
         Ok(())
     }
 }
@@ -168,6 +177,7 @@ pub enum AsyncDispatchServerError<E> {
 impl<'a, Conn, Ctx> AsyncContext<'a, Conn> for AsyncDispatchServer<Ctx>
 where
     Ctx: wl_common::MessageDispatch + Clone + 'a,
+    Ctx::Error: std::error::Error + 'static,
     Conn: AsyncBufReadWithFd + std::fmt::Debug + Unpin + 'a,
 {
     type Error = AsyncDispatchServerError<Ctx::Error>;

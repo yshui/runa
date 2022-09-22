@@ -92,24 +92,6 @@ fn type_is_borrowed(ty: &wl_spec::protocol::Type) -> bool {
     }
 }
 
-fn fixed_length_write() -> TokenStream {
-    quote! {
-        loop {
-            let offset = self.offset;
-            if offset >= 4 {
-                break;
-            }
-            let to_write = &buf[offset..];
-            let written = ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, to_write, &[]))?;
-            if written == 0 {
-                return ::std::task::Poll::Ready(
-                    Err(::std::io::Error::new(::std::io::ErrorKind::WriteZero, "Write zero").into()));
-            }
-            self.offset += written;
-        }
-    }
-}
-
 fn generate_serialize_for_type(
     current_iface_name: &str,
     name: &TokenStream,
@@ -119,11 +101,10 @@ fn generate_serialize_for_type(
     use wl_spec::protocol::Type::*;
     if let Fd = arg.typ {
         return Ok(quote! {
-            use ::std::os::unix::io::{AsRawFd, BorrowedFd};
-            let fd = unsafe { BorrowedFd::borrow_raw(#name.as_raw_fd()) };
-            // TODO: maybe transfer the ownership of the fd, so the serializer doesn't have to dup
-            // it.
-            ::wl_scanner_support::ready!(self.writer.as_mut().poll_write_with_fds(cx, &[], &[fd]))?;
+            let pushed = writer
+                .as_mut()
+                .try_push_fds(&mut ::std::iter::once(#name.take().expect("trying to send raw fd")));
+            assert_eq!(pushed, 1, "not enough space in writer");
         });
     }
     let get = match arg.typ {
@@ -170,39 +151,25 @@ fn generate_serialize_for_type(
         },
         Destructor => quote! {},
     };
-    let fixed_length_write = fixed_length_write();
     Ok(match arg.typ {
         Int | Uint | Fixed | Object | NewId => quote! {
             #get
-            #fixed_length_write
+            let written = writer.as_mut().try_write(&buf);
+            assert_eq!(written, buf.len(), "not enough space in writer");
         },
         String | Array => quote! {
             #get
+            // buf aligned to 4 bytes, plus length prefix
             let aligned_len = ((buf.len() + 3) & !3) + 4;
             let align_buf = [0; 3];
             let len_buf = (buf.len() as u32).to_ne_bytes();
-            loop {
-                let offset = self.offset;
-                // [0, 4): length
-                // [4, buf.len()+4): buf
-                // [buf.len()+4, aligned_len): alignment
-                let to_write = if offset < 4 {
-                    &len_buf[offset..]
-                } else if offset - 4 < buf.len() {
-                    &buf[offset - 4..]
-                } else if offset < aligned_len {
-                    &align_buf[..aligned_len-offset]
-                } else {
-                    break;
-                };
-                let written = ::wl_scanner_support::ready!(self.writer.as_mut()
-                    .poll_write_with_fds(cx, to_write, &[]))?;
-                if written == 0 {
-                    return ::std::task::Poll::Ready(
-                        Err(::std::io::Error::new(::std::io::ErrorKind::WriteZero, "Write zero").into()));
-                }
-                self.offset += written;
-            }
+            // [0, 4): length
+            // [4, buf.len()+4): buf
+            // [buf.len()+4, aligned_len): alignment
+            let mut written = writer.as_mut().try_write(&len_buf);
+            written += writer.as_mut().try_write(buf);
+            written += writer.as_mut().try_write(&align_buf[..(aligned_len - buf.len() - 4)]);
+            assert_eq!(written, aligned_len, "not enough space in writer");
         },
         Fd => unreachable!(),
         Destructor => quote! {},
@@ -213,7 +180,7 @@ fn generate_message_variant(
     opcode: u16,
     request: &Message,
     is_owned: bool,
-    parent: &Ident,
+    _parent: &Ident,
     iface_version: &HashMap<&str, u32>,
     enum_info: &EnumInfo,
 ) -> Result<(TokenStream, TokenStream)> {
@@ -251,78 +218,6 @@ fn generate_message_variant(
     } else {
         quote! {}
     };
-    let serialize_name = format_ident!("{}Serialize", pname);
-    let doc_comment = generate_doc_comment(&request.description);
-    let public = quote! {
-        #doc_comment
-        #[derive(::wl_scanner_support::serde::Deserialize, Debug, PartialEq, Eq)]
-        #[serde(crate = "::wl_scanner_support::serde")]
-        pub struct #name #lifetime {
-            #args
-        }
-        impl #lifetime #name #lifetime {
-            pub const OPCODE: u16 = #opcode;
-        }
-        impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFd + 'a>
-        ::wl_scanner_support::io::Serialize<'a, T> for #name #lifetime {
-            type Error = ::wl_scanner_support::Error;
-            type Serialize = super::internal::#serialize_name <'a, T>;
-            fn serialize(&'a self, writer: ::std::pin::Pin<&'a mut T>)
-            -> Self::Serialize {
-                Self::Serialize {
-                    request: self,
-                    writer,
-                    index: -1, // Start with -1 to write the message prefix
-                    offset: 0,
-                }
-            }
-        }
-    };
-
-    let serialize = generate_message_variant_serialize(iface_name, opcode, request, enum_info)?;
-    let private = quote! {
-        pub struct #serialize_name <'a, T> {
-            #[allow(unused)]
-            pub(super) request: &'a super::#parent::#name #lifetime,
-            pub(super) writer: ::std::pin::Pin<&'a mut T>,
-            pub(super) index: i32, // current field being serialized
-            pub(super) offset: usize, // offset into the current field
-        }
-        impl<'a, T> ::std::future::Future for #serialize_name<'a, T>
-        where
-            T: ::wl_scanner_support::io::AsyncWriteWithFd {
-            type Output = ::std::result::Result<(), ::wl_scanner_support::Error>;
-            fn poll(mut self: ::std::pin::Pin<&mut Self>, cx: &mut ::std::task::Context<'_>) ->
-                ::std::task::Poll<Self::Output> {
-                #serialize
-                ::std::task::Poll::Ready(Ok(()))
-            }
-        }
-    };
-    Ok((public, private))
-}
-fn generate_message_variant_serialize(
-    iface_name: &str,
-    opcode: u16,
-    request: &Message,
-    enum_info: &EnumInfo,
-) -> Result<TokenStream> {
-    let serialize = request
-        .args
-        .iter()
-        .enumerate()
-        .map(|(i, arg)| {
-            let name = format_ident!("{}", arg.name);
-            let name = quote! { self.request.#name };
-            let i = i as i32;
-            let serialize = generate_serialize_for_type(iface_name, &name, &arg, enum_info)?;
-            Ok(quote! {
-                #i => {
-                    #serialize
-                }
-            })
-        })
-        .collect::<Result<TokenStream>>()?;
     // Generate experssion for length calculation
     let fixed_len: u32 = request
         .args
@@ -354,32 +249,62 @@ fn generate_message_variant_serialize(
                 | wl_spec::protocol::Type::Fd
                 | wl_spec::protocol::Type::Destructor => quote! {},
                 wl_spec::protocol::Type::String => quote! {
-                    + ((self.request.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
+                    + ((self.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
                 },
                 wl_spec::protocol::Type::Array => quote! {
-                    + ((self.request.#name.len() + 3) & !3) as u32
+                    + ((self.#name.len() + 3) & !3) as u32
                 },
             }
         })
         .collect();
-    let fixed_length_write = fixed_length_write();
-    Ok(quote! {
-        let msg_len = (#fixed_len #variable_len + 8) as u32; // 8 is the header
-        let prefix = (msg_len << 16) + (#opcode as u32);
-        loop {
-            match self.index {
-                -1 => {
-                    // Write message length
-                    let buf = prefix.to_ne_bytes();
-                    #fixed_length_write
-                }
+    let serialize = request
+        .args
+        .iter()
+        .map(|arg| {
+            let name = format_ident!("{}", arg.name);
+            let name = quote! { self.#name };
+            let serialize = generate_serialize_for_type(iface_name, &name, &arg, enum_info)?;
+            Ok(quote! {
                 #serialize
-                _ => break,
-            }
-            self.offset = 0;
-            self.index += 1;
+            })
+        })
+        .collect::<Result<TokenStream>>()?;
+    let doc_comment = generate_doc_comment(&request.description);
+    let nfds: u8 = request.args.iter().filter(|arg| arg.typ == wl_spec::protocol::Type::Fd).count().try_into().unwrap();
+    let mut_ = if nfds != 0 { quote! {mut} } else { quote! {} };
+    let public = quote! {
+        #doc_comment
+        #[derive(::wl_scanner_support::serde::Deserialize, Debug, PartialEq, Eq)]
+        #[serde(crate = "::wl_scanner_support::serde")]
+        pub struct #name #lifetime {
+            #args
         }
-    })
+        impl #lifetime #name #lifetime {
+            pub const OPCODE: u16 = #opcode;
+        }
+        impl #lifetime ::wl_scanner_support::io::Serialize for #name #lifetime {
+            fn serialize<W: ::wl_scanner_support::io::AsyncBufWriteWithFd>(
+                #mut_ self,
+                mut writer: ::std::pin::Pin<&mut W>
+            ) {
+                let msg_len = self.len() as u32;
+                let prefix: u32 = (msg_len << 16) + (#opcode as u32);
+                let written = writer.as_mut().try_write(&prefix.to_ne_bytes());
+                assert_eq!(written, 4, "not enough space in writer");
+                #serialize
+            }
+            #[inline]
+            fn len(&self) -> u16 {
+                (#fixed_len #variable_len + 8) as u16 // 8 is the header
+            }
+            #[inline]
+            fn nfds(&self) -> u8 {
+                #nfds
+            }
+        }
+    };
+
+    Ok((public, quote!{}))
 }
 
 fn generate_dispatch_trait(
@@ -420,7 +345,7 @@ fn generate_dispatch_trait(
                 #doc_comment
                 fn #name<'a>(
                     &'a self,
-                    ctx: &'a Ctx,
+                    ctx: &'a mut Ctx,
                     #(#args),*
                 )
                 -> Self::#retty<'a>;
@@ -466,7 +391,7 @@ fn generate_event_or_request(
             EventOrRequest::Event => format_ident!("Event"),
             EventOrRequest::Request => format_ident!("Request"),
         };
-        let (public, mut private): (TokenStream, TokenStream) = messages
+        let (public, private): (TokenStream, TokenStream) = messages
             .iter()
             .enumerate()
             .map(|(opcode, v)| {
@@ -483,7 +408,6 @@ fn generate_event_or_request(
             .collect::<Result<Vec<(TokenStream, TokenStream)>>>()?
             .into_iter()
             .unzip();
-
         let enum_is_borrowed = messages
             .iter()
             .any(|v| v.args.iter().any(|arg| type_is_borrowed(&arg.typ)));
@@ -511,37 +435,32 @@ fn generate_event_or_request(
                     #attr
                     #name(#mod_name::#name #lifetime),
                 }
-            })
-            .collect::<TokenStream>();
-        let enum_serialize_members = messages
-            .iter()
-            .map(|v| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                let serialize_name = format_ident!("{}Serialize", name);
-                quote! {
-                    #name(#serialize_name<'a, T>),
-                }
-            })
-            .collect::<TokenStream>();
-        let enum_serialize_name = format_ident!("_{}Serialize", type_name); // Avoid potential name clash
+            });
+
         let enum_serialize_cases = messages
             .iter()
             .map(|v| {
                 let name = format_ident!("{}", v.name.to_pascal_case());
                 quote! {
-                    Self::#name(v) => internal::#enum_serialize_name::#name(v.serialize(writer)),
+                    Self::#name(v) => v.serialize(writer),
                 }
-            })
-            .collect::<TokenStream>();
-        let enum_serialize_poll_cases = messages
+            });
+        let enum_len_cases = messages
             .iter()
             .map(|v| {
                 let name = format_ident!("{}", v.name.to_pascal_case());
                 quote! {
-                    Self::#name(v) => ::wl_scanner_support::ready!(::std::pin::Pin::new(v).poll(cx)),
+                    Self::#name(v) => v.len(),
                 }
-            })
-            .collect::<TokenStream>();
+            });
+        let enum_nfds_cases = messages
+            .iter()
+            .map(|v| {
+                let name = format_ident!("{}", v.name.to_pascal_case());
+                quote! {
+                    Self::#name(v) => v.nfds(),
+                }
+            });
         let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version)?;
         let public = quote! {
             pub mod #mod_name {
@@ -556,37 +475,32 @@ fn generate_event_or_request(
             #[derive(Debug, PartialEq, Eq, ::wl_scanner_support::serde::Deserialize)]
             #[serde(crate = "::wl_scanner_support::serde")]
             pub enum #type_name #enum_lifetime {
-                #enum_members
+                #(#enum_members)*
             }
             #dispatch
-            impl<'a, T: ::wl_scanner_support::io::AsyncWriteWithFd + 'a>
-            ::wl_scanner_support::io::Serialize<'a, T> for #type_name #enum_lifetime {
-                type Error = ::wl_scanner_support::Error;
-                type Serialize = internal::#enum_serialize_name <'a, T>;
-                fn serialize(&'a self, writer: ::std::pin::Pin<&'a mut T>)
-                -> Self::Serialize {
+            impl #enum_lifetime ::wl_scanner_support::io::Serialize for #type_name #enum_lifetime {
+                fn serialize<W: ::wl_scanner_support::io::AsyncBufWriteWithFd>(
+                    self,
+                    writer: ::std::pin::Pin<&mut W>
+                ) {
                     match self {
-                        #enum_serialize_cases
+                        #(#enum_serialize_cases)*
+                    }
+                }
+                #[inline]
+                fn len(&self) -> u16 {
+                    match self {
+                        #(#enum_len_cases)*
+                    }
+                }
+                #[inline]
+                fn nfds(&self) -> u8 {
+                    match self {
+                        #(#enum_nfds_cases)*
                     }
                 }
             }
         };
-        private.extend(quote! {
-            pub enum #enum_serialize_name <'a, T> {
-                #enum_serialize_members
-            }
-            impl<'a, T> ::std::future::Future for #enum_serialize_name<'a, T>
-            where
-                T: ::wl_scanner_support::io::AsyncWriteWithFd {
-                type Output = ::std::result::Result<(), ::wl_scanner_support::Error>;
-                fn poll(mut self: ::std::pin::Pin<&mut Self>, cx: &mut ::std::task::Context<'_>) ->
-                    ::std::task::Poll<Self::Output> {
-                    ::std::task::Poll::Ready(match &mut *self {
-                        #enum_serialize_poll_cases
-                    })
-                }
-            }
-        });
         Ok((public, private))
     }
 }
@@ -783,12 +697,15 @@ fn generate_interface(
     let doc_comment = generate_doc_comment(&iface.description);
     let enums = generate_enums(&iface.enums);
 
+    let iface_name = &iface.name;
     Ok(quote! {
         #doc_comment
         pub mod #name {
             pub mod #version {
                 #[allow(unused_imports)]
                 use super::super::__generated_root;
+                /// Name of the interface
+                pub const NAME: &str = #iface_name;
                 #requests
                 #events
                 #enums

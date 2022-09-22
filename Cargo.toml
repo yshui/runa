@@ -13,3 +13,6 @@ members = [
 exclude = [
   "testbench"
 ]
+
+[workspace.dependencies]
+tracing = "0.1"

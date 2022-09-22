@@ -240,7 +240,8 @@ impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
                     .inner
                     .poll_read_with_fds(cx, buf, this.fd_buf.get_mut(), None))?;
             if bytes == 0 && last_fd_len == this.fd_buf.get_mut().len() {
-                break
+                // We hit EOF while the buffer is not filled
+                return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()));
             }
             *this.filled_data += bytes;
         }
@@ -319,6 +320,17 @@ pub struct BufWriterWithFd<T> {
     fd_buf: Vec<OwnedFd>,
     written: usize,
 }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for BufWriterWithFd<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufWriterWithFd")
+            .field("inner", &self.inner)
+            .field("buf", &"...")
+            .field("fd_buf", &"...")
+            .field("written", &self.written)
+            .finish()
+    }
 }
 
 impl<T> BufWriterWithFd<T> {

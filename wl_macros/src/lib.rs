@@ -172,7 +172,7 @@ pub fn message_broker(
                     .as_any()
                     .downcast_ref()
                     .expect("Wrong InterfaceMeta impl");
-                let _: () = ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, &mut de)
+                let _: () = ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de)
                     .await?;
             }
         }
@@ -195,7 +195,7 @@ pub fn message_broker(
             impl #name {
                 /// `ctx` must implement ObjectStore
                 async fn dispatch<'a, 'b: 'a, R>(
-                    ctx: &'a #ctx,
+                    ctx: &'a mut #ctx,
                     mut reader: Pin<&mut R>
                 ) -> Result<(), #error>
                 where
@@ -507,17 +507,19 @@ pub fn interface_message_dispatch(
                     Self: 'a,
                     Ctx: 'a,
                     R: 'a + ::wl_common::__private::AsyncBufReadWithFd;
-                fn dispatch<'a, 'b, R>(
+                fn dispatch<'a, R>(
                     &'a self,
-                    ctx: &'a Ctx,
-                    reader: &mut ::wl_common::Deserializer<'b, R>,
+                    ctx: &'a mut Ctx,
+                    object_id: u32,
+                    reader: &mut ::wl_common::Deserializer<'a, R>,
                 ) -> Self::Fut<'a, R>
                 where
-                    R: ::wl_common::__private::AsyncBufReadWithFd,
-                    'b: 'a
+                    R: ::wl_common::__private::AsyncBufReadWithFd
                 {
                     let msg: ::std::result::Result<#message_ty, _> = reader.deserialize();
+                    // TODO: check if the length of the message matches the expected length
                     async move {
+                        // TODO: handle deserialization error, send the client an error message
                         let msg = msg?;
                         match msg {
                             #(#match_items),*

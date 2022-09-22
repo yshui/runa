@@ -3,25 +3,33 @@
 //!
 //! Here are also some default implementations of these traits.
 
-use std::{any::Any, cell::RefCell, collections::HashMap};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+};
 
+/// This is the bottom type for all per client objects. This trait provides some
+/// metadata regarding the object, as well as a way to cast objects into a
+/// common dynamic type.
+///
+/// # Note
+///
+/// If a object is a proxy of a global, it has to recognize if the global's
+/// lifetime has ended, and turn all message sent to it to no-ops. This can
+/// often be achieved by holding a Weak reference to the global object.
 pub trait InterfaceMeta {
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
     /// Case self to &dyn Any
     fn as_any(&self) -> &dyn Any;
-    /// Return the global ID this object is a proxy of. None means this object
-    /// is not a global.
-    fn global(&self) -> Option<u32>;
-    /// Mark this object as dead. The object is kept in place until the client
-    /// drops it, and it should parse the messages sent by the client and
-    /// handle them as no-ops.
-    ///
-    /// It's an error to call this on non-globals.
-    fn global_remove(&self);
 }
 
 use std::rc::Rc;
+
+use crate::provider_any::Provider;
 /// Per client mapping from object ID to objects.
 pub struct Store {
     map: RefCell<HashMap<u32, Rc<dyn InterfaceMeta>>>,
@@ -74,9 +82,6 @@ pub trait Objects {
     fn insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T>;
     fn remove(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
     fn get(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
-    /// Call the `global_remove` method on all objects whose `global` equals the
-    /// given global ID.
-    fn global_remove(&self, global: u32);
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T;
 }
 
@@ -109,14 +114,6 @@ impl Objects for Store {
         self.map.borrow().get(&object_id).map(Clone::clone)
     }
 
-    fn global_remove(&self, global: u32) {
-        for (_, obj) in self.map.borrow_mut().iter() {
-            if obj.global() == Some(global) {
-                obj.global_remove();
-            }
-        }
-    }
-
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T {
         f(self.map.borrow_mut().entry(id))
     }
@@ -125,21 +122,182 @@ impl Objects for Store {
 /// A client connection
 pub trait Connection {
     type Context;
+    type Error;
+    type Send<'a, M>: Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a,
+        M: 'a;
+    type Flush<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a;
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::Context;
+
+    /// Send a message to the client.
+    fn send<'a, 'b, 'c, M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b>(
+        &'a self,
+        object_id: u32,
+        msg: M,
+    ) -> Self::Send<'c, M>
+    where
+        'a: 'c,
+        'b: 'c;
+
+    /// Flush connection
+    fn flush(&self) -> Self::Flush<'_>;
 }
 
-/// Event serial management.
-///
-/// This trait allocates serial numbers for events, while keeping track of them.
-/// Some expiration scheme could to employed to free up old serial numbers.
-pub trait Serial {
-    type Data: Clone;
-    /// Get the next serial number in sequence. A piece of data can be attached
-    /// to each serial, storing, for example, what this event is about.
-    fn next_serial(&self, data: Self::Data) -> u32;
-    /// Get the data associated with the given serial.
-    fn get_data(&self, serial: u32) -> Option<Self::Data>;
+/// Implementation helper for Connection::send. This assumes you stored the
+/// connection object in a RefCell. This function makes sure to not hold RefMut
+/// across await.
+pub fn send_to<'a, 'b, 'c, M, C, E>(
+    conn: &'a RefCell<C>,
+    object_id: u32,
+    msg: M,
+) -> impl Future<Output = Result<(), E>> + 'c
+where
+    M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b,
+    C: wl_io::AsyncBufWriteWithFd + Unpin,
+    E: From<std::io::Error> + 'static,
+    'a: 'c,
+    'b: 'c,
+{
+    use std::task::{Context, Poll};
+    struct Send<'a, M, C, E> {
+        // Save a reference to the RefCell, if we save a Pin<&mut> here, we will be keeping the
+        // RefMut across await. Same for flush.
+        conn:      &'a RefCell<C>,
+        object_id: u32,
+        msg:       Option<M>,
+        _err:      std::marker::PhantomData<Pin<Box<E>>>,
+    }
+    impl<'a, M, C, E> Future for Send<'a, M, C, E>
+    where
+        M: wl_io::Serialize + Unpin,
+        C: wl_io::AsyncBufWriteWithFd + Unpin,
+        E: From<std::io::Error>,
+    {
+        type Output = Result<(), E>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            use futures_lite::ready;
+            let this = self.get_mut();
+            let msg_ref = this.msg.as_ref().expect("Send polled after completion");
+            let len = msg_ref.len();
+            let nfds = msg_ref.nfds();
+            let mut conn = this.conn.borrow_mut();
+            ready!(Pin::new(&mut *conn).poll_reserve(cx, len as usize, nfds as usize))?;
+            let object_id = this.object_id.to_ne_bytes();
+            Pin::new(&mut *conn).try_write(&object_id[..]);
+            this.msg
+                .take()
+                .expect("Send polled after completion")
+                .serialize(Pin::new(&mut *conn));
+            Poll::Ready(Ok(()))
+        }
+    }
+    tracing::debug!("Sending {:?}", msg);
+    Send {
+        conn,
+        object_id,
+        msg: Some(msg),
+        _err: std::marker::PhantomData,
+    }
+}
+
+/// Implementation helper for Connection::flush. This assumes you stored the
+/// connection object in a RefCell. This function makes sure to not hold RefMut
+/// across await.
+pub fn flush_to<'a, E>(
+    conn: &'a RefCell<impl wl_io::AsyncBufWriteWithFd + Unpin>,
+) -> impl Future<Output = Result<(), E>> + 'a
+where
+    E: From<std::io::Error> + 'static,
+{
+    use std::task::{Context, Poll};
+    struct Flush<'a, C, E> {
+        conn: &'a RefCell<C>,
+        _err: std::marker::PhantomData<Pin<Box<E>>>,
+    }
+    impl<'a, C, E> Future for Flush<'a, C, E>
+    where
+        C: wl_io::AsyncBufWriteWithFd + Unpin,
+        E: From<std::io::Error> + 'static,
+    {
+        type Output = Result<(), E>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            use futures_lite::ready;
+            let this = self.get_mut();
+            let mut conn = this.conn.borrow_mut();
+            ready!(Pin::new(&mut *conn).poll_flush(cx))?;
+            Poll::Ready(Ok(()))
+        }
+    }
+    Flush {
+        conn,
+        _err: std::marker::PhantomData,
+    }
+}
+
+pub trait Evented<Ctx> {
+    /// Get the event flags handle that can be used to wake up the client
+    /// connection task.
+    fn event_handle(&self) -> &Rc<crate::events::EventFlags>;
+    fn add_event_handler(&self, slot: u8, handler: Box<dyn crate::events::EventHandler<Ctx>>);
+}
+
+/// For storing arbitrary additional states in the connection object. State
+/// slots are statically assigned.
+pub trait SlottedStates {
+    /// Call `f` with the state stored in slot `slot`. If the state is not set,
+    /// this returns Err(())
+    fn with<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S) -> Result<Option<S>, ()>;
+    fn set<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T>;
+}
+pub trait SlottedStatesExt: SlottedStates {
+    fn set_default<T: Provider + Default + 'static>(&self, slot: u8) -> bool {
+        self.set(slot, T::default()).is_ok()
+    }
+}
+
+impl<T: SlottedStates> SlottedStatesExt for T {}
+
+/// Store states used by event handlers, here the slot number is the same as the
+/// event slot number.
+pub struct States {
+    is_set: Cell<u64>,
+    states: RefCell<[Box<dyn Provider>; 64]>,
+}
+
+impl States {
+    pub fn new() -> Self {
+        Self {
+            states: RefCell::new(std::array::from_fn(|_| Box::new(()) as Box<dyn Provider>)),
+            is_set: Cell::new(0),
+        }
+    }
+}
+
+impl SlottedStates for States {
+    fn with<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S) -> Result<Option<S>, ()> {
+        if self.is_set.get() & (1 << slot) == 0 {
+            return Err(())
+        }
+        let states = self.states.borrow();
+        Ok(crate::provider_any::request_ref(&*states[slot as usize]).map(f))
+    }
+
+    fn set<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T> {
+        let is_set = self.is_set.get();
+        if is_set & (1 << slot) != 0 {
+            Err(state)
+        } else {
+            self.is_set.set(is_set | (1 << slot));
+            self.states.borrow_mut()[slot as usize] = Box::new(state);
+            Ok(())
+        }
+    }
 }
 
 pub struct EventSerial<D> {
@@ -167,6 +325,8 @@ impl<D> std::fmt::Debug for EventSerial<D> {
     }
 }
 
+/// A serial allocator for event serials. Serials are automatically forgotten
+/// after a set amount of time.
 impl<D> EventSerial<D> {
     pub fn new(expire: std::time::Duration) -> Self {
         Self {
@@ -177,7 +337,7 @@ impl<D> EventSerial<D> {
     }
 }
 
-impl<D: Clone> Serial for EventSerial<D> {
+impl<D: Clone> wl_common::Serial for EventSerial<D> {
     type Data = D;
 
     fn next_serial(&self, data: Self::Data) -> u32 {
@@ -190,17 +350,24 @@ impl<D: Clone> Serial for EventSerial<D> {
         serials.retain(|_, (_, t)| *t + self.expire > now);
         match serials.insert(serial, (data, std::time::Instant::now())) {
             Some(_) => {
-                panic!("serial {} already in use", serial);
+                panic!(
+                    "serial {} already in use, expiration duration too long?",
+                    serial
+                );
             },
             None => (),
         }
         serial
     }
 
-    fn get_data(&self, serial: u32) -> Option<Self::Data> {
+    fn get(&self, serial: u32) -> Option<Self::Data> {
         let mut serials = self.serials.borrow_mut();
         let now = std::time::Instant::now();
         serials.retain(|_, (_, t)| *t + self.expire > now);
         serials.get(&serial).map(|(d, _)| d.clone())
+    }
+
+    fn expire(&self, serial: u32) -> bool {
+        self.serials.borrow_mut().remove(&serial).is_some()
     }
 }

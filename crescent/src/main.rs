@@ -1,17 +1,26 @@
 #![feature(type_alias_impl_trait, generic_associated_types)]
-use std::{os::unix::net::UnixStream, pin::Pin, rc::Rc};
+use std::{
+    cell::{RefCell, RefMut},
+    future::Future,
+    os::unix::net::UnixStream,
+    pin::Pin,
+    rc::Rc,
+};
 
 use anyhow::Result;
 use futures_util::TryStreamExt;
 use log::debug;
-use wl_io::buf::BufReaderWithFd;
+use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_macros::message_broker;
+use wl_server::connection::{self, Connection as _};
 
 #[message_broker]
 #[wayland(connection_context = "CrescentClient")]
 pub enum Messages {
     #[wayland(impl = "::wl_server::objects::Display")]
     WlDisplay,
+    #[wayland(impl = "::wl_server::objects::Callback")]
+    WlCallback,
 }
 
 #[derive(Debug, Clone)]
@@ -24,45 +33,83 @@ impl wl_server::server::Server for Crescent {
     type Connection = CrescentClient;
 }
 
-impl wl_server::server::Globals for Crescent {
-    fn bind(&self, client: &Self::Connection, id: u32) -> Box<dyn wl_server::connection::InterfaceMeta> {
+impl wl_server::server::Globals<Crescent> for Crescent {
+    fn bind(
+        &self,
+        client: &CrescentClient,
+        id: u32,
+    ) -> Box<dyn connection::InterfaceMeta> {
         todo!()
     }
-    fn bind_registry(&self, client: &Self::Connection) -> Box<dyn wl_server::connection::InterfaceMeta> {
+
+    fn bind_registry(
+        &self,
+        client: &CrescentClient,
+    ) -> Box<dyn connection::InterfaceMeta> {
+        Box::new(wl_server::objects::Callback)
+    }
+
+    fn add_listener(&self, handle: &Rc<wl_server::events::EventFlags>) {
         todo!()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CrescentClient {
-    store: Rc<wl_server::connection::Store>,
-    serial: Rc<wl_server::connection::EventSerial<()>>,
-    state: Crescent,
+    store:  connection::Store,
+    serial: connection::EventSerial<()>,
+    state:  Crescent,
+    tx:     Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
 }
 
-impl wl_server::connection::Connection for CrescentClient {
+impl connection::Connection for CrescentClient {
     type Context = Crescent;
+    type Error = std::io::Error;
+
+    type Send<'a, M> = impl Future<Output = Result<(), Self::Error>> + 'a where M: 'a;
+    type Flush<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
 
     fn server_context(&self) -> &Self::Context {
         &self.state
     }
+
+    fn send<'a, 'b, 'c, M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b>(
+        &'a self,
+        object_id: u32,
+        msg: M,
+    ) -> Self::Send<'c, M>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        connection::send_to(&self.tx, object_id, msg)
+    }
+    fn flush(&self) -> Self::Flush<'_> {
+        connection::flush_to(&self.tx)
+    }
 }
 
-impl wl_server::connection::Serial for CrescentClient {
+impl wl_common::Serial for CrescentClient {
     type Data = ();
+
     fn next_serial(&self, data: Self::Data) -> u32 {
         self.serial.next_serial(data)
     }
-    fn get_data(&self, serial: u32) -> Option<Self::Data> {
-        self.serial.get_data(serial)
+
+    fn get(&self, serial: u32) -> Option<Self::Data> {
+        self.serial.get(serial)
+    }
+
+    fn expire(&self, serial: u32) -> bool {
+        self.serial.expire(serial)
     }
 }
 
 // Forwarding implementation of ObjectStore
-impl wl_server::connection::Objects for CrescentClient {
-    type Entry<'a> = <wl_server::connection::Store as wl_server::connection::Objects>::Entry<'a>;
+impl connection::Objects for CrescentClient {
+    type Entry<'a> = <connection::Store as connection::Objects>::Entry<'a>;
 
-    fn insert<T: wl_server::connection::InterfaceMeta + 'static>(
+    fn insert<T: connection::InterfaceMeta + 'static>(
         &self,
         id: u32,
         object: T,
@@ -70,16 +117,12 @@ impl wl_server::connection::Objects for CrescentClient {
         self.store.insert(id, object)
     }
 
-    fn get(&self, id: u32) -> Option<Rc<dyn wl_server::connection::InterfaceMeta>> {
+    fn get(&self, id: u32) -> Option<Rc<dyn connection::InterfaceMeta>> {
         self.store.get(id)
     }
 
-    fn remove(&self, id: u32) -> Option<Rc<dyn wl_server::connection::InterfaceMeta>> {
+    fn remove(&self, id: u32) -> Option<Rc<dyn connection::InterfaceMeta>> {
         self.store.remove(id)
-    }
-
-    fn global_remove(&self, global: u32) {
-        self.store.global_remove(global)
     }
 
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T {
@@ -94,22 +137,25 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
 
     fn new_connection(&mut self, conn: UnixStream) -> Self::Task {
         debug!("New connection");
-        use wl_server::connection::{Objects, Store, EventSerial};
-        let client_ctx = CrescentClient {
-            store: Rc::new(Store::new()),
-            serial: Rc::new(EventSerial::new(std::time::Duration::from_secs(2))),
-            state: self.clone(),
-        };
-        client_ctx
-            .store
-            .insert(1, wl_server::objects::Display)
-            .unwrap();
+        use wl_server::connection::{EventSerial, Objects, Store};
+        let state = self.clone();
         Box::pin(async move {
             let (rx, tx) = ::wl_io::split_unixstream(conn)?;
+            let mut client_ctx = CrescentClient {
+                store: Store::new(),
+                serial: EventSerial::new(std::time::Duration::from_secs(2)),
+                state,
+                tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
+            };
+            client_ctx
+                .store
+                .insert(1, wl_server::objects::Display)
+                .unwrap();
             let mut read = BufReaderWithFd::new(rx);
             let _span = tracing::debug_span!("main loop").entered();
             loop {
-                Messages::dispatch(&client_ctx, Pin::new(&mut read)).await?;
+                Messages::dispatch(&mut client_ctx, Pin::new(&mut read)).await?;
+                client_ctx.flush().await?;
             }
         })
     }

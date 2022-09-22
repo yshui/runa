@@ -5,12 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.65"
+event-listener = "2.5.3"
 futures-lite = "1.12.0"
+futures-util = "0.3.24"
 rustix = { version = "0.35.9", features = ["fs"] }
 serde = "1.0.144"
 smol = "1.2.5"
 thiserror = "1.0.35"
-tracing = { version = "0.1.36", default-features = false, features = ["std"] }
+tracing = "0.1.36"
 wl_common = { version = "0.1.0", path = "../wl_common" }
 wl_io = { path = "../wl_io" }
 wl_protocol = { version = "0.1.0", path = "../wl_protocol" }

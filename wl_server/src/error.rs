@@ -9,3 +9,9 @@ pub enum Error {
     #[error("Uncategorized error: {0}")]
     Custom(#[from] anyhow::Error),
 }
+
+impl From<wl_common::Infallible> for Error {
+    fn from(f: wl_common::Infallible) -> Self {
+        match f {}
+    }
+}

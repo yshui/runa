@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures_lite::Future;
+use hashbrown::{hash_map, HashMap};
 pub use wl_io::de::Deserializer;
 
 #[doc(hidden)]
@@ -26,13 +27,40 @@ pub trait Serial {
     fn next_serial(&self, data: Self::Data) -> u32;
     /// Get the data associated with the given serial.
     fn get(&self, serial: u32) -> Option<Self::Data>;
+    /// Non-cloning version of `get`.
+    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
+    where
+        F: FnOnce(&Self::Data) -> R;
+    fn for_each<F>(&self, f: F)
+    where
+        F: FnMut(u32, &Self::Data);
     /// Remove the serial number from the list of allocated serials.
     fn expire(&self, serial: u32) -> bool;
+    fn find<F>(&self, mut f: F) -> Option<Self::Data>
+    where
+        F: FnMut(&Self::Data) -> bool,
+    {
+        self.find_map(|d| if f(d) { Some(d.clone()) } else { None })
+    }
+    fn find_map<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnMut(&Self::Data) -> Option<R>;
 }
 
+// TODO: impl Debug
 pub struct IdAlloc<D> {
     next: Cell<u32>,
-    data: RefCell<std::collections::HashMap<u32, D>>,
+    data: RefCell<HashMap<u32, D>>,
+}
+
+impl<D> Default for IdAlloc<D> {
+    fn default() -> Self {
+        Self {
+            // 0 is reserved for the null object
+            next: Cell::new(1),
+            data: RefCell::new(HashMap::new()),
+        }
+    }
 }
 
 impl<D: Clone> Serial for IdAlloc<D> {
@@ -47,11 +75,11 @@ impl<D: Clone> Serial for IdAlloc<D> {
             let id = self.next.get();
             self.next.set(id + 1);
             match self.data.borrow_mut().entry(id) {
-                std::collections::hash_map::Entry::Vacant(e) => {
+                hash_map::Entry::Vacant(e) => {
                     e.insert(data);
-                    return id
+                    break id
                 },
-                std::collections::hash_map::Entry::Occupied(_) => continue,
+                hash_map::Entry::Occupied(_) => (),
             }
         }
     }
@@ -60,8 +88,29 @@ impl<D: Clone> Serial for IdAlloc<D> {
         self.data.borrow().get(&serial).cloned()
     }
 
+    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
+    where
+        F: FnOnce(&Self::Data) -> R,
+    {
+        self.data.borrow().get(&serial).map(f)
+    }
+
+    fn for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(u32, &Self::Data),
+    {
+        self.data.borrow().iter().for_each(|(a, b)| f(*a, b))
+    }
+
     fn expire(&self, serial: u32) -> bool {
         self.data.borrow_mut().remove(&serial).is_some()
+    }
+
+    fn find_map<F, R>(&self, mut f: F) -> Option<R>
+    where
+        F: FnMut(&Self::Data) -> Option<R>,
+    {
+        self.data.borrow().values().find_map(|d| f(d))
     }
 }
 
@@ -160,6 +209,7 @@ pub mod types {
                 Fd::Owned(fd) => fd,
             }
         }
+
         pub fn take(&mut self) -> Option<OwnedFd> {
             match self {
                 Fd::Raw(_) => None,

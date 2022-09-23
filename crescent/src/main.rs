@@ -19,55 +19,77 @@ use wl_server::connection::{self, Connection as _};
 pub enum Messages {
     #[wayland(impl = "::wl_server::objects::Display")]
     WlDisplay,
-    #[wayland(impl = "::wl_server::objects::Callback")]
-    WlCallback,
+    #[wayland(impl = "::wl_server::objects::Registry::<Ctx>")]
+    WlRegistry,
 }
 
-#[derive(Debug, Clone)]
-pub struct CrescentState;
+#[derive(Debug, Default)]
+pub struct CrescentState {
+    globals: wl_server::server::GlobalStore<Crescent>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Crescent(Rc<CrescentState>);
 
 impl wl_server::server::Server for Crescent {
     type Connection = CrescentClient;
-}
+    type Globals = wl_server::server::GlobalStore<Self>;
 
-impl wl_server::server::Globals<Crescent> for Crescent {
-    fn bind(
-        &self,
-        client: &CrescentClient,
-        id: u32,
-    ) -> Box<dyn connection::InterfaceMeta> {
-        todo!()
-    }
-
-    fn bind_registry(
-        &self,
-        client: &CrescentClient,
-    ) -> Box<dyn connection::InterfaceMeta> {
-        Box::new(wl_server::objects::Callback)
-    }
-
-    fn add_listener(&self, handle: &Rc<wl_server::events::EventFlags>) {
-        todo!()
+    fn globals(&self) -> &Self::Globals {
+        &self.0.globals
     }
 }
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:  connection::Store,
-    serial: connection::EventSerial<()>,
-    state:  Crescent,
-    tx:     Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
+    store:        connection::Store,
+    serial:       connection::EventSerial<()>,
+    event_handle: wl_server::events::EventFlags,
+    event_states: wl_server::connection::SlottedStates,
+    state:        Crescent,
+    tx:           Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
+}
+
+impl wl_server::connection::Evented<CrescentClient> for CrescentClient {
+    fn event_handle(&self) -> &wl_server::events::EventFlags {
+        &self.event_handle
+    }
+
+    fn set_state<T: wl_server::provide_any::Provider + 'static>(
+        &self,
+        slot: u8,
+        state: T,
+    ) -> Result<(), T> {
+        self.event_states.set(slot, state)
+    }
+
+    fn with_state<T: 'static, S>(
+        &self,
+        slot: u8,
+        f: impl FnOnce(&T) -> S,
+    ) -> Result<Option<S>, ()> {
+        self.event_states.with(slot, f)
+    }
+
+    fn with_state_mut<T: 'static, S>(
+        &self,
+        slot: u8,
+        f: impl FnOnce(&mut T) -> S,
+    ) -> Result<Option<S>, ()> {
+        self.event_states.with_mut(slot, f)
+    }
+
+    fn remove_state(&self, slot: u8) -> Result<Box<dyn wl_server::provide_any::Provider>, ()> {
+        self.event_states.remove(slot)
+    }
 }
 
 impl connection::Connection for CrescentClient {
     type Context = Crescent;
     type Error = std::io::Error;
 
-    type Send<'a, M> = impl Future<Output = Result<(), Self::Error>> + 'a where M: 'a;
     type Flush<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+    type Send<'a, M> = impl Future<Output = Result<(), Self::Error>> + 'a where M: 'a;
 
     fn server_context(&self) -> &Self::Context {
         &self.state
@@ -84,6 +106,7 @@ impl connection::Connection for CrescentClient {
     {
         connection::send_to(&self.tx, object_id, msg)
     }
+
     fn flush(&self) -> Self::Flush<'_> {
         connection::flush_to(&self.tx)
     }
@@ -103,17 +126,33 @@ impl wl_common::Serial for CrescentClient {
     fn expire(&self, serial: u32) -> bool {
         self.serial.expire(serial)
     }
+
+    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
+    where
+        F: FnOnce(&Self::Data) -> R,
+    {
+        self.serial.with(serial, f)
+    }
+
+    fn for_each<F>(&self, f: F)
+        where
+            F: FnMut(u32, &Self::Data) {
+        self.serial.for_each(f)
+    }
+
+    fn find_map<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnMut(&Self::Data) -> Option<R>,
+    {
+        self.serial.find_map(f)
+    }
 }
 
 // Forwarding implementation of ObjectStore
 impl connection::Objects for CrescentClient {
     type Entry<'a> = <connection::Store as connection::Objects>::Entry<'a>;
 
-    fn insert<T: connection::InterfaceMeta + 'static>(
-        &self,
-        id: u32,
-        object: T,
-    ) -> Result<(), T> {
+    fn insert<T: connection::InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T> {
         self.store.insert(id, object)
     }
 
@@ -122,7 +161,10 @@ impl connection::Objects for CrescentClient {
     }
 
     fn remove(&self, id: u32) -> Option<Rc<dyn connection::InterfaceMeta>> {
-        self.store.remove(id)
+        let ret = self.store.remove(id);
+        ret.as_ref()
+            .map(|obj| wl_server::connection::drop_object(&**obj, self));
+        ret
     }
 
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T {
@@ -144,7 +186,9 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
             let mut client_ctx = CrescentClient {
                 store: Store::new(),
                 serial: EventSerial::new(std::time::Duration::from_secs(2)),
+                event_handle: Default::default(),
                 state,
+                event_states: Default::default(),
                 tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
             };
             client_ctx
@@ -155,6 +199,7 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
             let _span = tracing::debug_span!("main loop").entered();
             loop {
                 Messages::dispatch(&mut client_ctx, Pin::new(&mut read)).await?;
+                Messages::handle_events(&mut client_ctx).await?;
                 client_ctx.flush().await?;
             }
         })
@@ -166,7 +211,8 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let (listener, _guard) = wl_server::wayland_listener_auto()?;
     let listener = smol::Async::new(listener)?;
-    let server = Crescent(Rc::new(CrescentState));
+    let mut server = Crescent(Rc::new(Default::default()));
+    Messages::init_server(&mut server);
     let executor = smol::LocalExecutor::new();
     let server = wl_server::AsyncServer::new(server, &executor);
     let incoming = Box::pin(

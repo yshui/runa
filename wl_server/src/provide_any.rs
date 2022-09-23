@@ -9,12 +9,13 @@ use std::any::TypeId;
 ///////////////////////////////////////////////////////////////////////////////
 
 mod tags {
-    //! Type tags are used to identify a type using a separate value. This module includes type tags
-    //! for some very common types.
+    //! Type tags are used to identify a type using a separate value. This
+    //! module includes type tags for some very common types.
     //!
-    //! Currently type tags are not exposed to the user. But in the future, if you want to use the
-    //! Provider API with more complex types (typically those including lifetime parameters), you
-    //! will need to write your own tags.
+    //! Currently type tags are not exposed to the user. But in the future, if
+    //! you want to use the Provider API with more complex types (typically
+    //! those including lifetime parameters), you will need to write your
+    //! own tags.
 
     use std::marker::PhantomData;
 
@@ -30,8 +31,8 @@ mod tags {
         type Reified: 'a;
     }
 
-    /// Similar to the [`Type`] trait, but represents a type which may be unsized (i.e., has a
-    /// `?Sized` bound). E.g., `str`.
+    /// Similar to the [`Type`] trait, but represents a type which may be
+    /// unsized (i.e., has a `?Sized` bound). E.g., `str`.
     pub trait MaybeSizedType<'a>: Sized + 'static {
         type Reified: 'a + ?Sized;
     }
@@ -40,7 +41,8 @@ mod tags {
         type Reified = T::Reified;
     }
 
-    /// Type-based tag for types bounded by `'static`, i.e., with no borrowed elements.
+    /// Type-based tag for types bounded by `'static`, i.e., with no borrowed
+    /// elements.
     #[derive(Debug)]
     pub struct Value<T: 'static>(PhantomData<T>);
 
@@ -48,7 +50,8 @@ mod tags {
         type Reified = T;
     }
 
-    /// Type-based tag similar to [`Value`] but which may be unsized (i.e., has a `?Sized` bound).
+    /// Type-based tag similar to [`Value`] but which may be unsized (i.e., has
+    /// a `?Sized` bound).
     #[derive(Debug)]
     pub struct MaybeSizedValue<T: ?Sized + 'static>(PhantomData<T>);
 
@@ -64,11 +67,19 @@ mod tags {
     impl<'a, I: MaybeSizedType<'a>> Type<'a> for Ref<I> {
         type Reified = &'a I::Reified;
     }
+
+    #[derive(Debug)]
+    pub struct RefMut<I>(PhantomData<I>);
+
+    impl<'a, I: MaybeSizedType<'a>> Type<'a> for RefMut<I> {
+        type Reified = &'a mut I::Reified;
+    }
 }
-/// An object of arbitrary type. This whole API is stolen from Rust's std::any::Provider.
-/// We should remove this when that stabilizes.
+/// An object of arbitrary type. This whole API is stolen from Rust's
+/// std::any::Provider. We should remove this when that stabilizes.
 pub trait Provider {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>);
+    fn provide_mut<'a>(&'a mut self, _demand: &mut Demand<'a>) {}
 }
 
 #[repr(transparent)]
@@ -77,8 +88,8 @@ pub struct Demand<'a>(dyn Erased<'a> + 'a);
 impl<'a> Demand<'a> {
     /// Create a new `&mut Demand` from a `&mut dyn Erased` trait object.
     fn new<'b>(erased: &'b mut (dyn Erased<'a> + 'a)) -> &'b mut Demand<'a> {
-        // SAFETY: transmuting `&mut (dyn Erased<'a> + 'a)` to `&mut Demand<'a>` is safe since
-        // `Demand` is repr(transparent).
+        // SAFETY: transmuting `&mut (dyn Erased<'a> + 'a)` to `&mut Demand<'a>` is safe
+        // since `Demand` is repr(transparent).
         unsafe { &mut *(erased as *mut dyn Erased<'a> as *mut Demand<'a>) }
     }
 
@@ -90,7 +101,7 @@ impl<'a> Demand<'a> {
     ///
     /// ```rust
     /// # #![feature(provide_any)]
-    /// use std::any::{Provider, Demand};
+    /// use std::any::{Demand, Provider};
     /// # struct SomeConcreteType { field: String }
     ///
     /// impl Provider for SomeConcreteType {
@@ -107,8 +118,8 @@ impl<'a> Demand<'a> {
         self.provide_with::<tags::Value<T>, F>(fulfil)
     }
 
-    /// Provide a reference, note that the referee type must be bounded by `'static`,
-    /// but may be unsized.
+    /// Provide a reference, note that the referee type must be bounded by
+    /// `'static`, but may be unsized.
     ///
     /// # Examples
     ///
@@ -116,7 +127,7 @@ impl<'a> Demand<'a> {
     ///
     /// ```rust
     /// # #![feature(provide_any)]
-    /// use std::any::{Provider, Demand};
+    /// use std::any::{Demand, Provider};
     /// # struct SomeConcreteType { field: String }
     ///
     /// impl Provider for SomeConcreteType {
@@ -127,6 +138,10 @@ impl<'a> Demand<'a> {
     /// ```
     pub fn provide_ref<T: ?Sized + 'static>(&mut self, value: &'a T) -> &mut Self {
         self.provide::<tags::Ref<tags::MaybeSizedValue<T>>>(value)
+    }
+
+    pub fn provide_mut<T: ?Sized + 'static>(&mut self, value: &'a mut T) -> &mut Self {
+        self.provide::<tags::RefMut<tags::MaybeSizedValue<T>>>(value)
     }
 
     /// Provide a value with the given `Type` tag.
@@ -140,7 +155,8 @@ impl<'a> Demand<'a> {
         self
     }
 
-    /// Provide a value with the given `Type` tag, using a closure to prevent unnecessary work.
+    /// Provide a value with the given `Type` tag, using a closure to prevent
+    /// unnecessary work.
     fn provide_with<I, F>(&mut self, fulfil: F) -> &mut Self
     where
         I: tags::Type<'a>,
@@ -207,6 +223,16 @@ where
     request_by_type_tag::<'a, tags::Ref<tags::MaybeSizedValue<T>>, P>(provider)
 }
 
+pub fn request_mut<'a, T, P>(provider: &'a mut P) -> Option<&'a mut T>
+where
+    T: 'static + ?Sized,
+    P: Provider + ?Sized,
+{
+    let mut tagged = TaggedOption::<'a, tags::RefMut<tags::MaybeSizedValue<T>>>(None);
+    provider.provide_mut(tagged.as_demand());
+    tagged.0
+}
+
 /// Request a specific value by tag from the `Provider`.
 fn request_by_type_tag<'a, I, P>(provider: &'a P) -> Option<I::Reified>
 where
@@ -221,5 +247,9 @@ where
 impl Provider for () {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
         demand.provide_ref(self);
+    }
+
+    fn provide_mut<'a>(&'a mut self, demand: &mut Demand<'a>) {
+        demand.provide_mut(self);
     }
 }

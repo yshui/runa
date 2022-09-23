@@ -10,7 +10,8 @@ pub mod error;
 pub mod objects;
 pub mod server;
 pub mod events;
-pub mod provider_any;
+pub mod provide_any;
+pub mod globals;
 
 #[derive(Error, Debug)]
 pub enum Error<SE, LE> {

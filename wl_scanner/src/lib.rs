@@ -346,6 +346,7 @@ fn generate_dispatch_trait(
                 fn #name<'a>(
                     &'a self,
                     ctx: &'a mut Ctx,
+                    object_id: u32,
                     #(#args),*
                 )
                 -> Self::#retty<'a>;
@@ -698,6 +699,7 @@ fn generate_interface(
     let enums = generate_enums(&iface.enums);
 
     let iface_name = &iface.name;
+    let iface_version = iface.version;
     Ok(quote! {
         #doc_comment
         pub mod #name {
@@ -706,6 +708,7 @@ fn generate_interface(
                 use super::super::__generated_root;
                 /// Name of the interface
                 pub const NAME: &str = #iface_name;
+                pub const VERSION: u32 = #iface_version;
                 #requests
                 #events
                 #enums

@@ -326,8 +326,8 @@ impl<T: std::fmt::Debug> std::fmt::Debug for BufWriterWithFd<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BufWriterWithFd")
             .field("inner", &self.inner)
-            .field("buf", &"...")
-            .field("fd_buf", &"...")
+            .field("buf", &"…")
+            .field("fd_buf", &"…")
             .field("written", &self.written)
             .finish()
     }

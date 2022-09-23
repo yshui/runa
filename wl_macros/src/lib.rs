@@ -52,7 +52,8 @@ impl darling::FromField for Reject {
 /// ...)]` attribute, pointing to the implementation type of the interface. Each
 /// of the implementation types must implement the `InterfaceMessageDispatch`
 /// trait, with `Ctx = connection_context`. And all of these implementations
-/// must share the same Error type. This Error type must accept conversion from `std::io::Error`.
+/// must share the same Error type. This Error type must accept conversion from
+/// `std::io::Error`.
 ///
 /// (The `InterfaceMessageDispatch` can be generated using the
 /// `interface_message_dispatch` macro.)
@@ -168,14 +169,22 @@ pub fn message_broker(
         let imp = &i.imp;
         quote! {
             #iface => {
-                let real_obj: &#imp = obj
-                    .as_any()
-                    .downcast_ref()
+                use ::wl_server::provide_any::request_ref;
+                use ::std::ops::Deref;
+                let real_obj: &#imp = request_ref(obj.deref())
                     .expect("Wrong InterfaceMeta impl");
                 let _: () = ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de)
                     .await?;
             }
         }
+    });
+    let inits = enum_.iter().map(|i| {
+        let imp = &i.imp;
+        quote! { #imp::init_server(ctx).unwrap(); }
+    });
+    let handle_events = enum_.iter().map(|i| {
+        let imp = &i.imp;
+        quote! { if i == #imp::EVENT_SLOT { #imp::handle_event(ctx).await?; } }
     });
 
     // Get the error type of the first interface. They are all supposed to be the
@@ -193,6 +202,9 @@ pub fn message_broker(
         const _: () = {
             use std::pin::Pin;
             impl #name {
+                fn init_server(ctx: &mut <#ctx as ::wl_server::connection::Connection>::Context) {
+                    #(#inits)*
+                }
                 /// `ctx` must implement ObjectStore
                 async fn dispatch<'a, 'b: 'a, R>(
                     ctx: &'a mut #ctx,
@@ -213,6 +225,15 @@ pub fn message_broker(
                         None => unimplemented!("Send invalid object error"),
                     }
                     reader.consume(len);
+                    Ok(())
+                }
+                async fn handle_events(ctx: &mut #ctx) -> Result<(), #error> {
+                    use ::wl_server::connection::Evented;
+                    let events = ctx.event_handle().reset();
+                    for i in events.iter_ones() {
+                        let i: i32 = i.try_into().unwrap();
+                        #(#handle_events)*
+                    }
                     Ok(())
                 }
             }
@@ -267,22 +288,12 @@ impl Parse for DispatchImpl {
             match item {
                 syn::ImplItem::Method(method) => {
                     let mut args = Vec::new();
-                    for arg in method.sig.inputs.iter() {
+                    for arg in method.sig.inputs.iter().skip(3) {
+                        // Ignore the first 3 arguments: self, ctx, object_id
                         match arg {
                             syn::FnArg::Receiver(_) => (),
                             syn::FnArg::Typed(patty) => {
                                 if let syn::Pat::Ident(pat) = &*patty.pat {
-                                    // Ignore the context argument
-                                    match &*patty.ty {
-                                        syn::Type::Reference(ref_) => match &*ref_.elem {
-                                            syn::Type::Path(path) =>
-                                                if path.path.is_ident("Ctx") {
-                                                    continue
-                                                },
-                                            _ => (),
-                                        },
-                                        _ => (),
-                                    }
                                     args.push(pat.ident.clone());
                                 } else {
                                     die!(&patty.pat =>
@@ -462,7 +473,7 @@ pub fn interface_message_dispatch(
         let args = &item.args;
         quote! {
             #message_ty::#var(msg) => {
-                #trait_::#ident(self, ctx, #(msg.#args),*).await
+                #trait_::#ident(self, ctx, object_id, #(msg.#args),*).await
             }
         }
     });

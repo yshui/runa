@@ -7,18 +7,22 @@ edition = "2021"
 anyhow = "1.0.65"
 bitvec = "1.0.1"
 event-listener = "2.5.3"
-futures-lite = "1.12.0"
-futures-util = "0.3.24"
 rustix = { version = "0.35.9", features = ["fs"] }
 serde = "1.0.144"
 smol = "1.2.5"
-thiserror = "1.0.35"
-tracing = "0.1.36"
-hashbrown = "0.12"
 wl_common = { version = "0.1.0", path = "../wl_common" }
 wl_io = { path = "../wl_io" }
 wl_protocol = { version = "0.1.0", path = "../wl_protocol" }
 xdg = "2.4.1"
+thiserror.workspace = true
+tracing.workspace = true
+hashbrown.workspace = true
+futures-lite.workspace = true
+futures-util.workspace = true
+indextree = "4.5.0"
+dlv-list = "0.4.0"
+wl_types = { version = "0.1.0", path = "../wl_types" }
+memmap2 = "0.5.7"
 
 [features]
 default = []

@@ -8,36 +8,17 @@ use std::{
     future::Future,
     pin::Pin,
     rc::Rc,
+    task::ready,
 };
 
 use hashbrown::{hash_map, HashMap};
 
 use crate::{
-    objects::DropObject,
+    objects::{DropObject, InterfaceMeta},
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
+use wl_protocol::wayland::wl_display::v1 as wl_display;
 
-/// This is the bottom type for all per client objects. This trait provides some
-/// metadata regarding the object, as well as a way to cast objects into a
-/// common dynamic type.
-///
-/// # Note
-///
-/// If a object is a proxy of a global, it has to recognize if the global's
-/// lifetime has ended, and turn all message sent to it to no-ops. This can
-/// often be achieved by holding a Weak reference to the global object.
-pub trait InterfaceMeta {
-    /// Return the interface name of this object.
-    fn interface(&self) -> &'static str;
-    /// Case self to &dyn Any
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>);
-}
-
-impl<'b> Provider for dyn InterfaceMeta + 'b {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        self.provide(demand)
-    }
-}
 /// Per client mapping from object ID to objects. This is the reference
 /// implementation of [`Objects`].
 ///
@@ -75,10 +56,7 @@ pub trait Entry<'a> {
     fn or_insert_boxed(self, v: Box<dyn InterfaceMeta>) -> &'a mut Rc<dyn InterfaceMeta>;
 }
 
-impl<'a, K> Entry<'a> for hash_map::Entry<'a, K, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>
-where
-    K: std::cmp::Eq + std::hash::Hash,
-{
+impl<'a> Entry<'a> for StoreEntry<'a> {
     fn is_vacant(&self) -> bool {
         match self {
             hash_map::Entry::Vacant(_) => true,
@@ -102,6 +80,16 @@ pub trait Objects {
     fn remove(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
     fn get(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T;
+    fn try_insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T> {
+        self.with_entry(id, |e| {
+            if e.is_vacant() {
+                e.or_insert_boxed(Box::new(object));
+                Ok(())
+            } else {
+                Err(object)
+            }
+        })
+    }
 }
 
 impl Store {
@@ -112,10 +100,9 @@ impl Store {
     }
 }
 
-impl Objects for Store {
-    type Entry<'a> = hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>;
-
-    fn insert<T: InterfaceMeta + 'static>(&self, object_id: u32, object: T) -> Result<(), T> {
+pub type StoreEntry<'a> = hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>;
+impl Store {
+    pub fn insert<T: InterfaceMeta + 'static>(&self, object_id: u32, object: T) -> Result<(), T> {
         match self.map.borrow_mut().entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
@@ -125,22 +112,42 @@ impl Objects for Store {
         }
     }
 
-    fn remove(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
-        self.map.borrow_mut().remove(&object_id)
+    pub fn remove<Ctx: 'static>(&self, ctx: &Ctx, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
+        if let Some(obj) = self.map.borrow_mut().remove(&object_id) {
+            if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
+                drop_object.drop_object(ctx);
+            }
+            Some(obj)
+        } else {
+            None
+        }
     }
 
-    fn get(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
+    pub fn get(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
         self.map.borrow().get(&object_id).map(Clone::clone)
     }
 
-    fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T {
+    pub fn with_entry<T>(&self, id: u32, f: impl FnOnce(StoreEntry<'_>) -> T) -> T {
         f(self.map.borrow_mut().entry(id))
+    }
+ 
+    /// Remove all objects from the store. MUST be called before the store is dropped, to ensure
+    /// drop_object is called for all objects.
+    pub fn clear<Ctx: 'static>(&self, ctx: &Ctx) {
+        let mut map = self.map.borrow_mut();
+        for (_, obj) in map.drain() {
+            if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
+                drop_object.drop_object(ctx);
+            }
+        }
     }
 }
 
-pub fn drop_object<Ctx: 'static>(object: &dyn InterfaceMeta, ctx: &Ctx) {
-    if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(object) {
-        drop_object.drop_object(ctx);
+impl Drop for Store {
+    fn drop(&mut self) {
+        // This is a safety check to ensure that clear() is called before the store is dropped.
+        // If this is not called, then drop_object will not be called for all objects.
+        assert!(self.map.get_mut().is_empty());
     }
 }
 
@@ -205,7 +212,6 @@ where
         type Output = Result<(), E>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            use futures_lite::ready;
             let this = self.get_mut();
             let msg_ref = this.msg.as_ref().expect("Send polled after completion");
             let len = msg_ref.len();
@@ -252,7 +258,6 @@ where
         type Output = Result<(), E>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            use futures_lite::ready;
             let this = self.get_mut();
             let mut conn = this.conn.borrow_mut();
             ready!(Pin::new(&mut *conn).poll_flush(cx))?;
@@ -270,7 +275,9 @@ where
 pub trait Evented<Ctx> {
     /// Get the event flags handle that can be used to wake up the client
     /// connection task.
-    fn event_handle(&self) -> &crate::events::EventFlags;
+    fn event_handle(&self) -> crate::events::EventHandle;
+    /// Reset the event flags and return the flags that are set.
+    fn reset_events(&self) -> crate::events::Flags;
     fn remove_state(&self, slot: u8) -> Result<Box<dyn Provider>, ()>;
     fn with_state<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S)
         -> Result<Option<S>, ()>;
@@ -448,11 +455,15 @@ impl<D: Clone> wl_common::Serial for EventSerial<D> {
     {
         self.serials.borrow().get(&serial).map(|(d, _)| f(d))
     }
- 
+
     fn for_each<F>(&self, mut f: F)
-        where
-            F: FnMut(u32, &Self::Data) {
-        self.serials.borrow().iter().for_each(|(k, (v, _))| f(*k, v));
+    where
+        F: FnMut(u32, &Self::Data),
+    {
+        self.serials
+            .borrow()
+            .iter()
+            .for_each(|(k, (v, _))| f(*k, v));
     }
 
     fn expire(&self, serial: u32) -> bool {

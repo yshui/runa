@@ -18,7 +18,7 @@ wl_spec = { path = "../wl_spec" }
 
 [dev-dependencies]
 futures-executor = "0.3"
-futures-lite = "1.12.0"
+futures-lite.workspace = true
 wl_scanner_support = { path = "../wl_scanner_support" }
 num_enum = "0.5.7"
 futures-task = "0.3.24"

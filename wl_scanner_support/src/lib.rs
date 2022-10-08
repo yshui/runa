@@ -18,7 +18,7 @@ pub use futures_lite::ready;
 pub use serde;
 pub use bitflags::bitflags;
 pub use num_enum;
-pub use wl_common::types as wayland_types;
+pub use wl_types as wayland_types;
 
 pub mod future {
     use std::{pin::Pin, task::Poll};

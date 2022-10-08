@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-fixed = "1.19.0"
-futures-lite = "1.12.0"
-serde = { version = "1.0.144", features = ["derive"] }
-hashbrown = "0.12"
+futures-lite = "1.12"
+serde = { version = "1.0", features = ["derive"] }
 wl_io = { path = "../wl_io" }
 wl_macros = { path = "../wl_macros" }
+
+hashbrown.workspace = true
+num-traits = "0.2.15"

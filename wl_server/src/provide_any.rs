@@ -82,6 +82,14 @@ pub trait Provider {
     fn provide_mut<'a>(&'a mut self, _demand: &mut Demand<'a>) {}
 }
 
+/// Like [`Provider`], but with a "slot" to hint on what's being requested. Normally with
+/// `Provider`, the provider needs to provide everything it can provide, leading to `O(n)` time
+/// complexity. This trait instead provide a "slot" to hint on what's being requested, allowing
+/// providers to provide only what's needed, thus speed things up.
+pub trait SlottedProvider {
+    fn provide<'a>(&'a self, slot: usize, demand: &mut Demand<'a>);
+}
+
 #[repr(transparent)]
 pub struct Demand<'a>(dyn Erased<'a> + 'a);
 
@@ -221,6 +229,16 @@ where
     P: Provider + ?Sized,
 {
     request_by_type_tag::<'a, tags::Ref<tags::MaybeSizedValue<T>>, P>(provider)
+}
+
+pub fn request_ref_by_slot<'a, T, P>(provider: &'a P, slot: usize) -> Option<&'a T>
+where
+    T: 'static + ?Sized,
+    P: SlottedProvider + ?Sized,
+{
+    let mut tagged = TaggedOption::<'a, tags::Ref<tags::MaybeSizedValue<T>>>(None);
+    provider.provide(slot, tagged.as_demand());
+    tagged.0
 }
 
 pub fn request_mut<'a, T, P>(provider: &'a mut P) -> Option<&'a mut T>

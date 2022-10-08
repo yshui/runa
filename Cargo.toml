@@ -1,10 +1,12 @@
 [workspace]
 members = [
+  "apollo",
   "wl_common",
   "wl_server",
   "wl_spec",
   "wl_scanner",
   "wl_scanner_support",
+  "wl_types",
   "wl_macros",
   "wl_io",
   "wl_protocol",
@@ -15,5 +17,8 @@ exclude = [
 ]
 
 [workspace.dependencies]
-tracing = "0.1"
+tracing = { version = "0.1", features = [ "release_max_level_off" ] }
 hashbrown = "0.12"
+futures-lite = "1.12.0"
+futures-util = "0.3.24"
+thiserror = "1.0.35"

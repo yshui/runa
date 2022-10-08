@@ -12,6 +12,8 @@ pub mod server;
 pub mod events;
 pub mod provide_any;
 pub mod globals;
+pub mod renderer_capability;
+mod shared;
 
 #[derive(Error, Debug)]
 pub enum Error<SE, LE> {

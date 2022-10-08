@@ -1,4 +1,4 @@
-use std::{cell::Cell, hash::Hash, pin::Pin, rc::Rc};
+use std::{cell::Cell, hash::Hash, pin::Pin, rc::{Rc, Weak}};
 
 use event_listener::EventListener;
 use futures_lite::Future;
@@ -11,13 +11,31 @@ struct EventFlagsState {
     event: event_listener::Event,
 }
 
+/// A handle to a [`EventFlags`]. This holds a weak reference to a
+/// [`EventFlags`] and can be used to notify the listeners of the EventFlags if
+/// it is still alive. This is useful because the holder of the EventFlags could
+/// simply terminate without needing to deregister from event sources.
+#[derive(Clone, Debug)]
+pub struct EventHandle(Weak<EventFlagsState>);
+
+impl EventHandle {
+    pub fn set(&self, slot: u8) -> bool {
+        if let Some(state) = self.0.upgrade() {
+            EventFlags(state).set(slot);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// A bitflag that wakes up listeners when set.
 ///
 /// Each listener is supposed to only react to a single bit of the flag.
 /// Although the inner mechanism used can handle N-to-N notification, this is
 /// only intended for one-to-one single direction communication, i.e. from
 /// server context to per-client context.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 #[repr(transparent)]
 pub struct EventFlags(Rc<EventFlagsState>);
 
@@ -30,7 +48,7 @@ impl EventFlags {
         self.0.flags.set(flags);
         self.0.event.notify(1);
     }
- 
+
     /// Get the current set bits and reset the flags.
     pub fn reset(&self) -> Flags {
         self.0.flags.replace(bitvec::array::BitArray::ZERO)
@@ -39,32 +57,22 @@ impl EventFlags {
     pub fn listen(&self) -> EventListener {
         self.0.event.listen()
     }
+
+    pub fn as_handle(&self) -> EventHandle {
+        EventHandle(Rc::downgrade(&self.0))
+    }
 }
 
-impl PartialEq for EventFlags {
+impl PartialEq for EventHandle {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl Eq for EventFlags {}
+impl Eq for EventHandle {}
 
-impl Hash for EventFlags {
+impl Hash for EventHandle {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Rc::as_ptr(&self.0).hash(state);
+        Weak::as_ptr(&self.0).hash(state);
     }
-}
-
-pub struct EventSlot;
-
-/// Each event listener is assigned a static slot in the event flags.
-impl EventSlot {
-    pub const REGISTRY: i32 = 0;
-}
-
-pub trait EventHandler<Ctx> {
-    // Allocation: event handlers are supposed for events that happens relatively
-    // rarely. frequent events, like mouse moves are sent directly from the
-    // server context.
-    fn handle_event(&self, ctx: &mut Ctx) -> Pin<Box<dyn Future<Output = ()>>>;
 }

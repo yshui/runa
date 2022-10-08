@@ -15,3 +15,12 @@ impl From<wl_common::Infallible> for Error {
         match f {}
     }
 }
+
+impl Error {
+    pub fn custom<E>(e: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::Custom(e.into())
+    }
+}

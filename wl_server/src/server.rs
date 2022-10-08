@@ -1,23 +1,32 @@
 //! These are traits that are typically implemented by the server context
 //! singleton, and related types and traits.
 
-use std::{
-    cell::{Cell, RefCell},
-    marker::PhantomData,
-    rc::Rc,
-};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use wl_protocol::wayland::{wl_registry::v1 as wl_registry};
 
 use hashbrown::{hash_map, HashMap};
 use wl_common::Serial;
 
-use crate::{connection::InterfaceMeta, globals::Global};
+use crate::globals::Global;
 
 pub trait Server {
     /// The per client context type.
     type Connection: crate::connection::Connection<Context = Self> + 'static;
     type Globals: Globals<Self>;
+    type Builder: ServerBuilder<Output = Self>;
 
     fn globals(&self) -> &Self::Globals;
+    fn builder() -> Self::Builder;
+}
+
+pub trait ServerBuilder {
+    type Output: Server;
+    /// Add a new global to the server
+    fn global(&mut self, global: impl Global<Self::Output> + 'static) -> &mut Self;
+    /// Add a new event slot to the server
+    fn event_slot(&mut self, event: &'static str) -> &mut Self;
+    /// Create the server object
+    fn build(self) -> Self::Output;
 }
 
 pub trait EventSource {
@@ -26,26 +35,32 @@ pub trait EventSource {
     /// notified once. But the EventSource should keep track of the number
     /// of times it was added, and only remove it when the number of times it
     /// was removed is equal to the number of times it was added.
-    fn add_listener(&self, handle: &crate::events::EventFlags);
+    fn add_listener(&self, handle: crate::events::EventHandle);
     /// Remove a listener
-    fn remove_listener(&self, handle: &crate::events::EventFlags) -> bool;
+    fn remove_listener(&self, handle: crate::events::EventHandle) -> bool;
     /// Notify all added listeners.
     fn notify(&self, slot: u8);
+    /// Get information about allocated slots. Slots are fixed once an event
+    /// source object is created. See [`ServerBuilder::event_slot`].
+    fn get_slots(&self) -> &[&'static str];
 }
 
 #[derive(Default)]
 pub struct Listeners {
-    listeners: RefCell<HashMap<crate::events::EventFlags, usize>>,
+    listeners: RefCell<HashMap<crate::events::EventHandle, usize>>,
+    slots:     Vec<&'static str>,
 }
 
 impl EventSource for Listeners {
     fn notify(&self, slot: u8) {
-        for listener in self.listeners.borrow().keys() {
-            listener.set(slot)
-        }
+        self.listeners.borrow_mut().retain(|handle, _| {
+            // Notify the listener, also check if the listen is still alive, removing all
+            // the handles that has died.
+            handle.set(slot)
+        });
     }
 
-    fn add_listener(&self, handle: &crate::events::EventFlags) {
+    fn add_listener(&self, handle: crate::events::EventHandle) {
         self.listeners
             .borrow_mut()
             .entry(handle.clone())
@@ -53,7 +68,7 @@ impl EventSource for Listeners {
             .or_insert(1);
     }
 
-    fn remove_listener(&self, handle: &crate::events::EventFlags) -> bool {
+    fn remove_listener(&self, handle: crate::events::EventHandle) -> bool {
         match self.listeners.borrow_mut().entry(handle.clone()) {
             hash_map::Entry::Occupied(mut entry) => {
                 let count = entry.get_mut();
@@ -66,6 +81,10 @@ impl EventSource for Listeners {
             },
             hash_map::Entry::Vacant(_) => false,
         }
+    }
+
+    fn get_slots(&self) -> &[&'static str] {
+        &self.slots
     }
 }
 
@@ -99,28 +118,60 @@ struct GlobalStoreInner<S: Server + ?Sized> {
 }
 
 pub struct GlobalStore<S: Server> {
-    inner:   Rc<GlobalStoreInner<S>>,
-    _server: PhantomData<S>,
+    inner:               GlobalStoreInner<S>,
+    registry_event_slot: Option<u8>,
+    _server:             PhantomData<S>,
 }
 
-impl<S: Server> Clone for GlobalStore<S> {
-    fn clone(&self) -> Self {
+pub struct GlobalStoreBuilder<S: Server> {
+    globals:     Vec<Box<dyn Global<S>>>,
+    event_slots: Vec<&'static str>,
+}
+
+impl<S: Server> Default for GlobalStoreBuilder<S> {
+    fn default() -> Self {
         Self {
-            inner:   self.inner.clone(),
-            _server: PhantomData,
+            globals:     Vec::new(),
+            event_slots: Vec::new(),
         }
     }
 }
 
-impl<S: Server> Default for GlobalStore<S> {
-    fn default() -> Self {
-        let globals = wl_common::IdAlloc::default();
-        globals.next_serial(Rc::new(crate::globals::Display) as Rc<dyn Global<S>>);
-        Self {
-            inner:   Rc::new(GlobalStoreInner {
-                globals,
-                listeners: Default::default(),
-            }),
+impl<S: Server> GlobalStoreBuilder<S> {
+    pub fn global(&mut self, global: impl Global<S> + 'static) -> &mut Self {
+        self.globals.push(Box::new(global));
+        self
+    }
+
+    pub fn event_slot(&mut self, event: &'static str) -> &mut Self {
+        self.event_slots.push(event);
+        self
+    }
+
+    pub fn build(self) -> GlobalStore<S> {
+        let Self {
+            globals,
+            event_slots,
+        } = self;
+        let registry_event_slot = event_slots
+            .iter()
+            .position(|x| *x == wl_registry::NAME)
+            .map(|x| x as u8);
+        let id_alloc = wl_common::IdAlloc::default();
+        let listeners = Listeners {
+            listeners: RefCell::new(HashMap::new()),
+            slots:     event_slots,
+        };
+        id_alloc.next_serial(Rc::new(crate::globals::Display) as Rc<dyn Global<S>>);
+        for global in globals {
+            id_alloc.next_serial(global.into());
+        }
+        GlobalStore {
+            inner: GlobalStoreInner {
+                globals: id_alloc,
+                listeners,
+            },
+            registry_event_slot,
             _server: PhantomData,
         }
     }
@@ -129,7 +180,9 @@ impl<S: Server> Default for GlobalStore<S> {
 impl<S: Server> Globals<S> for GlobalStore<S> {
     fn insert<T: Global<S> + 'static>(&self, global: T) -> u32 {
         let id = self.inner.globals.next_serial(Rc::new(global));
-        self.notify(crate::events::EventSlot::REGISTRY as u8);
+        if let Some(slot) = self.registry_event_slot {
+            self.notify(slot);
+        }
         id
     }
 
@@ -154,7 +207,9 @@ impl<S: Server> Globals<S> for GlobalStore<S> {
     fn remove(&self, id: u32) -> bool {
         let removed = self.inner.globals.expire(id);
         if removed {
-            self.notify(crate::events::EventSlot::REGISTRY as u8);
+            if let Some(slot) = self.registry_event_slot {
+                self.notify(slot);
+            }
         }
         removed
     }
@@ -174,19 +229,28 @@ impl<S: Server> Globals<S> for GlobalStore<S> {
     }
 }
 
+/// EventSource implementation for GlobalStore. GlobalStore will notify
+/// listeners when globals are added or removed. The notification will be sent
+/// to the slot registered as "wl_registry".
 impl<S: Server> EventSource for GlobalStore<S> {
     fn notify(&self, slot: u8) {
         self.inner.listeners.notify(slot)
     }
 
-    fn add_listener(&self, handle: &crate::events::EventFlags) {
+    fn add_listener(&self, handle: crate::events::EventHandle) {
         // Always notify a new listener so it can scan the current available globals
-        handle.set(crate::events::EventSlot::REGISTRY as u8);
+        if let Some(slot) = self.registry_event_slot {
+            handle.set(slot);
+        }
         self.inner.listeners.add_listener(handle)
     }
 
-    fn remove_listener(&self, handle: &crate::events::EventFlags) -> bool {
+    fn remove_listener(&self, handle: crate::events::EventHandle) -> bool {
         self.inner.listeners.remove_listener(handle)
+    }
+
+    fn get_slots(&self) -> &[&'static str] {
+        self.inner.listeners.get_slots()
     }
 }
 

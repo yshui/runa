@@ -11,7 +11,7 @@ use std::{
 };
 
 use futures_core::TryFuture;
-use futures_lite::ready;
+use std::task::ready;
 
 pub mod buf;
 pub mod de;
@@ -132,7 +132,7 @@ pub trait Serialize {
     ///
     /// If there is not enough space in the buffer, this function should panic -
     /// the user should have called `poll_reserve` before serializing, so
-    /// this indicates program error. If `self` contains file descriptors
+    /// this indicates programming error. If `self` contains file descriptors
     /// that aren't OwnedFd, this function panics too.
     fn serialize<W: AsyncBufWriteWithFd>(self, writer: Pin<&mut W>);
     /// How many bytes will this message serialize to. Including the 8 byte

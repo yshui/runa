@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures_lite::ready;
+use std::task::ready;
 use pin_project_lite::pin_project;
 
 use crate::{AsyncReadWithFd, AsyncWriteWithFd};

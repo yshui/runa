@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures_lite::ready;
+use std::task::ready;
 use serde::de::{self, value, Deserializer as _, Error, Visitor};
 
 use crate::{AsyncBufReadWithFd, AsyncReadWithFd};

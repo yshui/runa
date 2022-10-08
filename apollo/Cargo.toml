@@ -1,0 +1,13 @@
+[package]
+name = "apollo"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dlv-list = "0.4.0"
+wl_common = { version = "0.1.0", path = "../wl_common" }
+wl_protocol = { version = "0.1.0", path = "../wl_protocol" }
+wl_server = { version = "0.1.0", path = "../wl_server" }
+wl_types = { version = "0.1.0", path = "../wl_types" }

@@ -178,19 +178,19 @@ pub fn message_broker(
             }
         }
     });
+    let ctx = &input.connection_context;
     let inits = enum_.iter().map(|i| {
         let imp = &i.imp;
-        quote! { #imp::init_server(ctx).unwrap(); }
+        quote! { #imp::init_server(&mut builder).unwrap(); }
     });
     let handle_events = enum_.iter().map(|i| {
         let imp = &i.imp;
-        quote! { if i == #imp::EVENT_SLOT { #imp::handle_event(ctx).await?; } }
+        quote! { #imp::handle_events(ctx, i, slot_names[i]).await?; }
     });
 
     // Get the error type of the first interface. They are all supposed to be the
     // same.
     let imp0 = &enum_[0].imp;
-    let ctx = &input.connection_context;
     let error = quote! {
         <#imp0 as ::wl_common::InterfaceMessageDispatch<#ctx>>::Error
     };
@@ -202,8 +202,11 @@ pub fn message_broker(
         const _: () = {
             use std::pin::Pin;
             impl #name {
-                fn init_server(ctx: &mut <#ctx as ::wl_server::connection::Connection>::Context) {
+                fn init_server() -> <#ctx as ::wl_server::connection::Connection>::Context {
+                    let mut builder = <<#ctx as ::wl_server::connection::Connection>::Context as ::wl_server::server::Server>::builder();
                     #(#inits)*
+                    use ::wl_server::server::ServerBuilder;
+                    builder.build()
                 }
                 /// `ctx` must implement ObjectStore
                 async fn dispatch<'a, 'b: 'a, R>(
@@ -229,9 +232,10 @@ pub fn message_broker(
                 }
                 async fn handle_events(ctx: &mut #ctx) -> Result<(), #error> {
                     use ::wl_server::connection::Evented;
-                    let events = ctx.event_handle().reset();
+                    use ::wl_server::server::{EventSource, Server};
+                    let events = ctx.reset_events();
+                    let slot_names = ctx.server_context().globals().get_slots();
                     for i in events.iter_ones() {
-                        let i: i32 = i.try_into().unwrap();
                         #(#handle_events)*
                     }
                     Ok(())

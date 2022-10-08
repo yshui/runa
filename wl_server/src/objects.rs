@@ -76,8 +76,6 @@ pub const DISPLAY_ID: u32 = 1;
 pub struct Display;
 
 impl Display {
-    pub const EVENT_SLOT: i32 = -1;
-
     pub fn init_server<Ctx: server::ServerBuilder>(
         _server: &mut Ctx,
     ) -> Result<(), wl_common::Infallible> {
@@ -101,6 +99,7 @@ where
         + connection::Evented<Ctx>
         + wl_common::Serial
         + std::fmt::Debug,
+    Ctx::Context: EventSource,
     crate::error::Error: From<Ctx::Error>,
 {
     type Error = crate::error::Error;
@@ -142,24 +141,20 @@ where
     fn get_registry<'a>(
         &'a self,
         ctx: &'a mut Ctx,
-        object_id: u32,
+        _object_id: u32,
         registry: wl_types::NewId,
     ) -> Self::GetRegistryFut<'a> {
         async move {
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
             let server_context = ctx.server_context();
-            let slot = server_context
-                .globals()
-                .get_slots()
-                .iter()
-                .position(|s| *s == wl_registry::NAME)
-                .expect("wl_registry slot not registered");
             let inserted = ctx.with_entry(registry.0, |entry| {
                 if entry.is_vacant() {
                     let (object, task) = server_context
                         .globals()
-                        .map_by_interface("wl_registry", |registry| registry.bind(ctx, object_id))
+                        .map_by_interface(wl_registry::NAME, |registry_global| {
+                            registry_global.bind(ctx, registry.0)
+                        })
                         .expect("Required global wl_registry not found");
                     entry.or_insert_boxed(object);
                     Some(task)
@@ -167,30 +162,13 @@ where
                     None
                 }
             });
-            if inserted.is_some() {
-                // Add this object_id to the list of registry objects bound.
-                let state = ctx.with_state_mut(slot as u8, |state: &mut RegistryState| {
-                    state.0.insert(registry.0);
-                });
-                if state.is_err() {
-                    // This could be the first registry object, so the state might not be set.
-                    ctx.set_state(
-                        slot as u8,
-                        RegistryState(std::iter::once(registry.0).collect::<HashSet<u32>>()),
-                    )
-                    .unwrap();
-                }
-            }
-            match inserted {
-                // Send the global events
-                Some(Some(task)) => {
+            if let Some(task) = inserted {
+                if let Some(task) = task {
                     debug!("Sending global events");
                     task.await?;
-                },
-                None => {
-                    send_id_in_use(ctx, registry.0).await?;
-                },
-                _ => (),
+                }
+            } else {
+                send_id_in_use(ctx, registry.0).await?;
             }
             Ok(())
         }
@@ -209,27 +187,20 @@ impl InterfaceMeta for Display {
 
 pub struct Registry<Ctx: Connection> {
     known_globals: RefCell<HashMap<u32, Weak<dyn Global<Ctx::Context>>>>,
-    event_slot:    u8,
 }
 
 impl<Ctx> Registry<Ctx>
 where
     Ctx: Connection + connection::Evented<Ctx> + connection::Objects + 'static,
+    Ctx::Context: EventSource,
     crate::error::Error: From<<Ctx as Connection>::Error>,
 {
     pub fn new(ctx: &Ctx) -> Self {
         let server_context = ctx.server_context();
-        server_context.globals().add_listener(ctx.event_handle());
-        let event_slot = server_context
-            .globals()
-            .get_slots()
-            .iter()
-            .position(|s| *s == wl_registry::NAME)
-            .expect("wl_registry slot not registered") as u8;
+        server_context.add_listener(ctx.event_handle());
 
         Self {
             known_globals: RefCell::new(HashMap::new()),
-            event_slot,
         }
     }
 
@@ -248,6 +219,7 @@ where
         slot: usize,
         event: &'static str,
     ) -> Result<(), crate::error::Error> {
+        tracing::debug!("Handling registry event {slot} {event}");
         if event != wl_registry::NAME {
             return Ok(())
         }
@@ -327,7 +299,7 @@ where
 /// Set of object_ids that are wl_registry objects, so we know which objects to
 /// send the events from.
 #[derive(Debug)]
-struct RegistryState(HashSet<u32>);
+pub(crate) struct RegistryState(pub(crate) HashSet<u32>);
 
 impl crate::provide_any::Provider for RegistryState {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
@@ -378,13 +350,6 @@ where
                     }
                 });
                 if let Some(task) = inserted {
-                    if global.interface() == wl_registry::NAME {
-                        // Add the new registry to the list of registries this client has bound
-                        ctx.with_state_mut(self.event_slot, |state: &mut RegistryState| {
-                            state.0.insert(object_id);
-                        })
-                        .expect("registry state not found");
-                    }
                     if let Some(task) = task {
                         task.await?;
                     }
@@ -423,14 +388,20 @@ impl<Ctx: Connection> ::std::fmt::Debug for Registry<Ctx> {
             .finish()
     }
 }
-impl<Ctx: Connection + connection::Evented<Ctx>> DropObject<Ctx> for Registry<Ctx> {
+impl<Ctx: Connection + connection::Evented<Ctx>> DropObject<Ctx> for Registry<Ctx>
+where
+    Ctx::Context: EventSource,
+{
     fn drop_object(&self, ctx: &Ctx) {
         let server_context = ctx.server_context();
-        server_context.globals().remove_listener(ctx.event_handle());
+        server_context.remove_listener(ctx.event_handle());
     }
 }
 
-impl<Ctx: Connection + connection::Evented<Ctx> + 'static> InterfaceMeta for Registry<Ctx> {
+impl<Ctx: Connection + connection::Evented<Ctx> + 'static> InterfaceMeta for Registry<Ctx>
+where
+    Ctx::Context: EventSource,
+{
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }

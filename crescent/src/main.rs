@@ -35,6 +35,7 @@ pub enum Messages {
 #[derive(Debug)]
 pub struct CrescentState {
     globals: wl_server::server::GlobalStore<Crescent>,
+    listeners: wl_server::server::Listeners,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,7 @@ pub struct Crescent(Rc<CrescentState>);
 
 pub struct CrescentBuilder {
     inner: wl_server::server::GlobalStoreBuilder<Crescent>,
+    event_slots: Vec<&'static str>,
 }
 
 impl wl_server::server::ServerBuilder for CrescentBuilder {
@@ -51,12 +53,17 @@ impl wl_server::server::ServerBuilder for CrescentBuilder {
         self
     }
     fn event_slot(&mut self, event: &'static str) -> &mut Self {
-        self.inner.event_slot(event);
+        tracing::debug!("Adding event slot: {}", event);
+        if event == "wl_registry" {
+            self.inner.registry_event_slot(self.event_slots.len() as u8);
+        }
+        self.event_slots.push(event);
         self
     }
     fn build(self) -> Self::Output {
         Crescent(Rc::new(CrescentState {
             globals: self.inner.build(),
+            listeners: wl_server::server::Listeners::new(self.event_slots),
         }))
     }
 }
@@ -72,9 +79,26 @@ impl wl_server::server::Server for Crescent {
     fn builder() -> Self::Builder {
         CrescentBuilder {
             inner: wl_server::server::GlobalStoreBuilder::default(),
+            event_slots: Vec::new(),
         }
     }
 }
+
+impl wl_server::server::EventSource for Crescent {
+    fn add_listener(&self, handle: wl_server::events::EventHandle) {
+        self.0.listeners.add_listener(handle);
+    }
+    fn remove_listener(&self, handle: wl_server::events::EventHandle) -> bool {
+        self.0.listeners.remove_listener(handle)
+    }
+    fn notify(&self, slot: u8) {
+        self.0.listeners.notify(slot);
+    }
+    fn slots(&self) -> &[&'static str] {
+        self.0.listeners.slots()
+    }
+}
+
 impl RendererCapability for Crescent {
     fn formats(&self) -> Vec<wl_server::renderer_capability::Format> {
         use wl_server::renderer_capability::Format;

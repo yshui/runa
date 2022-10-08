@@ -1,16 +1,17 @@
 use std::{future::Future, pin::Pin};
 
+use hashbrown::HashSet;
 use wl_protocol::wayland::{
     wl_compositor, wl_display, wl_registry, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
 };
 
 use crate::{
-    connection::{self, Connection},
+    connection::{self, Connection, Evented},
     objects::InterfaceMeta,
     provide_any::Demand,
     renderer_capability::RendererCapability,
-    server::Server,
+    server::{EventSource, Server},
 };
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -85,8 +86,8 @@ pub struct Registry;
 
 impl<S> Global<S> for Registry
 where
-    S: Server + 'static,
-    S::Connection: connection::Evented<S::Connection> + connection::Objects,
+    S: Server + EventSource + 'static,
+    S::Connection: Evented<S::Connection> + connection::Objects,
     crate::error::Error: From<<S::Connection as connection::Connection>::Error>,
 {
     fn interface(&self) -> &'static str {
@@ -100,7 +101,7 @@ where
     fn bind<'b, 'c>(
         &self,
         client: &'b S::Connection,
-        _object_id: u32,
+        object_id: u32,
     ) -> (
         Box<dyn InterfaceMeta>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
@@ -108,12 +109,38 @@ where
     where
         'b: 'c,
     {
-        // Registry::new would add a listener to the GlobalStore. If you want to
-        // implement the Registry global yourself, you need to remember to do
+        use crate::objects::RegistryState;
+        let slot = client
+            .server_context()
+            .slots()
+            .iter()
+            .position(|s| *s == wl_registry::v1::NAME)
+            .unwrap() as u8;
+        // Registry::new would add a listener into the Server EventSource. If you want
+        // to implement the Registry global yourself, you need to remember to do
         // this yourself, somewhere.
         (
             Box::new(crate::objects::Registry::<S::Connection>::new(client)),
-            None,
+            // Send the client a registry event if the proxy is inserted, the event handler will
+            // send the list of existing globals to the client.
+            // Also set up the registry state in the client context.
+            Some(Box::pin(async move {
+                // Add this object_id to the list of registry objects bound.
+                let state = client.with_state_mut(slot as u8, |state: &mut RegistryState| {
+                    state.0.insert(object_id);
+                });
+                if state.is_err() {
+                    // This could be the first registry object, so the state might not be set.
+                    tracing::debug!("Creating new registry state");
+                    client.set_state(
+                        slot as u8,
+                        RegistryState(std::iter::once(object_id).collect::<HashSet<u32>>()),
+                    )
+                    .unwrap();
+                }
+                client.event_handle().set(slot);
+                Ok(())
+            })),
         )
     }
 

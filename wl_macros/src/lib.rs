@@ -234,7 +234,7 @@ pub fn message_broker(
                     use ::wl_server::connection::Evented;
                     use ::wl_server::server::{EventSource, Server};
                     let events = ctx.reset_events();
-                    let slot_names = ctx.server_context().globals().get_slots();
+                    let slot_names = ctx.server_context().slots();
                     for i in events.iter_ones() {
                         #(#handle_events)*
                     }

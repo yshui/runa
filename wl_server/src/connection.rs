@@ -12,12 +12,12 @@ use std::{
 };
 
 use hashbrown::{hash_map, HashMap};
+use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 use crate::{
     objects::{DropObject, InterfaceMeta},
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
-use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 /// Per client mapping from object ID to objects. This is the reference
 /// implementation of [`Objects`].
@@ -31,11 +31,12 @@ use wl_protocol::wayland::wl_display::v1 as wl_display;
 /// the [`drop_object`] helper function.
 ///
 /// Other methods can be simply forwarded.
-pub struct Store {
-    map: RefCell<HashMap<u32, Rc<dyn InterfaceMeta>>>,
+pub struct Store<Ctx> {
+    map:  RefCell<HashMap<u32, Rc<dyn InterfaceMeta>>>,
+    _ctx: std::marker::PhantomData<Ctx>,
 }
 
-impl std::fmt::Debug for Store {
+impl<Ctx> std::fmt::Debug for Store<Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         struct DebugMap<'a>(&'a HashMap<u32, Rc<dyn InterfaceMeta>>);
         let map = self.map.borrow();
@@ -72,12 +73,13 @@ impl<'a> Entry<'a> for StoreEntry<'a> {
 /// A bundle of objects.
 ///
 /// Usually this is the set of objects a client has bound to.
-pub trait Objects {
+pub trait Objects<Ctx: ?Sized> {
     type Entry<'a>: Entry<'a>;
     /// Insert object into the store with the given ID. Returns Ok(()) if
     /// successful, Err(T) if the ID is already in use.
     fn insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T>;
-    fn remove(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
+    fn remove(&self, ctx: &Ctx, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
+    fn clear(&self, ctx: &Ctx);
     fn get(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
     fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T;
     fn try_insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T> {
@@ -92,17 +94,21 @@ pub trait Objects {
     }
 }
 
-impl Store {
+impl<Ctx> Store<Ctx> {
     pub fn new() -> Self {
         Self {
-            map: RefCell::new(HashMap::new()),
+            map:  RefCell::new(HashMap::new()),
+            _ctx: Default::default(),
         }
     }
 }
 
-pub type StoreEntry<'a> = hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>;
-impl Store {
-    pub fn insert<T: InterfaceMeta + 'static>(&self, object_id: u32, object: T) -> Result<(), T> {
+pub type StoreEntry<'a> =
+    hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>;
+impl<Ctx: 'static> Objects<Ctx> for Store<Ctx> {
+    type Entry<'a> = StoreEntry<'a>;
+
+    fn insert<T: InterfaceMeta + 'static>(&self, object_id: u32, object: T) -> Result<(), T> {
         match self.map.borrow_mut().entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
@@ -112,7 +118,7 @@ impl Store {
         }
     }
 
-    pub fn remove<Ctx: 'static>(&self, ctx: &Ctx, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
+    fn remove(&self, ctx: &Ctx, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
         if let Some(obj) = self.map.borrow_mut().remove(&object_id) {
             if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
                 drop_object.drop_object(ctx);
@@ -123,17 +129,17 @@ impl Store {
         }
     }
 
-    pub fn get(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
+    fn get(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
         self.map.borrow().get(&object_id).map(Clone::clone)
     }
 
-    pub fn with_entry<T>(&self, id: u32, f: impl FnOnce(StoreEntry<'_>) -> T) -> T {
+    fn with_entry<T>(&self, id: u32, f: impl FnOnce(StoreEntry<'_>) -> T) -> T {
         f(self.map.borrow_mut().entry(id))
     }
- 
-    /// Remove all objects from the store. MUST be called before the store is dropped, to ensure
-    /// drop_object is called for all objects.
-    pub fn clear<Ctx: 'static>(&self, ctx: &Ctx) {
+
+    /// Remove all objects from the store. MUST be called before the store is
+    /// dropped, to ensure drop_object is called for all objects.
+    fn clear(&self, ctx: &Ctx) {
         let mut map = self.map.borrow_mut();
         for (_, obj) in map.drain() {
             if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
@@ -143,18 +149,19 @@ impl Store {
     }
 }
 
-impl Drop for Store {
+impl<Ctx> Drop for Store<Ctx> {
     fn drop(&mut self) {
-        // This is a safety check to ensure that clear() is called before the store is dropped.
-        // If this is not called, then drop_object will not be called for all objects.
+        // This is a safety check to ensure that clear() is called before the store is
+        // dropped. If this is not called, then drop_object will not be called
+        // for all objects.
         assert!(self.map.get_mut().is_empty());
     }
 }
 
 /// A client connection
 pub trait Connection {
-    type Context: crate::server::Server<Connection = Self> + 'static;
     type Error;
+    type Context: crate::server::Server<Connection = Self> + 'static;
     type Send<'a, M>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a,
@@ -162,6 +169,7 @@ pub trait Connection {
     type Flush<'a>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a;
+    type Objects: Objects<Self>;
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::Context;
 
@@ -177,6 +185,7 @@ pub trait Connection {
 
     /// Flush connection
     fn flush(&self) -> Self::Flush<'_>;
+    fn objects(&self) -> &Self::Objects;
 }
 
 /// Implementation helper for Connection::send. This assumes you stored the
@@ -273,112 +282,120 @@ where
 /// A event receiver, which can be notified via its `event_handle` and a event
 /// slot. Each slot also has user state attached.
 pub trait Evented<Ctx> {
+    type States: EventStates;
     /// Get the event flags handle that can be used to wake up the client
     /// connection task.
     fn event_handle(&self) -> crate::events::EventHandle;
     /// Reset the event flags and return the flags that are set.
     fn reset_events(&self) -> crate::events::Flags;
-    fn remove_state(&self, slot: u8) -> Result<Box<dyn Provider>, ()>;
-    fn with_state<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S)
-        -> Result<Option<S>, ()>;
-    fn with_state_mut<T: 'static, S>(
+    fn event_states(&self) -> &Self::States;
+}
+
+pub trait EventStates {
+    fn len(&self) -> usize;
+    /// Remove a state at the given slot. Returns the state if it was set, or
+    /// None. If slot is OOB, this panics
+    fn remove(&self, slot: u8) -> Option<Box<dyn Provider>>;
+    /// Set the state at slot `slot`. Returns Err(state) if the slot is already
+    /// taken.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is OOB.
+    fn set<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T>;
+    /// Call `f` with the state stored in slot `slot`, if it exists. If slot is
+    /// OOB, this panics, if the state does not provide a value of type `T`,
+    /// this returns Err(())
+    fn with<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S) -> Result<Option<S>, ()>;
+    /// Same as `with`, but mutable.
+    fn with_mut<T: 'static, S>(
         &self,
         slot: u8,
         f: impl FnOnce(&mut T) -> S,
     ) -> Result<Option<S>, ()>;
-    fn set_state<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T>;
 }
 
 /// For storing arbitrary additional states in the connection object. State
 /// slots are statically assigned.
-pub struct SlottedStates {
-    is_set: Cell<crate::events::Flags>,
-    states: RefCell<[Box<dyn Provider>; 64]>,
+pub struct SlottedStates<const N: usize> {
+    states: RefCell<[Option<Box<dyn Provider>>; N]>,
 }
 
-impl std::fmt::Debug for SlottedStates {
+impl<const N: usize> std::fmt::Debug for SlottedStates<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct DebugList<'a>(&'a [Option<Box<dyn Provider>>]);
+        let map = self.states.borrow();
+        let debug_list = DebugList(&map[..]);
+        impl std::fmt::Debug for DebugList<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_list()
+                    .entries(self.0.iter().map(|o| o.is_some()))
+                    .finish()
+            }
+        }
         f.debug_struct("SlottedStates")
-            .field("is_set", &self.is_set.get())
+            .field("is_set", &debug_list)
             .field("states", &"…")
             .finish()
     }
 }
 
-impl SlottedStates {
-    pub fn new() -> Self {
-        Self {
-            states: RefCell::new(std::array::from_fn(|_| Box::new(()) as Box<dyn Provider>)),
-            is_set: Cell::new(bitvec::array::BitArray::ZERO),
-        }
+impl<const N: usize> EventStates for SlottedStates<N> {
+    fn len(&self) -> usize {
+        N
     }
 
-    /// Remove a state at the given slot. Returns the state if it was set,
-    /// otherwise, or if slot is OOB, returns Err(())
-    pub fn remove(&self, slot: u8) -> Result<Box<dyn Provider>, ()> {
-        let mut is_set = self.is_set.get();
-        match is_set.get(slot as usize).map(|x| *x) {
-            Some(true) => {
-                let old_state =
-                    std::mem::replace(&mut self.states.borrow_mut()[slot as usize], Box::new(()));
-                is_set.set(slot as usize, false);
-                self.is_set.set(is_set);
-                Ok(old_state)
-            },
-            None | Some(false) => Err(()),
-        }
+    fn remove(&self, slot: u8) -> Option<Box<dyn Provider>> {
+        let mut states = self.states.borrow_mut();
+        states[slot as usize].take()
     }
 
-    /// Call `f` with the state stored in slot `slot`. If the state is not set,
-    /// or is slot is OOB, this returns Err(()), if the state does not
-    /// provide a value of type `T`, this returns Ok(None).
-    pub fn with<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S) -> Result<Option<S>, ()> {
-        match self.is_set.get().get(slot as usize).map(|x| *x) {
-            None | Some(false) => Err(()),
-            Some(true) => {
-                let states = self.states.borrow();
-                Ok(request_ref(&*states[slot as usize]).map(f))
-            },
+    fn with<T: 'static, S>(&self, slot: u8, f: impl FnOnce(&T) -> S) -> Result<Option<S>, ()> {
+        let states = self.states.borrow();
+        let r = states[slot as usize]
+            .as_ref()
+            .map(|r| request_ref(r.as_ref()));
+        match r {
+            Some(Some(r)) => Ok(Some(f(r))),
+            Some(None) => Err(()),
+            None => Ok(None),
         }
     }
 
     /// Same as [`with`] but mutable.
-    pub fn with_mut<T: 'static, S>(
+    fn with_mut<T: 'static, S>(
         &self,
         slot: u8,
         f: impl FnOnce(&mut T) -> S,
     ) -> Result<Option<S>, ()> {
-        match self.is_set.get().get(slot as usize).map(|x| *x) {
-            None | Some(false) => Err(()),
-            Some(true) => {
-                let mut states = self.states.borrow_mut();
-                Ok(request_mut(&mut *states[slot as usize]).map(f))
-            },
+        let mut states = self.states.borrow_mut();
+        let r = states[slot as usize]
+            .as_mut()
+            .map(|r| request_mut(r.as_mut()));
+        match r {
+            Some(Some(r)) => Ok(Some(f(r))),
+            Some(None) => Err(()),
+            None => Ok(None),
         }
     }
 
-    /// Set the state at slot `slot`. Returns Err(state) if the slot is already
-    /// set.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the slot is OOB.
-    pub fn set<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T> {
-        let mut is_set = self.is_set.get();
-        if *is_set.get(slot as usize).unwrap() {
+    fn set<T: Provider + 'static>(&self, slot: u8, state: T) -> Result<(), T> {
+        let mut states = self.states.borrow_mut();
+        if states[slot as usize].is_some() {
             Err(state)
         } else {
-            is_set.set(slot as usize, true);
-            self.is_set.set(is_set);
-            self.states.borrow_mut()[slot as usize] = Box::new(state);
+            states[slot as usize] = Some(Box::new(state));
             Ok(())
         }
     }
 }
 
-impl Default for SlottedStates {
+impl<const N: usize> Default for SlottedStates<N> {
     fn default() -> Self {
-        Self::new()
+        const NONE: Option<Box<dyn Provider>> = None;
+        Self {
+            states: RefCell::new([NONE; N]),
+        }
     }
 }
 

@@ -53,7 +53,7 @@ impl InterfaceMeta for Shm {
 #[interface_message_dispatch]
 impl<Ctx> wl_shm::RequestDispatch<Ctx> for Shm
 where
-    Ctx: Objects + Connection,
+    Ctx: Connection,
     error::Error: From<Ctx::Error>,
 {
     type Error = error::Error;
@@ -86,7 +86,7 @@ where
                 fd.take().unwrap_unchecked()
             };
             let pool = ShmPool { fd };
-            if ctx.insert(id.0, pool).is_err() {
+            if ctx.objects().insert(id.0, pool).is_err() {
                 ctx.send(
                     DISPLAY_ID,
                     wl_display::Event::Error(wl_display::events::Error {

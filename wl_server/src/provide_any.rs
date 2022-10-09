@@ -82,12 +82,37 @@ pub trait Provider {
     fn provide_mut<'a>(&'a mut self, _demand: &mut Demand<'a>) {}
 }
 
-/// Like [`Provider`], but with a "slot" to hint on what's being requested. Normally with
-/// `Provider`, the provider needs to provide everything it can provide, leading to `O(n)` time
-/// complexity. This trait instead provide a "slot" to hint on what's being requested, allowing
-/// providers to provide only what's needed, thus speed things up.
+/// Like [`Provider`], but with a "slot" to hint on what's being requested.
+/// Normally with `Provider`, the provider needs to provide everything it can
+/// provide, leading to `O(n)` time complexity. This trait instead provide a
+/// "slot" to hint on what's being requested, allowing providers to provide only
+/// what's needed, thus speed things up.
 pub trait SlottedProvider {
     fn provide<'a>(&'a self, slot: usize, demand: &mut Demand<'a>);
+}
+
+pub struct ProviderArray<const N: usize> {
+    pub providers: [Option<Box<dyn Provider>>; N],
+}
+
+impl<const N: usize> Default for ProviderArray<N> {
+    fn default() -> Self {
+        // Needed to work around the required `Copy` bound.
+        const NONE: Option<Box<dyn Provider>> = None;
+        Self {
+            providers: [NONE; N],
+        }
+    }
+}
+
+impl<const N: usize> SlottedProvider for ProviderArray<N> {
+    fn provide<'a>(&'a self, slot: usize, demand: &mut Demand<'a>) {
+        if slot < N {
+            if let Some(provider) = &self.providers[slot] {
+                provider.provide(demand);
+            }
+        }
+    }
 }
 
 #[repr(transparent)]

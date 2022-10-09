@@ -7,7 +7,7 @@ use wl_protocol::wayland::{
 };
 
 use crate::{
-    connection::{self, Connection, Evented},
+    connection::{self, Connection, Evented, EventStates},
     objects::InterfaceMeta,
     provide_any::Demand,
     renderer_capability::RendererCapability,
@@ -87,7 +87,7 @@ pub struct Registry;
 impl<S> Global<S> for Registry
 where
     S: Server + EventSource + 'static,
-    S::Connection: Evented<S::Connection> + connection::Objects,
+    S::Connection: Evented<S::Connection>,
     crate::error::Error: From<<S::Connection as connection::Connection>::Error>,
 {
     fn interface(&self) -> &'static str {
@@ -126,13 +126,13 @@ where
             // Also set up the registry state in the client context.
             Some(Box::pin(async move {
                 // Add this object_id to the list of registry objects bound.
-                let state = client.with_state_mut(slot as u8, |state: &mut RegistryState| {
+                let state = client.event_states().with_mut(slot as u8, |state: &mut RegistryState| {
                     state.0.insert(object_id);
-                });
-                if state.is_err() {
+                }).expect("Registry slot doesn't contain a RegistryState");
+                if state.is_none() {
                     // This could be the first registry object, so the state might not be set.
                     tracing::debug!("Creating new registry state");
-                    client.set_state(
+                    client.event_states().set(
                         slot as u8,
                         RegistryState(std::iter::once(object_id).collect::<HashSet<u32>>()),
                     )

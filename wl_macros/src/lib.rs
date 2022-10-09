@@ -217,7 +217,7 @@ pub fn message_broker(
                     R: ::wl_common::__private::AsyncBufReadWithFd + 'b,
                 {
                     let (object_id, len, mut de) = ::wl_common::Deserializer::next_message(reader.as_mut()).await?;
-                    let obj = ::wl_server::connection::Objects::get(ctx, object_id);
+                    let obj = ctx.objects().get(object_id);
                     match &obj {
                         Some(ref obj) => {
                             match obj.interface() {

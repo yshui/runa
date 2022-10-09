@@ -15,8 +15,7 @@ use hashbrown::{HashMap, HashSet};
 use tracing::debug;
 
 use crate::{
-    connection::{self, Connection, Entry, Objects},
-    events,
+    connection::{self, Connection, Entry, Objects, EventStates as _},
     globals::Global,
     provide_any::{request_ref, Demand, Provider},
     server::{self, EventSource, Globals, Server},
@@ -95,7 +94,6 @@ impl Display {
 impl<Ctx> wl_display::v1::RequestDispatch<Ctx> for Display
 where
     Ctx: Connection
-        + connection::Objects
         + connection::Evented<Ctx>
         + wl_common::Serial
         + std::fmt::Debug,
@@ -115,7 +113,7 @@ where
     ) -> Self::SyncFut<'a> {
         async move {
             debug!("wl_display.sync {}", callback);
-            if Objects::get(ctx, callback.0).is_some() {
+            if ctx.objects().get(callback.0).is_some() {
                 send_id_in_use(ctx, callback.0).await?;
             } else {
                 ctx.send(
@@ -148,7 +146,7 @@ where
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
             let server_context = ctx.server_context();
-            let inserted = ctx.with_entry(registry.0, |entry| {
+            let inserted = ctx.objects().with_entry(registry.0, |entry| {
                 if entry.is_vacant() {
                     let (object, task) = server_context
                         .globals()
@@ -191,7 +189,7 @@ pub struct Registry<Ctx: Connection> {
 
 impl<Ctx> Registry<Ctx>
 where
-    Ctx: Connection + connection::Evented<Ctx> + connection::Objects + 'static,
+    Ctx: Connection + connection::Evented<Ctx> + 'static,
     Ctx::Context: EventSource,
     crate::error::Error: From<<Ctx as Connection>::Error>,
 {
@@ -225,14 +223,14 @@ where
         }
 
         // Allocation: Global addition and removal should be rare.
-        let (deleted, added): (Vec<_>, Vec<_>) = ctx
-            .with_state(slot as u8, |state: &RegistryState| {
+        let (deleted, added): (Vec<_>, Vec<_>) = ctx.event_states()
+            .with(slot as u8, |state: &RegistryState| {
                 debug!("{:?}", state);
                 let deleted = state
                     .0
                     .iter()
                     .map(|id| {
-                        let object = ctx.get(*id).expect("inconsistent state of wl_registry");
+                        let object = ctx.objects().get(*id).expect("inconsistent state of wl_registry");
                         let object: &Registry<Ctx> =
                             request_ref(&*object).expect("wl_registry object has wrong type");
                         let deleted: Vec<_> = object
@@ -247,7 +245,7 @@ where
                     .0
                     .iter()
                     .map(|id| {
-                        let object = ctx.get(*id).expect("inconsistent state of wl_registry");
+                        let object = ctx.objects().get(*id).expect("inconsistent state of wl_registry");
                         let object: &Registry<Ctx> =
                             request_ref(&*object).expect("wl_registry object has wrong type");
                         let mut added = Vec::new();
@@ -265,8 +263,8 @@ where
                     .collect();
                 (deleted, added)
             })
-            .expect("registry state not found")
-            .expect("registry state is of the wrong type");
+            .expect("registry state is of the wrong type")
+            .expect("registry state not found");
         for (id, deleted) in deleted.into_iter() {
             for deleted_id in deleted {
                 ctx.send(
@@ -311,7 +309,7 @@ impl crate::provide_any::Provider for RegistryState {
 impl<Ctx> wl_registry::RequestDispatch<Ctx> for Registry<Ctx>
 where
     crate::error::Error: From<Ctx::Error>,
-    Ctx: Connection + Objects + connection::Evented<Ctx> + 'static,
+    Ctx: Connection + connection::Evented<Ctx> + 'static,
 {
     type Error = crate::error::Error;
 
@@ -320,7 +318,7 @@ where
     fn bind<'a>(
         &'a self,
         ctx: &'a mut Ctx,
-        object_id: u32,
+        _object_id: u32,
         name: u32,
         id: wl_types::NewId,
     ) -> Self::BindFut<'a> {
@@ -341,7 +339,7 @@ where
                 .and_then(|g| g.upgrade());
             if let Some(global) = global {
                 let (object, task) = global.bind(ctx, id.0);
-                let inserted = ctx.with_entry(id.0, |entry| {
+                let inserted = ctx.objects().with_entry(id.0, |entry| {
                     if entry.is_vacant() {
                         entry.or_insert_boxed(object);
                         Some(task)

@@ -12,8 +12,11 @@ use futures_util::TryStreamExt;
 use log::debug;
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_macros::message_broker;
-use wl_server::{connection::{self, Connection as _}, objects::InterfaceMeta};
-use wl_server::renderer_capability::RendererCapability;
+use wl_server::{
+    connection::{self, Connection as _, Objects, Store},
+    objects::InterfaceMeta,
+    renderer_capability::RendererCapability,
+};
 
 #[message_broker]
 #[wayland(connection_context = "CrescentClient")]
@@ -34,7 +37,7 @@ pub enum Messages {
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals: wl_server::server::GlobalStore<Crescent>,
+    globals:   wl_server::server::GlobalStore<Crescent>,
     listeners: wl_server::server::Listeners,
 }
 
@@ -42,16 +45,21 @@ pub struct CrescentState {
 pub struct Crescent(Rc<CrescentState>);
 
 pub struct CrescentBuilder {
-    inner: wl_server::server::GlobalStoreBuilder<Crescent>,
+    inner:       wl_server::server::GlobalStoreBuilder<Crescent>,
     event_slots: Vec<&'static str>,
 }
 
 impl wl_server::server::ServerBuilder for CrescentBuilder {
     type Output = Crescent;
-    fn global(&mut self, global: impl wl_server::globals::Global<Self::Output> + 'static) -> &mut Self {
+
+    fn global(
+        &mut self,
+        global: impl wl_server::globals::Global<Self::Output> + 'static,
+    ) -> &mut Self {
         self.inner.global(global);
         self
     }
+
     fn event_slot(&mut self, event: &'static str) -> &mut Self {
         tracing::debug!("Adding event slot: {}", event);
         if event == "wl_registry" {
@@ -60,25 +68,27 @@ impl wl_server::server::ServerBuilder for CrescentBuilder {
         self.event_slots.push(event);
         self
     }
+
     fn build(self) -> Self::Output {
         Crescent(Rc::new(CrescentState {
-            globals: self.inner.build(),
+            globals:   self.inner.build(),
             listeners: wl_server::server::Listeners::new(self.event_slots),
         }))
     }
 }
 
 impl wl_server::server::Server for Crescent {
+    type Builder = CrescentBuilder;
     type Connection = CrescentClient;
     type Globals = wl_server::server::GlobalStore<Self>;
-    type Builder = CrescentBuilder;
 
     fn globals(&self) -> &Self::Globals {
         &self.0.globals
     }
+
     fn builder() -> Self::Builder {
         CrescentBuilder {
-            inner: wl_server::server::GlobalStoreBuilder::default(),
+            inner:       wl_server::server::GlobalStoreBuilder::default(),
             event_slots: Vec::new(),
         }
     }
@@ -88,12 +98,15 @@ impl wl_server::server::EventSource for Crescent {
     fn add_listener(&self, handle: wl_server::events::EventHandle) {
         self.0.listeners.add_listener(handle);
     }
+
     fn remove_listener(&self, handle: wl_server::events::EventHandle) -> bool {
         self.0.listeners.remove_listener(handle)
     }
+
     fn notify(&self, slot: u8) {
         self.0.listeners.notify(slot);
     }
+
     fn slots(&self) -> &[&'static str] {
         self.0.listeners.slots()
     }
@@ -108,15 +121,17 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:        connection::Store,
+    store:        connection::Store<Self>,
     serial:       connection::EventSerial<()>,
     event_flags:  wl_server::events::EventFlags,
-    event_states: wl_server::connection::SlottedStates,
+    event_states: wl_server::connection::SlottedStates<64>,
     state:        Crescent,
     tx:           Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
 }
 
 impl wl_server::connection::Evented<CrescentClient> for CrescentClient {
+    type States = wl_server::connection::SlottedStates<64>;
+
     fn event_handle(&self) -> wl_server::events::EventHandle {
         self.event_flags.as_handle()
     }
@@ -125,38 +140,15 @@ impl wl_server::connection::Evented<CrescentClient> for CrescentClient {
         self.event_flags.reset()
     }
 
-    fn set_state<T: wl_server::provide_any::Provider + 'static>(
-        &self,
-        slot: u8,
-        state: T,
-    ) -> Result<(), T> {
-        self.event_states.set(slot, state)
-    }
-
-    fn with_state<T: 'static, S>(
-        &self,
-        slot: u8,
-        f: impl FnOnce(&T) -> S,
-    ) -> Result<Option<S>, ()> {
-        self.event_states.with(slot, f)
-    }
-
-    fn with_state_mut<T: 'static, S>(
-        &self,
-        slot: u8,
-        f: impl FnOnce(&mut T) -> S,
-    ) -> Result<Option<S>, ()> {
-        self.event_states.with_mut(slot, f)
-    }
-
-    fn remove_state(&self, slot: u8) -> Result<Box<dyn wl_server::provide_any::Provider>, ()> {
-        self.event_states.remove(slot)
+    fn event_states(&self) -> &Self::States {
+        &self.event_states
     }
 }
 
 impl connection::Connection for CrescentClient {
     type Context = Crescent;
     type Error = std::io::Error;
+    type Objects = Store<Self>;
 
     type Flush<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
     type Send<'a, M> = impl Future<Output = Result<(), Self::Error>> + 'a where M: 'a;
@@ -179,6 +171,10 @@ impl connection::Connection for CrescentClient {
 
     fn flush(&self) -> Self::Flush<'_> {
         connection::flush_to(&self.tx)
+    }
+
+    fn objects(&self) -> &Self::Objects {
+        &self.store
     }
 }
 
@@ -219,27 +215,6 @@ impl wl_common::Serial for CrescentClient {
     }
 }
 
-// Forwarding implementation of ObjectStore
-impl connection::Objects for CrescentClient {
-    type Entry<'a> = wl_server::connection::StoreEntry<'a>;
-
-    fn insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T> {
-        self.store.insert(id, object)
-    }
-
-    fn get(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>> {
-        self.store.get(id)
-    }
-
-    fn remove(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>> {
-        self.store.remove(self, id)
-    }
-
-    fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T {
-        self.store.with_entry(id, f)
-    }
-}
-
 impl Drop for CrescentClient {
     fn drop(&mut self) {
         self.store.clear(self);
@@ -253,7 +228,7 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
 
     fn new_connection(&mut self, conn: UnixStream) -> Self::Task {
         debug!("New connection");
-        use wl_server::connection::{EventSerial, Objects, Store};
+        use wl_server::connection::EventSerial;
         let state = self.clone();
         Box::pin(async move {
             let (rx, tx) = ::wl_io::split_unixstream(conn)?;
@@ -266,7 +241,7 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
                 tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
             };
             client_ctx
-                .store
+                .objects()
                 .insert(1, wl_server::objects::Display)
                 .unwrap();
             let mut read = BufReaderWithFd::new(rx);

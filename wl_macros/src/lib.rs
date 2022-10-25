@@ -173,8 +173,21 @@ pub fn message_broker(
                 use ::std::ops::Deref;
                 let real_obj: &#imp = request_ref(obj.deref())
                     .expect("Wrong InterfaceMeta impl");
-                let _: () = ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de)
-                    .await?;
+                match ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de).await {
+                    Ok(()) => false,
+                    Err(e) => {
+                        if let Some((object_id, error_code)) = e.wayland_error() {
+                            if ctx.send(DISPLAY_ID, wl_display::events::Error {
+                                code: error_code,
+                                object_id: wl_types::Object(object_id),
+                                message: wl_types::String::from(e.to_string()).as_str(),
+                            }).await.is_err() {
+                                return true
+                            }
+                        }
+                        e.fatal()
+                    }
+                }
             }
         }
     });
@@ -208,27 +221,45 @@ pub fn message_broker(
                     use ::wl_server::server::ServerBuilder;
                     builder.build()
                 }
-                /// `ctx` must implement ObjectStore
+                /// Dispatch a message from `reader` to the context. Returns whether the client
+                /// needs to be disconnected.
                 async fn dispatch<'a, 'b: 'a, R>(
                     ctx: &'a mut #ctx,
                     mut reader: Pin<&mut R>
-                ) -> Result<(), #error>
+                ) -> bool
                 where
                     R: ::wl_common::__private::AsyncBufReadWithFd + 'b,
                 {
-                    let (object_id, len, mut de) = ::wl_common::Deserializer::next_message(reader.as_mut()).await?;
+                    use ::wl_server::{__private::{wl_types, wl_display::v1 as wl_display}, objects::DISPLAY_ID};
+                    use ::wl_protocol::ProtocolError;
+                    let (object_id, len, mut de) = match ::wl_common::Deserializer::next_message(reader.as_mut()).await {
+                        Ok(v) => v,
+                        Err(e) => return true,
+                    };
                     let obj = ctx.objects().get(object_id);
-                    match &obj {
+                    let ret = match &obj {
                         Some(ref obj) => {
                             match obj.interface() {
                                 #(#ret),*,
                                 _ => unreachable!(),
                             }
                         },
-                        None => unimplemented!("Send invalid object error"),
-                    }
+                        None => {
+                            // We are going to disconnect the client so we don't care about the
+                            // error.
+                            let _: Result<_, _> = ctx.send(DISPLAY_ID,
+                                wl_display::events::Error {
+                                    code: wl_display::enums::Error::InvalidObject as u32,
+                                    object_id: wl_types::Object(object_id),
+                                    message: wl_types::str!("Invalid object id"),
+                                }
+                            ).await;
+                            true
+                        }
+                    };
+                    // TODO: check if there is leftover data and fail if so
                     reader.consume(len);
-                    Ok(())
+                    ret
                 }
                 async fn handle_events(ctx: &mut #ctx) -> Result<(), #error> {
                     use ::wl_server::connection::Evented;
@@ -296,15 +327,14 @@ impl Parse for DispatchImpl {
                         // Ignore the first 3 arguments: self, ctx, object_id
                         match arg {
                             syn::FnArg::Receiver(_) => (),
-                            syn::FnArg::Typed(patty) => {
+                            syn::FnArg::Typed(patty) =>
                                 if let syn::Pat::Ident(pat) = &*patty.pat {
                                     args.push(pat.ident.clone());
                                 } else {
                                     die!(&patty.pat =>
                                         "Argument must be a simple identifier"
                                     );
-                                }
-                            },
+                                },
                         }
                     }
                     items.push(DispatchItem {
@@ -474,7 +504,13 @@ pub fn interface_message_dispatch(
         let var = format_ident!("{}", item.ident.to_string().to_pascal_case());
         let trait_ = as_turbofish(&trait_);
         let ident = &item.ident;
-        let args = &item.args;
+        let args = item.args.iter().map(|arg| {
+            if arg.to_string().starts_with("_") {
+                format_ident!("{}", arg.to_string().trim_start_matches("_"))
+            } else {
+                arg.clone()
+            }
+        });
         quote! {
             #message_ty::#var(msg) => {
                 #trait_::#ident(self, ctx, object_id, #(msg.#args),*).await

@@ -9,3 +9,5 @@ pub mod staging {
 pub mod unstable {
     include!(concat!(env!("OUT_DIR"), "/unstable_generated.rs"));
 }
+
+pub use wl_scanner_support::ProtocolError;

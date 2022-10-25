@@ -15,8 +15,9 @@ use wl_macros::message_broker;
 use wl_server::{
     connection::{self, Connection as _, Objects, Store},
     objects::InterfaceMeta,
-    renderer_capability::RendererCapability,
+    renderer_capability::RendererCapability, Extra,
 };
+use apollo::shell::DefaultShell;
 
 #[message_broker]
 #[wayland(connection_context = "CrescentClient")]
@@ -25,7 +26,7 @@ pub enum Messages {
     WlDisplay,
     #[wayland(impl = "wl_server::objects::Registry::<Ctx>")]
     WlRegistry,
-    #[wayland(impl = "apollo::objects::compositor::Compositor")]
+    #[wayland(impl = "apollo::objects::compositor::Compositor::<DefaultShell>")]
     WlCompositor,
     #[wayland(impl = "apollo::objects::compositor::Subcompositor")]
     WlSubcompositor,
@@ -33,12 +34,15 @@ pub enum Messages {
     WlShm,
     #[wayland(impl = "apollo::objects::shm::ShmPool")]
     WlShmPool,
+    #[wayland(impl = "apollo::objects::xdg_shell::WmBase")]
+    XdgWmBase,
 }
 
 #[derive(Debug)]
 pub struct CrescentState {
     globals:   wl_server::server::GlobalStore<Crescent>,
     listeners: wl_server::server::Listeners,
+    shell:     RefCell<DefaultShell>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +77,7 @@ impl wl_server::server::ServerBuilder for CrescentBuilder {
         Crescent(Rc::new(CrescentState {
             globals:   self.inner.build(),
             listeners: wl_server::server::Listeners::new(self.event_slots),
+            shell:     RefCell::new(Default::default()),
         }))
     }
 }
@@ -91,6 +96,12 @@ impl wl_server::server::Server for Crescent {
             inner:       wl_server::server::GlobalStoreBuilder::default(),
             event_slots: Vec::new(),
         }
+    }
+}
+
+impl Extra<RefCell<DefaultShell>> for Crescent {
+    fn extra(&self) -> &RefCell<DefaultShell> {
+        &self.0.shell
     }
 }
 
@@ -147,11 +158,10 @@ impl wl_server::connection::Evented<CrescentClient> for CrescentClient {
 
 impl connection::Connection for CrescentClient {
     type Context = Crescent;
-    type Error = std::io::Error;
     type Objects = Store<Self>;
 
-    type Flush<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
-    type Send<'a, M> = impl Future<Output = Result<(), Self::Error>> + 'a where M: 'a;
+    type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
+    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where M: 'a;
 
     fn server_context(&self) -> &Self::Context {
         &self.state
@@ -246,11 +256,12 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
                 .unwrap();
             let mut read = BufReaderWithFd::new(rx);
             let _span = tracing::debug_span!("main loop").entered();
-            loop {
-                Messages::dispatch(&mut client_ctx, Pin::new(&mut read)).await?;
+            while !Messages::dispatch(&mut client_ctx, Pin::new(&mut read)).await {
                 Messages::handle_events(&mut client_ctx).await?;
                 client_ctx.flush().await?;
             }
+            client_ctx.flush().await?;
+            Ok(())
         })
     }
 }
@@ -260,7 +271,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let (listener, _guard) = wl_server::wayland_listener_auto()?;
     let listener = smol::Async::new(listener)?;
-    let mut server = Messages::init_server();
+    let server = Messages::init_server();
     let executor = smol::LocalExecutor::new();
     let server = wl_server::AsyncServer::new(server, &executor);
     let incoming = Box::pin(

@@ -50,21 +50,19 @@ fn generate_arg_type_with_lifetime(
             Int => quote!(i32),
             Uint => quote!(u32),
             Fixed => quote!(::wl_scanner_support::wayland_types::Fixed),
-            Array => {
+            Array =>
                 if let Some(lifetime) = lifetime {
                     quote!(&#lifetime [u8])
                 } else {
                     quote!(Box<[u8]>)
-                }
-            }
+                },
             Fd => quote!(::wl_scanner_support::wayland_types::Fd),
-            String => {
+            String =>
                 if let Some(lifetime) = lifetime {
                     quote!(::wl_scanner_support::wayland_types::Str<#lifetime>)
                 } else {
                     quote!(::wl_scanner_support::wayland_types::String)
-                }
-            }
+                },
             Object => quote!(::wl_scanner_support::wayland_types::Object),
             NewId => quote!(::wl_scanner_support::wayland_types::NewId),
             Destructor => return Err(Error::InvalidArgumentType),
@@ -105,10 +103,10 @@ fn generate_serialize_for_type(
                 .as_mut()
                 .try_push_fds(&mut ::std::iter::once(#name.take().expect("trying to send raw fd")));
             assert_eq!(pushed, 1, "not enough space in writer");
-        });
+        })
     }
     let get = match arg.typ {
-        Int | Uint => {
+        Int | Uint =>
             if let Some(enum_) = &arg.enum_ {
                 let is_bitfield = if let Some((iface, enum_)) = enum_.split_once('.') {
                     *enum_info
@@ -137,8 +135,7 @@ fn generate_serialize_for_type(
                 quote! {
                     let buf = #name.to_ne_bytes();
                 }
-            }
-        }
+            },
         Fixed | Object | NewId => quote! {
             let buf = #name.0.to_ne_bytes();
         },
@@ -183,6 +180,8 @@ fn generate_message_variant(
     _parent: &Ident,
     iface_version: &HashMap<&str, u32>,
     enum_info: &EnumInfo,
+    event_or_request: EventOrRequest,
+    parent_is_borrowed: bool,
 ) -> Result<(TokenStream, TokenStream)> {
     let args = &request.args;
     let args: Result<TokenStream> = args
@@ -211,12 +210,19 @@ fn generate_message_variant(
     } else {
         false
     };
-    let lifetime = if is_borrowed {
-        quote! {
-            <'a>
-        }
+    let parent_type_name = match event_or_request {
+        EventOrRequest::Event => format_ident!("Event"),
+        EventOrRequest::Request => format_ident!("Request"),
+    };
+    let parent_lifetime = if parent_is_borrowed {
+        quote!(<'a>)
     } else {
-        quote! {}
+        quote!()
+    };
+    let lifetime = if is_borrowed {
+        quote!(<'a>)
+    } else {
+        quote!()
     };
     // Generate experssion for length calculation
     let fixed_len: u32 = request
@@ -233,21 +239,21 @@ fn generate_message_variant(
             wl_spec::protocol::Type::Fd
             | wl_spec::protocol::Type::Destructor=> false,
         })
-        .count() as u32
-        * 4;
+        .count() as u32 *
+        4;
     let variable_len: TokenStream = request
         .args
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
             match &arg.typ {
-                wl_spec::protocol::Type::Int
-                | wl_spec::protocol::Type::Uint
-                | wl_spec::protocol::Type::Fixed
-                | wl_spec::protocol::Type::Object
-                | wl_spec::protocol::Type::NewId
-                | wl_spec::protocol::Type::Fd
-                | wl_spec::protocol::Type::Destructor => quote! {},
+                wl_spec::protocol::Type::Int |
+                wl_spec::protocol::Type::Uint |
+                wl_spec::protocol::Type::Fixed |
+                wl_spec::protocol::Type::Object |
+                wl_spec::protocol::Type::NewId |
+                wl_spec::protocol::Type::Fd |
+                wl_spec::protocol::Type::Destructor => quote! {},
                 wl_spec::protocol::Type::String => quote! {
                     + ((self.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
                 },
@@ -270,8 +276,18 @@ fn generate_message_variant(
         })
         .collect::<Result<TokenStream>>()?;
     let doc_comment = generate_doc_comment(&request.description);
-    let nfds: u8 = request.args.iter().filter(|arg| arg.typ == wl_spec::protocol::Type::Fd).count().try_into().unwrap();
-    let mut_ = if nfds != 0 { quote! {mut} } else { quote! {} };
+    let nfds: u8 = request
+        .args
+        .iter()
+        .filter(|arg| arg.typ == wl_spec::protocol::Type::Fd)
+        .count()
+        .try_into()
+        .unwrap();
+    let mut_ = if nfds != 0 {
+        quote! {mut}
+    } else {
+        quote! {}
+    };
     let public = quote! {
         #doc_comment
         #[derive(::wl_scanner_support::serde::Deserialize, Debug, PartialEq, Eq)]
@@ -302,9 +318,15 @@ fn generate_message_variant(
                 #nfds
             }
         }
+        impl #parent_lifetime Into<super::#parent_type_name #parent_lifetime> for #name #lifetime {
+            #[inline]
+            fn into(self) -> super::#parent_type_name #parent_lifetime {
+                super::#parent_type_name::#name(self)
+            }
+        }
     };
 
-    Ok((public, quote!{}))
+    Ok((public, quote! {}))
 }
 
 fn generate_dispatch_trait(
@@ -330,11 +352,7 @@ fn generate_dispatch_trait(
                 .iter()
                 .map(|arg| {
                     let name = format_ident!("{}", arg.name);
-                    let typ = generate_arg_type(
-                        &arg,
-                        false,
-                        iface_version,
-                    )?;
+                    let typ = generate_arg_type(&arg, false, iface_version)?;
                     Ok(quote! {
                         #name: #typ
                     })
@@ -358,7 +376,7 @@ fn generate_dispatch_trait(
         .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
     Ok(quote! {
         pub trait #ty<Ctx> {
-            type Error;
+            type Error: ::wl_scanner_support::ProtocolError;
             #(
                 type #futs<'a>: ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
                     where Ctx: 'a, Self: 'a;
@@ -392,6 +410,9 @@ fn generate_event_or_request(
             EventOrRequest::Event => format_ident!("Event"),
             EventOrRequest::Request => format_ident!("Request"),
         };
+        let enum_is_borrowed = messages
+            .iter()
+            .any(|v| v.args.iter().any(|arg| type_is_borrowed(&arg.typ)));
         let (public, private): (TokenStream, TokenStream) = messages
             .iter()
             .enumerate()
@@ -404,64 +425,55 @@ fn generate_event_or_request(
                     &mod_name,
                     iface_version,
                     enum_info,
+                    event_or_request,
+                    enum_is_borrowed,
                 )
             })
             .collect::<Result<Vec<(TokenStream, TokenStream)>>>()?
             .into_iter()
             .unzip();
-        let enum_is_borrowed = messages
-            .iter()
-            .any(|v| v.args.iter().any(|arg| type_is_borrowed(&arg.typ)));
         let enum_lifetime = if enum_is_borrowed {
             quote! { <'a> }
         } else {
             quote! {}
         };
-        let enum_members = messages
-            .iter()
-            .map(|v| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                let is_borrowed = v.args.iter().any(|arg| type_is_borrowed(&arg.typ));
-                let lifetime = if is_borrowed {
-                    quote! { <'a> }
-                } else {
-                    quote! {}
-                };
-                let attr = if is_borrowed {
-                    quote! { #[serde(borrow)] }
-                } else {
-                    quote! {}
-                };
-                quote! {
-                    #attr
-                    #name(#mod_name::#name #lifetime),
-                }
-            });
+        let enum_members = messages.iter().map(|v| {
+            let name = format_ident!("{}", v.name.to_pascal_case());
+            let is_borrowed = v.args.iter().any(|arg| type_is_borrowed(&arg.typ));
+            let lifetime = if is_borrowed {
+                quote! { <'a> }
+            } else {
+                quote! {}
+            };
+            let attr = if is_borrowed {
+                quote! { #[serde(borrow)] }
+            } else {
+                quote! {}
+            };
+            quote! {
+                #attr
+                #name(#mod_name::#name #lifetime),
+            }
+        });
 
-        let enum_serialize_cases = messages
-            .iter()
-            .map(|v| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                quote! {
-                    Self::#name(v) => v.serialize(writer),
-                }
-            });
-        let enum_len_cases = messages
-            .iter()
-            .map(|v| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                quote! {
-                    Self::#name(v) => v.len(),
-                }
-            });
-        let enum_nfds_cases = messages
-            .iter()
-            .map(|v| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                quote! {
-                    Self::#name(v) => v.nfds(),
-                }
-            });
+        let enum_serialize_cases = messages.iter().map(|v| {
+            let name = format_ident!("{}", v.name.to_pascal_case());
+            quote! {
+                Self::#name(v) => v.serialize(writer),
+            }
+        });
+        let enum_len_cases = messages.iter().map(|v| {
+            let name = format_ident!("{}", v.name.to_pascal_case());
+            quote! {
+                Self::#name(v) => v.len(),
+            }
+        });
+        let enum_nfds_cases = messages.iter().map(|v| {
+            let name = format_ident!("{}", v.name.to_pascal_case());
+            quote! {
+                Self::#name(v) => v.nfds(),
+            }
+        });
         let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version)?;
         let public = quote! {
             pub mod #mod_name {
@@ -559,7 +571,7 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
                 let s = s.trim();
                 if let Some(m) = LINKREF_REGEX.find(s) {
                     if m.start() == 0 {
-                        return None;
+                        return None
                     }
                 }
                 let mut s = wrap_links(s);

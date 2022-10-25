@@ -160,13 +160,12 @@ impl<Ctx> Drop for Store<Ctx> {
 
 /// A client connection
 pub trait Connection {
-    type Error;
     type Context: crate::server::Server<Connection = Self> + 'static;
-    type Send<'a, M>: Future<Output = Result<(), Self::Error>> + 'a
+    type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a,
         M: 'a;
-    type Flush<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a;
     type Objects: Objects<Self>;
@@ -191,34 +190,31 @@ pub trait Connection {
 /// Implementation helper for Connection::send. This assumes you stored the
 /// connection object in a RefCell. This function makes sure to not hold RefMut
 /// across await.
-pub fn send_to<'a, 'b, 'c, M, C, E>(
+pub fn send_to<'a, 'b, 'c, M, C>(
     conn: &'a RefCell<C>,
     object_id: u32,
     msg: M,
-) -> impl Future<Output = Result<(), E>> + 'c
+) -> impl Future<Output = Result<(), std::io::Error>> + 'c
 where
     M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b,
     C: wl_io::AsyncBufWriteWithFd + Unpin,
-    E: From<std::io::Error> + 'static,
     'a: 'c,
     'b: 'c,
 {
     use std::task::{Context, Poll};
-    struct Send<'a, M, C, E> {
+    struct Send<'a, M, C> {
         // Save a reference to the RefCell, if we save a Pin<&mut> here, we will be keeping the
         // RefMut across await. Same for flush.
         conn:      &'a RefCell<C>,
         object_id: u32,
         msg:       Option<M>,
-        _err:      std::marker::PhantomData<Pin<Box<E>>>,
     }
-    impl<'a, M, C, E> Future for Send<'a, M, C, E>
+    impl<'a, M, C> Future for Send<'a, M, C>
     where
         M: wl_io::Serialize + Unpin,
         C: wl_io::AsyncBufWriteWithFd + Unpin,
-        E: From<std::io::Error>,
     {
-        type Output = Result<(), E>;
+        type Output = Result<(), std::io::Error>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let this = self.get_mut();
@@ -241,30 +237,24 @@ where
         conn,
         object_id,
         msg: Some(msg),
-        _err: std::marker::PhantomData,
     }
 }
 
 /// Implementation helper for Connection::flush. This assumes you stored the
 /// connection object in a RefCell. This function makes sure to not hold RefMut
 /// across await.
-pub fn flush_to<'a, E>(
+pub fn flush_to<'a>(
     conn: &'a RefCell<impl wl_io::AsyncBufWriteWithFd + Unpin>,
-) -> impl Future<Output = Result<(), E>> + 'a
-where
-    E: From<std::io::Error> + 'static,
-{
+) -> impl Future<Output = Result<(), std::io::Error>> + 'a {
     use std::task::{Context, Poll};
-    struct Flush<'a, C, E> {
+    struct Flush<'a, C> {
         conn: &'a RefCell<C>,
-        _err: std::marker::PhantomData<Pin<Box<E>>>,
     }
-    impl<'a, C, E> Future for Flush<'a, C, E>
+    impl<'a, C> Future for Flush<'a, C>
     where
         C: wl_io::AsyncBufWriteWithFd + Unpin,
-        E: From<std::io::Error> + 'static,
     {
-        type Output = Result<(), E>;
+        type Output = Result<(), std::io::Error>;
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let this = self.get_mut();
@@ -273,10 +263,7 @@ where
             Poll::Ready(Ok(()))
         }
     }
-    Flush {
-        conn,
-        _err: std::marker::PhantomData,
-    }
+    Flush { conn }
 }
 
 /// A event receiver, which can be notified via its `event_handle` and a event

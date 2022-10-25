@@ -7,16 +7,22 @@ use wl_io::AsyncBufReadWithFd;
 
 pub mod connection;
 pub mod error;
-pub mod objects;
-pub mod server;
 pub mod events;
-pub mod provide_any;
 pub mod globals;
+pub mod objects;
+pub mod provide_any;
 pub mod renderer_capability;
+pub mod server;
 mod shared;
 
+#[doc(hidden)]
+pub mod __private {
+    pub use wl_protocol::wayland::wl_display;
+    pub use wl_types;
+}
+
 #[derive(Error, Debug)]
-pub enum Error<SE, LE> {
+pub enum ConnectionManagerError<SE, LE> {
     #[error("Server error: {0}")]
     Server(#[source] SE),
     #[error("I/O error: {0}")]
@@ -45,10 +51,10 @@ where
         Self { listeners, ctx }
     }
 
-    pub async fn run(&mut self) -> Result<(), Error<Ctx::Error, E>> {
+    pub async fn run(&mut self) -> Result<(), ConnectionManagerError<Ctx::Error, E>> {
         while let Some(conn) = self.listeners.next().await {
-            let conn = conn.map_err(Error::Listener)?;
-            self.ctx.new_connection(conn).map_err(Error::Server)?;
+            let conn = conn.map_err(ConnectionManagerError::Listener)?;
+            self.ctx.new_connection(conn).map_err(ConnectionManagerError::Server)?;
         }
         Ok(())
     }
@@ -189,4 +195,15 @@ where
     fn new_connection(&mut self, _conn: Conn) -> Self::Task {
         unimplemented!();
     }
+}
+
+/// Implemented by the compositor to expose extra states from server or client
+/// contexts
+pub trait Extra<T> {
+    /// Get the extra state
+    fn extra<'a>(&'a self) -> &'a T;
+}
+
+pub trait ExtraMut<T>: Extra<T> {
+    fn extra_mut<'a>(&'a mut self) -> &'a mut T;
 }

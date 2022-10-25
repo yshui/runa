@@ -18,3 +18,4 @@ wl_server = { version = "0.1.0", path = "../wl_server" }
 futures-util.workspace = true
 tracing.workspace = true
 apollo = { version = "0.1.0", path = "../apollo" }
+wl_protocol = { version = "0.1.0", path = "../wl_protocol" }

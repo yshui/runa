@@ -1,4 +1,6 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, marker::PhantomData};
+
+pub mod xdg_shell;
 
 use wl_protocol::wayland::{wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor};
 use wl_server::{
@@ -10,12 +12,18 @@ use wl_server::{
     renderer_capability::RendererCapability,
 };
 
+use crate::shell::Shell;
+
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-#[derive(Default)]
-pub struct Compositor;
+pub struct Compositor<S>(PhantomData<S>);
+impl<S> Default for Compositor<S> {
+    fn default() -> Self {
+        Compositor(PhantomData)
+    }
+}
 
-impl<S: Server> Global<S> for Compositor {
+impl<S: Server, Sh: Shell> Global<S> for Compositor<Sh> {
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -35,7 +43,7 @@ impl<S: Server> Global<S> for Compositor {
     where
         'b: 'c,
     {
-        (Box::new(crate::objects::compositor::Compositor::new()), None)
+        (Box::new(crate::objects::compositor::Compositor::<Sh>::new()), None)
     }
 
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
@@ -43,7 +51,6 @@ impl<S: Server> Global<S> for Compositor {
     }
 }
 
-#[derive(Default)]
 pub struct Subcompositor;
 
 impl<S: Server> Global<S> for Subcompositor {
@@ -78,8 +85,6 @@ impl<S: Server> Global<S> for Subcompositor {
 pub struct Shm;
 
 impl<S: Server + RendererCapability> Global<S> for Shm
-where
-    std::io::Error: From<<<S as Server>::Connection as Connection>::Error>,
 {
     fn interface(&self) -> &'static str {
         wl_shm::NAME

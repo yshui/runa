@@ -9,13 +9,13 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use ::wl_common::interface_message_dispatch;
+pub use ::wl_common::interface_message_dispatch;
 use ::wl_protocol::wayland::{wl_callback, wl_display, wl_registry::v1 as wl_registry};
 use hashbrown::{HashMap, HashSet};
 use tracing::debug;
 
 use crate::{
-    connection::{self, Connection, Entry, Objects, EventStates as _},
+    connection::{self, Connection, Entry, EventStates as _, Objects},
     globals::Global,
     provide_any::{request_ref, Demand, Provider},
     server::{self, EventSource, Globals, Server},
@@ -26,23 +26,6 @@ pub trait DropObject<Ctx> {
     /// DropObject` from your Provider implementation if you need to do
     /// something when the object is removed.
     fn drop_object(&self, ctx: &Ctx);
-}
-
-async fn send_id_in_use<Ctx>(ctx: &Ctx, object_id: u32) -> Result<(), Ctx::Error>
-where
-    Ctx: Connection,
-{
-    use std::ffi::CStr;
-    let message = CStr::from_bytes_with_nul(b"invalid method for wl_callback\0").unwrap();
-    ctx.send(
-        DISPLAY_ID,
-        wl_display::v1::Event::Error(wl_display::v1::events::Error {
-            code:      wl_display::v1::enums::Error::InvalidMethod as u32,
-            object_id: wl_types::Object(object_id),
-            message:   wl_types::Str(message),
-        }),
-    )
-    .await
 }
 
 /// This is the bottom type for all per client objects. This trait provides some
@@ -93,12 +76,8 @@ impl Display {
 #[interface_message_dispatch]
 impl<Ctx> wl_display::v1::RequestDispatch<Ctx> for Display
 where
-    Ctx: Connection
-        + connection::Evented<Ctx>
-        + wl_common::Serial
-        + std::fmt::Debug,
+    Ctx: Connection + connection::Evented<Ctx> + wl_common::Serial + std::fmt::Debug,
     Ctx::Context: EventSource,
-    crate::error::Error: From<Ctx::Error>,
 {
     type Error = crate::error::Error;
 
@@ -114,24 +93,23 @@ where
         async move {
             debug!("wl_display.sync {}", callback);
             if ctx.objects().get(callback.0).is_some() {
-                send_id_in_use(ctx, callback.0).await?;
-            } else {
-                ctx.send(
-                    callback.0,
-                    wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
-                        // TODO: setup event serial
-                        callback_data: 0,
-                    }),
-                )
-                .await?;
-                ctx.send(
-                    DISPLAY_ID,
-                    wl_display::v1::Event::DeleteId(wl_display::v1::events::DeleteId {
-                        id: callback.0,
-                    }),
-                )
-                .await?;
+                return Err(crate::error::Error::IdExists(callback.0));
             }
+            ctx.send(
+                callback.0,
+                wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
+                    // TODO: setup event serial
+                    callback_data: 0,
+                }),
+            )
+            .await?;
+            ctx.send(
+                DISPLAY_ID,
+                wl_display::v1::Event::DeleteId(wl_display::v1::events::DeleteId {
+                    id: callback.0,
+                }),
+            )
+            .await?;
             Ok(())
         }
     }
@@ -165,10 +143,10 @@ where
                     debug!("Sending global events");
                     task.await?;
                 }
+                Ok(())
             } else {
-                send_id_in_use(ctx, registry.0).await?;
+                Err(crate::error::Error::IdExists(registry.0))
             }
-            Ok(())
         }
     }
 }
@@ -191,7 +169,6 @@ impl<Ctx> Registry<Ctx>
 where
     Ctx: Connection + connection::Evented<Ctx> + 'static,
     Ctx::Context: EventSource,
-    crate::error::Error: From<<Ctx as Connection>::Error>,
 {
     pub fn new(ctx: &Ctx) -> Self {
         let server_context = ctx.server_context();
@@ -223,14 +200,18 @@ where
         }
 
         // Allocation: Global addition and removal should be rare.
-        let (deleted, added): (Vec<_>, Vec<_>) = ctx.event_states()
+        let (deleted, added): (Vec<_>, Vec<_>) = ctx
+            .event_states()
             .with(slot as u8, |state: &RegistryState| {
                 debug!("{:?}", state);
                 let deleted = state
                     .0
                     .iter()
                     .map(|id| {
-                        let object = ctx.objects().get(*id).expect("inconsistent state of wl_registry");
+                        let object = ctx
+                            .objects()
+                            .get(*id)
+                            .expect("inconsistent state of wl_registry");
                         let object: &Registry<Ctx> =
                             request_ref(&*object).expect("wl_registry object has wrong type");
                         let deleted: Vec<_> = object
@@ -245,7 +226,10 @@ where
                     .0
                     .iter()
                     .map(|id| {
-                        let object = ctx.objects().get(*id).expect("inconsistent state of wl_registry");
+                        let object = ctx
+                            .objects()
+                            .get(*id)
+                            .expect("inconsistent state of wl_registry");
                         let object: &Registry<Ctx> =
                             request_ref(&*object).expect("wl_registry object has wrong type");
                         let mut added = Vec::new();
@@ -308,7 +292,6 @@ impl crate::provide_any::Provider for RegistryState {
 #[interface_message_dispatch]
 impl<Ctx> wl_registry::RequestDispatch<Ctx> for Registry<Ctx>
 where
-    crate::error::Error: From<Ctx::Error>,
     Ctx: Connection + connection::Evented<Ctx> + 'static,
 {
     type Error = crate::error::Error;
@@ -320,9 +303,10 @@ where
         ctx: &'a mut Ctx,
         _object_id: u32,
         name: u32,
+        _interface: wl_types::Str,
+        _version: u32,
         id: wl_types::NewId,
     ) -> Self::BindFut<'a> {
-        use std::ffi::CStr;
         tracing::debug!("bind name:{name}, id:{id}");
         async move {
             // We use the weak references we are holding to bind the global, even though it
@@ -351,22 +335,13 @@ where
                     if let Some(task) = task {
                         task.await?;
                     }
+                    Ok(())
                 } else {
-                    send_id_in_use(ctx, id.0).await?;
+                    Err(crate::error::Error::IdExists(id.0))
                 }
             } else {
-                let message = CStr::from_bytes_with_nul(b"unknown global\0").unwrap();
-                ctx.send(
-                    DISPLAY_ID,
-                    wl_display::v1::Event::Error(wl_display::v1::events::Error {
-                        code:      wl_display::v1::enums::Error::InvalidObject as u32,
-                        object_id: wl_types::Object(id.0),
-                        message:   wl_types::Str(message),
-                    }),
-                )
-                .await?;
+                Err(crate::error::Error::UnknownGlobal(name))
             }
-            Ok(())
         }
     }
 }

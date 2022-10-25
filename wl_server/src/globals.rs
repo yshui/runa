@@ -88,7 +88,6 @@ impl<S> Global<S> for Registry
 where
     S: Server + EventSource + 'static,
     S::Connection: Evented<S::Connection>,
-    crate::error::Error: From<<S::Connection as connection::Connection>::Error>,
 {
     fn interface(&self) -> &'static str {
         wl_registry::v1::NAME

@@ -1,16 +1,13 @@
 use std::{future::Future, pin::Pin};
 
-use hashbrown::HashSet;
 use wl_protocol::wayland::{
-    wl_compositor, wl_display, wl_registry, wl_shm::v1 as wl_shm,
-    wl_subcompositor::v1 as wl_subcompositor,
+   wl_display, wl_registry,
 };
 
 use crate::{
-    connection::{self, Connection, Evented, EventStates},
+    connection::{Connection, Evented, EventStates},
     objects::InterfaceMeta,
     provide_any::Demand,
-    renderer_capability::RendererCapability,
     server::{EventSource, Server},
 };
 
@@ -27,7 +24,7 @@ pub trait Global<S: Server + ?Sized> {
         client: &'b S::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
@@ -61,7 +58,7 @@ where
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
@@ -102,7 +99,7 @@ where
         client: &'b S::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
@@ -125,15 +122,15 @@ where
             // Also set up the registry state in the client context.
             Some(Box::pin(async move {
                 // Add this object_id to the list of registry objects bound.
-                let state = client.event_states().with_mut(slot as u8, |state: &mut RegistryState| {
-                    state.0.insert(object_id);
+                let state = client.event_states().with_mut(slot as u8, |state: &mut RegistryState<S::Connection>| {
+                    state.add_registry_object(object_id);
                 }).expect("Registry slot doesn't contain a RegistryState");
                 if state.is_none() {
                     // This could be the first registry object, so the state might not be set.
                     tracing::debug!("Creating new registry state");
                     client.event_states().set(
                         slot as u8,
-                        RegistryState(std::iter::once(object_id).collect::<HashSet<u32>>()),
+                        RegistryState::<S::Connection>::new(object_id),
                     )
                     .unwrap();
                 }

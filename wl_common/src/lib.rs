@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)]
 use std::{
     cell::{Cell, RefCell},
     pin::Pin,

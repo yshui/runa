@@ -42,7 +42,7 @@ pub struct ShmBuffer<Data> {
     data: Data,
 }
 
-impl<Data: 'static> InterfaceMeta for ShmBuffer<Data> {
+impl<Data: 'static, Ctx> InterfaceMeta<Ctx> for ShmBuffer<Data> {
     fn interface(&self) -> &'static str {
         wl_buffer::NAME
     }

@@ -1,4 +1,4 @@
-#![feature(generic_associated_types, type_alias_impl_trait)]
+#![feature(type_alias_impl_trait)]
 use std::{
     io::Result,
     os::unix::{
@@ -10,7 +10,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures_core::TryFuture;
 use std::task::ready;
 
 pub mod buf;

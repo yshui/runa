@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)]
 include!(concat!(env!("OUT_DIR"), "/wayland_generated.rs"));
 pub mod stable {
     include!(concat!(env!("OUT_DIR"), "/stable_generated.rs"));

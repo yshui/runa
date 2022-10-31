@@ -1,4 +1,4 @@
-#![feature(type_alias_impl_trait, generic_associated_types)]
+#![feature(type_alias_impl_trait)]
 use std::pin::Pin;
 
 use futures_lite::{stream::StreamExt, Future};
@@ -13,7 +13,6 @@ pub mod objects;
 pub mod provide_any;
 pub mod renderer_capability;
 pub mod server;
-mod shared;
 
 #[doc(hidden)]
 pub mod __private {

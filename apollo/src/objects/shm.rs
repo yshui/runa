@@ -37,7 +37,7 @@ impl Shm {
         Ok(())
     }
 }
-impl InterfaceMeta for Shm {
+impl<Ctx> InterfaceMeta<Ctx> for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -81,7 +81,7 @@ where
                 fd.take().unwrap_unchecked()
             };
             let pool = ShmPool { fd };
-            if ctx.objects().insert(id.0, pool).is_err() {
+            if ctx.objects().borrow_mut().insert(id.0, pool).is_err() {
                 ctx.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_display::enums::Error::InvalidObject as u32,
                     object_id: object_id.into(),
@@ -98,7 +98,7 @@ pub struct ShmPool {
     fd: OwnedFd,
 }
 
-impl InterfaceMeta for ShmPool {
+impl<Ctx> InterfaceMeta<Ctx> for ShmPool {
     fn interface(&self) -> &'static str {
         wl_shm_pool::NAME
     }

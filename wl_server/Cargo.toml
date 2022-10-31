@@ -20,7 +20,7 @@ hashbrown.workspace = true
 futures-lite.workspace = true
 futures-util.workspace = true
 indextree = "4.5.0"
-dlv-list = "0.4.0"
+dlv-list.workspace = true
 wl_types = { version = "0.1.0", path = "../wl_types" }
 memmap2 = "0.5.7"
 

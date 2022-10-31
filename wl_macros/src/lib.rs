@@ -174,18 +174,17 @@ pub fn message_broker(
                 let real_obj: &#imp = request_ref(obj.deref())
                     .expect("Wrong InterfaceMeta impl");
                 match ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de).await {
-                    Ok(()) => false,
+                    Ok(()) => (false, None),
                     Err(e) => {
-                        if let Some((object_id, error_code)) = e.wayland_error() {
-                            if ctx.send(DISPLAY_ID, wl_display::events::Error {
-                                code: error_code,
-                                object_id: wl_types::Object(object_id),
-                                message: wl_types::String::from(e.to_string()).as_str(),
-                            }).await.is_err() {
-                                return true
-                            }
-                        }
-                        e.fatal()
+                        (
+                            e.fatal(),
+                            e.wayland_error()
+                             .map(|(object_id, error_code)| (
+                                object_id,
+                                error_code,
+                                std::ffi::CString::new(e.to_string()).unwrap()
+                            ))
+                        )
                     }
                 }
             }
@@ -236,30 +235,37 @@ pub fn message_broker(
                         Ok(v) => v,
                         Err(e) => return true,
                     };
-                    let obj = ctx.objects().get(object_id);
-                    let ret = match &obj {
-                        Some(ref obj) => {
+                    // ManuallyDrop needed because limit of Rust's dropck.
+                    let (mut fatal, error) = {
+                        let obj = ctx.objects().borrow().get(object_id).map(Rc::clone);
+                        if let Some(obj) = obj {
                             match obj.interface() {
                                 #(#ret),*,
                                 _ => unreachable!(),
                             }
-                        },
-                        None => {
-                            // We are going to disconnect the client so we don't care about the
-                            // error.
-                            let _: Result<_, _> = ctx.send(DISPLAY_ID,
-                                wl_display::events::Error {
-                                    code: wl_display::enums::Error::InvalidObject as u32,
-                                    object_id: wl_types::Object(object_id),
-                                    message: wl_types::str!("Invalid object id"),
-                                }
-                            ).await;
-                            true
+                        } else {
+                            (
+                                true,
+                                Some((
+                                    object_id,
+                                    wl_display::enums::Error::InvalidObject as u32,
+                                    std::ffi::CString::new("Invalid object id").unwrap()
+                                ))
+                            )
                         }
                     };
+                    // We are going to disconnect the client so we don't care about the
+                    // error.
                     // TODO: check if there is leftover data and fail if so
                     reader.consume(len);
-                    ret
+                    if let Some((object_id, error_code, msg)) = error {
+                        fatal |= ctx.send(DISPLAY_ID, wl_display::events::Error {
+                            object_id: wl_types::Object(object_id),
+                            code: error_code,
+                            message: wl_types::Str(msg.as_c_str()),
+                        }).await.is_err();
+                    }
+                    fatal
                 }
                 async fn handle_events(ctx: &mut #ctx) -> Result<(), #error> {
                     use ::wl_server::connection::Evented;

@@ -1,12 +1,27 @@
-use std::future::Future;
+use std::{cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
 use wl_common::Infallible;
 use wl_protocol::stable::xdg_shell::xdg_wm_base::v5 as xdg_wm_base;
-use wl_server::{objects::{interface_message_dispatch, InterfaceMeta}, server::ServerBuilder};
-#[derive(Debug, Default)]
-pub struct WmBase;
+use wl_server::{
+    connection::Connection,
+    error::Error,
+    objects::{interface_message_dispatch, InterfaceMeta},
+    provide_any::request_ref,
+    server::ServerBuilder,
+    Extra,
+};
 
-impl InterfaceMeta for WmBase {
+use crate::shell::Shell;
+#[derive(Debug)]
+pub struct WmBase<S>(PhantomData<S>);
+
+impl<S> Default for WmBase<S> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<Ctx, S: 'static> InterfaceMeta<Ctx> for WmBase<S> {
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
     }
@@ -17,8 +32,11 @@ impl InterfaceMeta for WmBase {
 }
 
 #[interface_message_dispatch]
-impl<Ctx> xdg_wm_base::RequestDispatch<Ctx> for WmBase {
-    type Error = wl_server::error::Error;
+impl<S: Shell, Ctx: Connection> xdg_wm_base::RequestDispatch<Ctx> for WmBase<S>
+where
+    Ctx::Context: Extra<RefCell<S>>,
+{
+    type Error = Error;
 
     type CreatePositionerFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -40,7 +58,27 @@ impl<Ctx> xdg_wm_base::RequestDispatch<Ctx> for WmBase {
         id: wl_types::NewId,
         surface: wl_types::Object,
     ) -> Self::GetXdgSurfaceFut<'a> {
-        async move { unimplemented!() }
+        async move {
+            use wl_server::connection::{Entry, Objects};
+            let mut objects = ctx.objects().borrow_mut();
+            let surface_id = surface.0;
+            let surface = objects
+                .get(surface_id)
+                .ok_or_else(|| Error::UnknownObject(surface.0))?
+                .clone();
+            let entry = objects.entry(id.0);
+            let shell: &RefCell<S> = ctx.server_context().extra();
+            let surface: &crate::objects::compositor::Surface<S, Ctx> =
+                request_ref(surface.as_ref()).ok_or_else(|| Error::UnknownObject(surface_id))?;
+            if entry.is_vacant() {
+                let role = crate::shell::xdg::Surface::default();
+                surface.0.set_role(role);
+                // TODO: create xdg_surface object.
+                Ok(())
+            } else {
+                Err(Error::IdExists(id.0))
+            }
+        }
     }
 
     fn create_positioner<'a>(
@@ -53,11 +91,12 @@ impl<Ctx> xdg_wm_base::RequestDispatch<Ctx> for WmBase {
     }
 }
 
-impl WmBase {
+impl<Sh: Shell> WmBase<Sh> {
     pub fn init_server<S: ServerBuilder>(builder: &mut S) -> Result<(), Infallible> {
-        builder.global(crate::globals::xdg_shell::WmBase);
+        builder.global(crate::globals::xdg_shell::WmBase::<Sh>::default());
         Ok(())
     }
+
     pub async fn handle_events<Ctx: 'static>(
         ctx: &Ctx,
         slot: usize,

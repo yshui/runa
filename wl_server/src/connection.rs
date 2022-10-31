@@ -15,33 +15,22 @@ use hashbrown::{hash_map, HashMap};
 use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 use crate::{
-    objects::{DropObject, InterfaceMeta},
+    objects::InterfaceMeta,
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
 
 /// Per client mapping from object ID to objects. This is the reference
 /// implementation of [`Objects`].
-///
-/// # Important
-///
-/// This implementation DOES NOT handle calling [`DropObject`] handle when
-/// objects are removed. Because this does not have the access to your
-/// per-client context. When you implement [`Objects`] for your per-client
-/// context using this, you should handle this yourself. Which can be done using
-/// the [`drop_object`] helper function.
-///
-/// Other methods can be simply forwarded.
 pub struct Store<Ctx> {
-    map:  RefCell<HashMap<u32, Rc<dyn InterfaceMeta>>>,
+    map:  HashMap<u32, Rc<dyn InterfaceMeta<Ctx>>>,
     _ctx: std::marker::PhantomData<Ctx>,
 }
 
-impl<Ctx> std::fmt::Debug for Store<Ctx> {
+impl<Ctx: 'static> std::fmt::Debug for Store<Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        struct DebugMap<'a>(&'a HashMap<u32, Rc<dyn InterfaceMeta>>);
-        let map = self.map.borrow();
-        let debug_map = DebugMap(&map);
-        impl std::fmt::Debug for DebugMap<'_> {
+        struct DebugMap<'a, Ctx: 'static>(&'a HashMap<u32, Rc<dyn InterfaceMeta<Ctx>>>);
+        let debug_map = DebugMap(&self.map);
+        impl<Ctx> std::fmt::Debug for DebugMap<'_, Ctx> {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_map()
                     .entries(self.0.iter().map(|(k, v)| (k, v.interface())))
@@ -52,12 +41,15 @@ impl<Ctx> std::fmt::Debug for Store<Ctx> {
     }
 }
 
-pub trait Entry<'a> {
+pub trait Entry<'a, Ctx>: Sized {
     fn is_vacant(&self) -> bool;
-    fn or_insert_boxed(self, v: Box<dyn InterfaceMeta>) -> &'a mut Rc<dyn InterfaceMeta>;
+    fn or_insert_boxed(self, v: Box<dyn InterfaceMeta<Ctx>>) -> &'a mut dyn InterfaceMeta<Ctx>;
+    fn or_insert<T: InterfaceMeta<Ctx>>(self, v: T) -> &'a mut dyn InterfaceMeta<Ctx> {
+        self.or_insert_boxed(Box::new(v))
+    }
 }
 
-impl<'a> Entry<'a> for StoreEntry<'a> {
+impl<'a, Ctx> Entry<'a, Ctx> for StoreEntry<'a, Ctx> {
     fn is_vacant(&self) -> bool {
         match self {
             hash_map::Entry::Vacant(_) => true,
@@ -65,51 +57,57 @@ impl<'a> Entry<'a> for StoreEntry<'a> {
         }
     }
 
-    fn or_insert_boxed(self, v: Box<dyn InterfaceMeta>) -> &'a mut Rc<dyn InterfaceMeta> {
-        hash_map::Entry::or_insert(self, v.into())
+    fn or_insert_boxed(self, v: Box<dyn InterfaceMeta<Ctx>>) -> &'a mut dyn InterfaceMeta<Ctx> {
+        let r = hash_map::Entry::or_insert(self, v.into());
+        // Safety: we just created the Rc, so it must have only one reference
+        unsafe { Rc::get_mut(r).unwrap_unchecked() }
+    }
+
+    fn or_insert<T: InterfaceMeta<Ctx>>(self, v: T) -> &'a mut dyn InterfaceMeta<Ctx> {
+        let r = hash_map::Entry::or_insert(self, Rc::new(v));
+        // Safety: we just created the Rc, so it must have only one reference
+        unsafe { Rc::get_mut(r).unwrap_unchecked() }
     }
 }
 
 /// A bundle of objects.
 ///
 /// Usually this is the set of objects a client has bound to.
-pub trait Objects<Ctx: ?Sized> {
-    type Entry<'a>: Entry<'a>;
+pub trait Objects<Ctx> {
+    type Entry<'a>: Entry<'a, Ctx>
+    where
+        Self: 'a;
     /// Insert object into the store with the given ID. Returns Ok(()) if
     /// successful, Err(T) if the ID is already in use.
-    fn insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T>;
-    fn remove(&self, ctx: &Ctx, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
-    fn clear(&self, ctx: &Ctx);
-    fn get(&self, id: u32) -> Option<Rc<dyn InterfaceMeta>>;
-    fn with_entry<T>(&self, id: u32, f: impl FnOnce(Self::Entry<'_>) -> T) -> T;
-    fn try_insert<T: InterfaceMeta + 'static>(&self, id: u32, object: T) -> Result<(), T> {
-        self.with_entry(id, |e| {
-            if e.is_vacant() {
-                e.or_insert_boxed(Box::new(object));
-                Ok(())
-            } else {
-                Err(object)
-            }
-        })
-    }
+    fn insert<T: InterfaceMeta<Ctx>>(&mut self, id: u32, object: T) -> Result<(), T>;
+    fn remove(&mut self, ctx: &Ctx, id: u32) -> Option<Rc<dyn InterfaceMeta<Ctx>>>;
+    fn clear(&mut self, ctx: &Ctx);
+    /// Get an object from the store.
+    ///
+    /// Why does this return a `Rc`? Because we need mutable access to the
+    /// client context while holding a reference to the object, which would
+    /// in turn borrow the client context if it's not a Rc.
+    fn get(&self, id: u32) -> Option<&Rc<dyn InterfaceMeta<Ctx>>>;
+    fn entry(&mut self, id: u32) -> Self::Entry<'_>;
 }
 
 impl<Ctx> Store<Ctx> {
     pub fn new() -> Self {
         Self {
-            map:  RefCell::new(HashMap::new()),
+            map:  HashMap::new(),
             _ctx: Default::default(),
         }
     }
 }
 
-pub type StoreEntry<'a> =
-    hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta>, hash_map::DefaultHashBuilder>;
+pub type StoreEntry<'a, Ctx> =
+    hash_map::Entry<'a, u32, Rc<dyn InterfaceMeta<Ctx>>, hash_map::DefaultHashBuilder>;
 impl<Ctx: 'static> Objects<Ctx> for Store<Ctx> {
-    type Entry<'a> = StoreEntry<'a>;
+    type Entry<'a> = StoreEntry<'a, Ctx>;
 
-    fn insert<T: InterfaceMeta + 'static>(&self, object_id: u32, object: T) -> Result<(), T> {
-        match self.map.borrow_mut().entry(object_id) {
+    #[inline]
+    fn insert<T: InterfaceMeta<Ctx>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
+        match self.map.entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
                 v.insert(Rc::new(object));
@@ -118,33 +116,28 @@ impl<Ctx: 'static> Objects<Ctx> for Store<Ctx> {
         }
     }
 
-    fn remove(&self, ctx: &Ctx, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
-        if let Some(obj) = self.map.borrow_mut().remove(&object_id) {
-            if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
-                drop_object.drop_object(ctx);
-            }
+    fn remove(&mut self, ctx: &Ctx, object_id: u32) -> Option<Rc<dyn InterfaceMeta<Ctx>>> {
+        if let Some(obj) = self.map.remove(&object_id) {
+            obj.on_drop(ctx);
             Some(obj)
         } else {
             None
         }
     }
 
-    fn get(&self, object_id: u32) -> Option<Rc<dyn InterfaceMeta>> {
-        self.map.borrow().get(&object_id).map(Clone::clone)
+    fn get(&self, object_id: u32) -> Option<&Rc<dyn InterfaceMeta<Ctx>>> {
+        self.map.get(&object_id)
     }
 
-    fn with_entry<T>(&self, id: u32, f: impl FnOnce(StoreEntry<'_>) -> T) -> T {
-        f(self.map.borrow_mut().entry(id))
+    fn entry(&mut self, id: u32) -> Self::Entry<'_> {
+        self.map.entry(id)
     }
 
     /// Remove all objects from the store. MUST be called before the store is
     /// dropped, to ensure drop_object is called for all objects.
-    fn clear(&self, ctx: &Ctx) {
-        let mut map = self.map.borrow_mut();
-        for (_, obj) in map.drain() {
-            if let Some(drop_object) = request_ref::<dyn DropObject<Ctx>, _>(&*obj) {
-                drop_object.drop_object(ctx);
-            }
+    fn clear(&mut self, ctx: &Ctx) {
+        for (_, obj) in self.map.drain() {
+            obj.on_drop(ctx);
         }
     }
 }
@@ -154,12 +147,12 @@ impl<Ctx> Drop for Store<Ctx> {
         // This is a safety check to ensure that clear() is called before the store is
         // dropped. If this is not called, then drop_object will not be called
         // for all objects.
-        assert!(self.map.get_mut().is_empty());
+        assert!(self.map.is_empty());
     }
 }
 
 /// A client connection
-pub trait Connection {
+pub trait Connection: Sized + 'static {
     type Context: crate::server::Server<Connection = Self> + 'static;
     type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
     where
@@ -184,7 +177,7 @@ pub trait Connection {
 
     /// Flush connection
     fn flush(&self) -> Self::Flush<'_>;
-    fn objects(&self) -> &Self::Objects;
+    fn objects(&self) -> &RefCell<Self::Objects>;
 }
 
 /// Implementation helper for Connection::send. This assumes you stored the

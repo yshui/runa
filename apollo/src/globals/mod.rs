@@ -1,15 +1,14 @@
-use std::{future::Future, pin::Pin, marker::PhantomData};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
 pub mod xdg_shell;
 
-use wl_protocol::wayland::{wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor};
+use wl_protocol::wayland::{
+    wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
+    wl_subcompositor::v1 as wl_subcompositor,
+};
 use wl_server::{
-    connection::Connection,
-    globals::Global,
-    objects::InterfaceMeta,
-    server::{Globals, Server},
-    provide_any::Demand,
-    renderer_capability::RendererCapability,
+    connection::Connection, globals::Global, objects::InterfaceMeta, provide_any::Demand,
+    renderer_capability::RendererCapability, server::Server,
 };
 
 use crate::shell::Shell;
@@ -37,13 +36,16 @@ impl<S: Server, Sh: Shell> Global<S> for Compositor<Sh> {
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c,
     {
-        (Box::new(crate::objects::compositor::Compositor::<Sh>::new()), None)
+        (
+            Box::new(crate::objects::compositor::Compositor::<Sh>::new()),
+            None,
+        )
     }
 
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
@@ -51,9 +53,15 @@ impl<S: Server, Sh: Shell> Global<S> for Compositor<Sh> {
     }
 }
 
-pub struct Subcompositor;
+pub struct Subcompositor<S>(PhantomData<S>);
 
-impl<S: Server> Global<S> for Subcompositor {
+impl<S> Default for Subcompositor<S> {
+    fn default() -> Self {
+        Subcompositor(PhantomData)
+    }
+}
+
+impl<S: Server, Sh: Shell> Global<S> for Subcompositor<Sh> {
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -67,13 +75,16 @@ impl<S: Server> Global<S> for Subcompositor {
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c,
     {
-        (Box::new(crate::objects::compositor::Subcompositor::new()), None)
+        (
+            Box::new(crate::objects::compositor::Subcompositor::<Sh>::new()),
+            None,
+        )
     }
 
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
@@ -84,8 +95,7 @@ impl<S: Server> Global<S> for Subcompositor {
 #[derive(Default)]
 pub struct Shm;
 
-impl<S: Server + RendererCapability> Global<S> for Shm
-{
+impl<S: Server + RendererCapability> Global<S> for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -99,7 +109,7 @@ impl<S: Server + RendererCapability> Global<S> for Shm
         client: &'b <S as Server>::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta>,
+        Box<dyn InterfaceMeta<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where

@@ -1,4 +1,4 @@
-#![feature(type_alias_impl_trait, generic_associated_types)]
+#![feature(type_alias_impl_trait)]
 use std::{
     cell::{RefCell, RefMut},
     future::Future,
@@ -28,13 +28,17 @@ pub enum Messages {
     WlRegistry,
     #[wayland(impl = "apollo::objects::compositor::Compositor::<DefaultShell>")]
     WlCompositor,
-    #[wayland(impl = "apollo::objects::compositor::Subcompositor")]
+    #[wayland(impl = "apollo::objects::compositor::Surface::<DefaultShell, Ctx>")]
+    WlSurface,
+    #[wayland(impl = "apollo::objects::compositor::Subcompositor::<DefaultShell>")]
     WlSubcompositor,
+    #[wayland(impl = "apollo::objects::compositor::Subsurface::<DefaultShell>")]
+    WlSubsurface,
     #[wayland(impl = "apollo::objects::shm::Shm")]
     WlShm,
     #[wayland(impl = "apollo::objects::shm::ShmPool")]
     WlShmPool,
-    #[wayland(impl = "apollo::objects::xdg_shell::WmBase")]
+    #[wayland(impl = "apollo::objects::xdg_shell::WmBase::<DefaultShell>")]
     XdgWmBase,
 }
 
@@ -132,7 +136,7 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:        connection::Store<Self>,
+    store:        RefCell<connection::Store<Self>>,
     serial:       connection::EventSerial<()>,
     event_flags:  wl_server::events::EventFlags,
     event_states: wl_server::connection::SlottedStates<64>,
@@ -183,7 +187,7 @@ impl connection::Connection for CrescentClient {
         connection::flush_to(&self.tx)
     }
 
-    fn objects(&self) -> &Self::Objects {
+    fn objects(&self) -> &RefCell<Self::Objects> {
         &self.store
     }
 }
@@ -227,7 +231,7 @@ impl wl_common::Serial for CrescentClient {
 
 impl Drop for CrescentClient {
     fn drop(&mut self) {
-        self.store.clear(self);
+        self.store.borrow_mut().clear(self);
     }
 }
 
@@ -243,7 +247,7 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
         Box::pin(async move {
             let (rx, tx) = ::wl_io::split_unixstream(conn)?;
             let mut client_ctx = CrescentClient {
-                store: Store::new(),
+                store: RefCell::new(Store::new()),
                 serial: EventSerial::new(std::time::Duration::from_secs(2)),
                 event_flags: Default::default(),
                 state,
@@ -252,6 +256,7 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
             };
             client_ctx
                 .objects()
+                .borrow_mut()
                 .insert(1, wl_server::objects::Display)
                 .unwrap();
             let mut read = BufReaderWithFd::new(rx);

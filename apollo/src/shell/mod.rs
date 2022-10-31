@@ -1,10 +1,13 @@
 pub mod buffers;
 pub mod surface;
-use slotmap::{SlotMap, DefaultKey};
+pub mod xdg;
+use slotmap::{DefaultKey, SlotMap};
 
 pub trait Shell: Sized + 'static {
-    type Key: std::fmt::Debug + Copy + PartialEq + Eq;
-    type Data;
+    /// The key to surfaces. Default value of `Key` must be an invalid key.
+    /// Using the default key should always result in an error, or getting None.
+    type Key: std::fmt::Debug + Copy + PartialEq + Eq + Default;
+    type Data: Default;
     /// Allocate a SurfaceState and returns a handle to it.
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key;
     /// Deallocate a SurfaceState.
@@ -13,12 +16,9 @@ pub trait Shell: Sized + 'static {
     ///
     /// Panics if the handle is invalid.
     fn deallocate(&mut self, key: Self::Key);
-    fn new_data(&self) -> Self::Data;
 
     fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>>;
-    /// Get a mutable reference to a SurfaceState. Implementation might choose
-    /// to prevent this for committed surface states, they could return a
-    /// None or even panic in this case.
+    /// Get a mutable reference to a SurfaceState.
     fn get_mut(&mut self, key: Self::Key) -> Option<&mut surface::SurfaceState<Self>>;
     /// Called right after `commit`. `from` is the incoming current state, `to`
     /// is the incoming pending state. This function should call `rotate`
@@ -43,9 +43,6 @@ pub trait Shell: Sized + 'static {
     /// Note, for synced subsurface, this is called when `new` became cached
     /// state.
     ///
-    /// Returns a mutable reference to the `old` state, and a immutable
-    /// reference to the `new` state.
-    ///
     /// # Panic
     ///
     /// This function is allowed to panic if either handle is invalid. Or if
@@ -59,22 +56,31 @@ pub struct DefaultShell {
 }
 impl std::fmt::Debug for DefaultShell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DefaultShell")
-            .finish()
+        f.debug_struct("DefaultShell").finish()
     }
 }
+macro_rules! tdbg {
+    ($t:expr) => {{
+        let tmp = ($t);
+        tracing::debug!("{:?}", tmp);
+        tmp
+    }};
+}
+#[derive(Default)]
 pub struct DefaultShellData {
     pub(crate) is_current: bool,
 }
 impl Shell for DefaultShell {
-    type Key = DefaultKey;
     type Data = DefaultShellData;
+    type Key = DefaultKey;
 
+    #[tracing::instrument(skip_all)]
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key {
-        self.storage.insert(state)
+        tdbg!(self.storage.insert(state))
     }
 
     fn deallocate(&mut self, key: Self::Key) {
+        tracing::debug!("Deallocating {:?}", key);
         self.storage.remove(key);
     }
 
@@ -85,14 +91,9 @@ impl Shell for DefaultShell {
     fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>> {
         self.storage.get(key)
     }
-    fn new_data(&self) -> Self::Data {
-        DefaultShellData {
-            is_current: false,
-        }
-    }
 
-    fn rotate(&mut self, to: Self::Key, from: Self::Key) {
-        let [to, from] = self.storage.get_disjoint_mut([to, from]).unwrap();
+    fn rotate(&mut self, to_key: Self::Key, from_key: Self::Key) {
+        let [to, from] = self.storage.get_disjoint_mut([to_key, from_key]).unwrap();
         to.rotate_from(from);
     }
 

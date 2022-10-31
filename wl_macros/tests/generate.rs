@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)]
 use std::{ffi::CStr, os::unix::{io::OwnedFd, prelude::AsRawFd}, pin::Pin, task::Context};
 
 use futures_lite::io::{AsyncBufRead, AsyncRead, AsyncWrite, AsyncWriteExt};

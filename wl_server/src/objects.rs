@@ -21,13 +21,6 @@ use crate::{
     server::{self, EventSource, Globals, Server},
 };
 
-pub trait DropObject<Ctx> {
-    /// Called when the object is removed from the object store. Provide a `dyn
-    /// DropObject` from your Provider implementation if you need to do
-    /// something when the object is removed.
-    fn drop_object(&self, ctx: &Ctx);
-}
-
 /// This is the bottom type for all per client objects. This trait provides some
 /// metadata regarding the object, as well as a way to cast objects into a
 /// common dynamic type.
@@ -37,14 +30,17 @@ pub trait DropObject<Ctx> {
 /// If a object is a proxy of a global, it has to recognize if the global's
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
-pub trait InterfaceMeta {
+pub trait InterfaceMeta<Ctx>: 'static {
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
     /// Case self to &dyn Any
     fn provide<'a>(&'a self, demand: &mut Demand<'a>);
+    /// Called when the object is removed from the object store.
+    fn on_drop(&self, _ctx: &Ctx) {
+    }
 }
 
-impl<'b> Provider for dyn InterfaceMeta + 'b {
+impl<Ctx: 'static> Provider for dyn InterfaceMeta<Ctx> {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
         self.provide(demand)
     }
@@ -54,7 +50,7 @@ impl<'b> Provider for dyn InterfaceMeta + 'b {
 pub const DISPLAY_ID: u32 = 1;
 
 /// Default wl_display implementation
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Display;
 
 impl Display {
@@ -92,8 +88,8 @@ where
     ) -> Self::SyncFut<'a> {
         async move {
             debug!("wl_display.sync {}", callback);
-            if ctx.objects().get(callback.0).is_some() {
-                return Err(crate::error::Error::IdExists(callback.0));
+            if ctx.objects().borrow().get(callback.0).is_some() {
+                return Err(crate::error::Error::IdExists(callback.0))
             }
             ctx.send(
                 callback.0,
@@ -124,7 +120,9 @@ where
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
             let server_context = ctx.server_context();
-            let inserted = ctx.objects().with_entry(registry.0, |entry| {
+            let inserted = {
+                let mut objects = ctx.objects().borrow_mut();
+                let entry = objects.entry(registry.0);
                 if entry.is_vacant() {
                     let (object, task) = server_context
                         .globals()
@@ -137,7 +135,7 @@ where
                 } else {
                     None
                 }
-            });
+            };
             if let Some(task) = inserted {
                 if let Some(task) = task {
                     debug!("Sending global events");
@@ -151,7 +149,7 @@ where
     }
 }
 
-impl InterfaceMeta for Display {
+impl<Ctx> InterfaceMeta<Ctx> for Display {
     fn interface(&self) -> &'static str {
         wl_display::v1::NAME
     }
@@ -161,8 +159,18 @@ impl InterfaceMeta for Display {
     }
 }
 
-pub struct Registry<Ctx: Connection> {
-    known_globals: RefCell<HashMap<u32, Weak<dyn Global<Ctx::Context>>>>,
+pub struct Registry<Ctx> {
+    slot: u8,
+    _ctx: std::marker::PhantomData<Ctx>,
+}
+
+impl<Ctx> Clone for Registry<Ctx> {
+    fn clone(&self) -> Self {
+        Self {
+            slot: self.slot,
+            _ctx: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<Ctx> Registry<Ctx>
@@ -175,7 +183,12 @@ where
         server_context.add_listener(ctx.event_handle());
 
         Self {
-            known_globals: RefCell::new(HashMap::new()),
+            slot: server_context
+                .slots()
+                .iter()
+                .position(|&s| s == wl_registry::NAME)
+                .unwrap() as u8,
+            _ctx: std::marker::PhantomData,
         }
     }
 
@@ -198,94 +211,127 @@ where
         if event != wl_registry::NAME {
             return Ok(())
         }
-
         // Allocation: Global addition and removal should be rare.
-        let (deleted, added): (Vec<_>, Vec<_>) = ctx
-            .event_states()
-            .with(slot as u8, |state: &RegistryState| {
+        ctx.event_states()
+            .with_mut(slot as u8, |state: &mut RegistryState<Ctx>| {
                 debug!("{:?}", state);
-                let deleted = state
-                    .0
-                    .iter()
-                    .map(|id| {
-                        let object = ctx
-                            .objects()
-                            .get(*id)
-                            .expect("inconsistent state of wl_registry");
-                        let object: &Registry<Ctx> =
-                            request_ref(&*object).expect("wl_registry object has wrong type");
-                        let deleted: Vec<_> = object
-                            .known_globals
-                            .borrow_mut()
-                            .drain_filter(|_, v| v.upgrade().is_none())
-                            .collect();
-                        (*id, deleted)
-                    })
+                let deleted: Vec<_> = state
+                    .known_globals
+                    .drain_filter(|_, v| v.upgrade().is_none())
                     .collect();
-                let added = state
-                    .0
-                    .iter()
-                    .map(|id| {
-                        let object = ctx
-                            .objects()
-                            .get(*id)
-                            .expect("inconsistent state of wl_registry");
-                        let object: &Registry<Ctx> =
-                            request_ref(&*object).expect("wl_registry object has wrong type");
-                        let mut added = Vec::new();
-                        ctx.server_context().globals().for_each(|id, global| {
-                            if !object.known_globals.borrow().contains_key(&id) {
-                                object
-                                    .known_globals
-                                    .borrow_mut()
-                                    .insert(id, Rc::downgrade(global));
-                                added.push((id, global.interface(), global.version()));
+                let mut added = Vec::new();
+                ctx.server_context().globals().for_each(|id, global| {
+                    if !state.known_globals.contains_key(&id) {
+                        state.known_globals.insert(id, Rc::downgrade(global));
+                        added.push((
+                            id,
+                            std::ffi::CString::new(global.interface()).unwrap(),
+                            global.version(),
+                        ));
+                    }
+                });
+                let registry_objects: Vec<_> = state.registry_objects.iter().copied().collect();
+                let send_new = if !state.new_registry_objects.is_empty() {
+                    // Only clone known_globals is we have new registry objects
+                    let new_registry_objects = state.new_registry_objects.clone();
+                    let known_globals = state.known_globals.clone();
+                    state
+                        .registry_objects
+                        .extend(state.new_registry_objects.drain(..));
+                    Some((new_registry_objects, known_globals))
+                } else {
+                    None
+                };
+                async move {
+                    for registry_id in registry_objects.into_iter() {
+                        for (id, interface, version) in added.iter() {
+                            ctx.send(registry_id, wl_registry::events::Global {
+                                name:      *id,
+                                interface: wl_types::Str(interface.as_c_str()),
+                                version:   *version,
+                            })
+                            .await?;
+                        }
+                        for (id, _) in deleted.iter() {
+                            ctx.send(registry_id, wl_registry::events::GlobalRemove {
+                                name: *id,
+                            })
+                            .await?;
+                        }
+                    }
+                    if let Some((new_registry_objects, known_globals)) = send_new {
+                        for registry_id in new_registry_objects.into_iter() {
+                            for (id, global) in known_globals.iter() {
+                                let global = global.upgrade().unwrap();
+                                let interface = std::ffi::CString::new(global.interface()).unwrap();
+                                ctx.send(registry_id, wl_registry::events::Global {
+                                    name:      *id,
+                                    interface: wl_types::Str(interface.as_c_str()),
+                                    version:   global.version(),
+                                })
+                                .await?;
                             }
-                        });
-                        (*id, added)
-                    })
-                    .collect();
-                (deleted, added)
+                        }
+                    }
+                    Ok(())
+                }
             })
             .expect("registry state is of the wrong type")
-            .expect("registry state not found");
-        for (id, deleted) in deleted.into_iter() {
-            for deleted_id in deleted {
-                ctx.send(
-                    id,
-                    wl_registry::Event::GlobalRemove(wl_registry::events::GlobalRemove {
-                        name: deleted_id.0,
-                    }),
-                )
-                .await?;
-            }
-        }
-        for (id, added) in added.into_iter() {
-            for (added_id, interface, version) in added {
-                let interface = std::ffi::CString::new(interface).unwrap();
-                ctx.send(
-                    id,
-                    wl_registry::Event::Global(wl_registry::events::Global {
-                        name: added_id,
-                        interface: wl_types::Str(interface.as_c_str()),
-                        version,
-                    }),
-                )
-                .await?;
-            }
-        }
-        Ok(())
+            .expect("registry state not found")
+            .await
     }
 }
 
 /// Set of object_ids that are wl_registry objects, so we know which objects to
 /// send the events from.
-#[derive(Debug)]
-pub(crate) struct RegistryState(pub(crate) HashSet<u32>);
+pub(crate) struct RegistryState<Ctx: Connection> {
+    /// Known wl_registry objects. We will send delta global events to them.
+    registry_objects:     HashSet<u32>,
+    /// Newly created wl_registry objects. We will send all the globals to them
+    /// then move them to `registry_objects`.
+    new_registry_objects: Vec<u32>,
+    /// List of globals known to this client context
+    known_globals:        HashMap<u32, Weak<dyn Global<Ctx::Context>>>,
+}
 
-impl crate::provide_any::Provider for RegistryState {
+impl<Ctx: Connection> RegistryState<Ctx> {
+    pub(crate) fn new(registry_object_id: u32) -> Self {
+        Self {
+            registry_objects:     HashSet::new(),
+            new_registry_objects: vec![registry_object_id],
+            known_globals:        HashMap::new(),
+        }
+    }
+
+    pub(crate) fn add_registry_object(&mut self, id: u32) {
+        self.new_registry_objects.push(id);
+    }
+}
+
+impl<Ctx: Connection> std::fmt::Debug for RegistryState<Ctx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct DebugMap<'a, Ctx: Connection>(&'a HashMap<u32, Weak<dyn Global<Ctx::Context>>>);
+        impl<Ctx: Connection> std::fmt::Debug for DebugMap<'_, Ctx> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_set()
+                    .entries(self.0.iter().map(|(k, _)| k))
+                    .finish()
+            }
+        }
+        f.debug_struct("RegistryState")
+            .field("registry_objects", &self.registry_objects)
+            .field("new_registry_objects", &self.new_registry_objects)
+            .field("known_globals", &DebugMap::<Ctx>(&self.known_globals))
+            .finish()
+    }
+}
+
+impl<Ctx: Connection> crate::provide_any::Provider for RegistryState<Ctx> {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
         demand.provide_ref(self);
+    }
+    fn provide_mut<'a>(&'a mut self, demand: &mut Demand<'a>) {
+        demand.provide_mut(self);
     }
 }
 
@@ -312,25 +358,34 @@ where
             // We use the weak references we are holding to bind the global, even though it
             // could be outdated compared to the ones in server's global store.
             // This is because the ones stored in the weak references represents
-            // what the client knows about, if we have a dead weak reference, it
-            // means the client tries to bind a global that has been removed - even if there
-            // is a global with that ID on the server's global state, which means the ID was
-            // reused.
-            let global = self
-                .known_globals
-                .borrow()
-                .get(&name)
-                .and_then(|g| g.upgrade());
-            if let Some(global) = global {
-                let (object, task) = global.bind(ctx, id.0);
-                let inserted = ctx.objects().with_entry(id.0, |entry| {
+            // what the client knows about - synchronized using Global and GlobalRemove
+            // events. if we have a dead weak reference, it means the client tries
+            // to bind a global that has been removed, but the GlobalRemove hasn't been
+            // send, so it doesn't know about the removal yet. Sometimes there can even be
+            // global with that ID on the server's global state, which means the ID
+            // was reused.
+            let bind_results = ctx
+                .event_states()
+                .with(self.slot, |state: &RegistryState<Ctx>| {
+                    state
+                        .known_globals
+                        .get(&name)
+                        .and_then(|g| g.upgrade())
+                        .map(|g| g.bind(ctx, id.0))
+                })
+                .expect("registry state is of the wrong type")
+                .expect("registry state not found");
+            if let Some((object, task)) = bind_results {
+                let inserted = {
+                    let mut objects = ctx.objects().borrow_mut();
+                    let entry = objects.entry(id.0);
                     if entry.is_vacant() {
                         entry.or_insert_boxed(object);
                         Some(task)
                     } else {
                         None
                     }
-                });
+                };
                 if let Some(task) = inserted {
                     if let Some(task) = task {
                         task.await?;
@@ -346,32 +401,15 @@ where
     }
 }
 
-impl<Ctx: Connection> ::std::fmt::Debug for Registry<Ctx> {
+impl<Ctx> ::std::fmt::Debug for Registry<Ctx> {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        struct DebugMap<'a, T>(&'a HashMap<u32, Weak<dyn Global<T>>>);
-        impl<'a, T> std::fmt::Debug for DebugMap<'a, T> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_map()
-                    .entries(self.0.iter().map(|(k, _)| (k, "…")))
-                    .finish()
-            }
-        }
         f.debug_struct("Registry")
-            .field("known_globals", &DebugMap(&self.known_globals.borrow()))
+            .field("slot", &self.slot)
             .finish()
     }
 }
-impl<Ctx: Connection + connection::Evented<Ctx>> DropObject<Ctx> for Registry<Ctx>
-where
-    Ctx::Context: EventSource,
-{
-    fn drop_object(&self, ctx: &Ctx) {
-        let server_context = ctx.server_context();
-        server_context.remove_listener(ctx.event_handle());
-    }
-}
 
-impl<Ctx: Connection + connection::Evented<Ctx> + 'static> InterfaceMeta for Registry<Ctx>
+impl<Ctx: Connection + connection::Evented<Ctx> + 'static> InterfaceMeta<Ctx> for Registry<Ctx>
 where
     Ctx::Context: EventSource,
 {
@@ -381,8 +419,11 @@ where
 
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
         demand
-            .provide_ref(self)
-            .provide_ref(self as &dyn DropObject<Ctx>);
+            .provide_ref(self);
+    }
+    fn on_drop(&self, ctx: &Ctx) {
+        let server_context = ctx.server_context();
+        server_context.remove_listener(ctx.event_handle());
     }
 }
 

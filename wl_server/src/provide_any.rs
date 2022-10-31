@@ -89,10 +89,21 @@ pub trait Provider {
 /// what's needed, thus speed things up.
 pub trait SlottedProvider {
     fn provide<'a>(&'a self, slot: usize, demand: &mut Demand<'a>);
+    fn provide_mut<'a>(&'a mut self, _slot: usize, _demand: &mut Demand<'a>) {}
 }
 
 pub struct ProviderArray<const N: usize> {
     pub providers: [Option<Box<dyn Provider>>; N],
+}
+
+impl<const N: usize> ProviderArray<N> {
+    pub fn set<T: 'static + Provider>(&mut self, slot: usize, provider: T) {
+        if slot < N {
+            self.providers[slot] = Some(Box::new(provider));
+        } else {
+            panic!("slot out of range");
+        }
+    }
 }
 
 impl<const N: usize> Default for ProviderArray<N> {
@@ -110,6 +121,13 @@ impl<const N: usize> SlottedProvider for ProviderArray<N> {
         if slot < N {
             if let Some(provider) = &self.providers[slot] {
                 provider.provide(demand);
+            }
+        }
+    }
+    fn provide_mut<'a>(&'a mut self, slot: usize, demand: &mut Demand<'a>) {
+        if slot < N {
+            if let Some(provider) = &mut self.providers[slot] {
+                provider.provide_mut(demand);
             }
         }
     }

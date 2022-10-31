@@ -10,6 +10,8 @@ pub enum Error {
     IdExists(u32),
     #[error("Unknown Global: {0}")]
     UnknownGlobal(u32),
+    #[error("Unknown object: {0}")]
+    UnknownObject(u32),
     #[error("{source}")]
     Custom {
         #[source]
@@ -44,6 +46,7 @@ impl wl_protocol::ProtocolError for Error {
             Self::Deserialization(_) => Some((1, InvalidMethod as u32)),
             Self::IdExists(_) => Some((1, InvalidObject as u32)),
             Self::UnknownGlobal(_) => Some((1, InvalidObject as u32)),
+            Self::UnknownObject(_) => Some((1, InvalidObject as u32)),
             Self::Custom {
                 object_id_and_code, ..
             } => *object_id_and_code,
@@ -54,8 +57,11 @@ impl wl_protocol::ProtocolError for Error {
 
     fn fatal(&self) -> bool {
         match self {
-            Self::Deserialization(_) | Self::Io(_) | Self::IdExists(_) | Self::UnknownGlobal(_) =>
-                true,
+            Self::Deserialization(_) |
+            Self::Io(_) |
+            Self::IdExists(_) |
+            Self::UnknownGlobal(_) |
+            Self::UnknownObject(_) => true,
             Self::Custom { fatal, .. } => *fatal,
         }
     }

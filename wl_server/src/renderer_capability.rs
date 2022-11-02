@@ -1,5 +1,5 @@
-//! Render Capability, an interface for compositor implementation to tell us what its renderer can
-//! do
+//! Render Capability, an interface for compositor implementation to tell us
+//! what its renderer can do
 
 pub use wl_protocol::wayland::wl_shm::v1::enums::Format;
 

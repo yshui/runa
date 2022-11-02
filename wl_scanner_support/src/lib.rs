@@ -2,15 +2,13 @@
 pub enum Error {
     #[error("{0}")]
     Io(#[from] std::io::Error),
-    #[error("{0}")]
-    Deserializer(#[from] serde::de::value::Error),
     #[error("Unknown opcode {0}")]
     UnknownOpcode(u32),
 }
 
 pub mod io {
     pub use futures_lite::AsyncBufRead;
-    pub use wl_io::*;
+    pub use wl_io_traits::*;
 }
 
 pub trait ProtocolError: std::error::Error + Send + Sync + 'static {
@@ -26,7 +24,6 @@ pub trait ProtocolError: std::error::Error + Send + Sync + 'static {
 pub use bitflags::bitflags;
 pub use futures_lite::ready;
 pub use num_enum;
-pub use serde;
 pub use wl_types as wayland_types;
 
 pub mod future {

@@ -1,6 +1,6 @@
 use std::{future::Future, os::unix::io::OwnedFd};
 
-use wl_common::{interface_message_dispatch, Infallible};
+use wl_common::interface_message_dispatch;
 use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
@@ -9,32 +9,12 @@ use wl_server::{
     error,
     objects::{InterfaceMeta, DISPLAY_ID},
     provide_any,
-    renderer_capability::RendererCapability,
-    server::{Server, ServerBuilder},
 };
 
 pub struct Shm;
 impl Shm {
-    pub const EVENT_SLOT: i32 = -1;
-
     pub fn new() -> Shm {
         Shm
-    }
-
-    pub fn init_server<Ctx: ServerBuilder>(server: &mut Ctx) -> Result<(), Infallible>
-    where
-        Ctx::Output: RendererCapability,
-    {
-        server.global(crate::globals::Shm);
-        Ok(())
-    }
-
-    pub async fn handle_events<Ctx>(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), Infallible> {
-        Ok(())
     }
 }
 impl<Ctx> InterfaceMeta<Ctx> for Shm {
@@ -136,21 +116,5 @@ impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool {
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move { unimplemented!() }
-    }
-}
-
-impl ShmPool {
-    pub const EVENT_SLOT: i32 = -1;
-
-    pub fn init_server<Ctx: ServerBuilder>(_server: &mut Ctx) -> Result<(), Infallible> {
-        Ok(())
-    }
-
-    pub async fn handle_events<Ctx>(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), Infallible> {
-        Ok(())
     }
 }

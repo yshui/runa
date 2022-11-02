@@ -18,3 +18,4 @@ wl_server = { version = "0.1.0", path = "../wl_server" }
 wl_types = { version = "0.1.0", path = "../wl_types" }
 tracing.workspace = true
 futures-channel = "0.3.25"
+wl_io = { version = "0.1.0", path = "../wl_io" }

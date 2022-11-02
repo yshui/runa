@@ -3,7 +3,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Deserialization error: {0}")]
-    Deserialization(#[from] serde::de::value::Error),
+    Deserialization(#[from] wl_io::traits::de::Error),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("NewId {0} sent by the client is already in use")]

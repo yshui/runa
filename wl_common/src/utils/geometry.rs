@@ -3,9 +3,7 @@ use std::{
     ops::{Add, AddAssign, Div, Mul, Sub, SubAssign},
 };
 
-use num_traits::{
-    real::Real, AsPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub, Zero,
-};
+use num_traits::{real::Real, AsPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
 
 /// Type-level marker for the logical coordinate space
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -891,7 +889,10 @@ impl Transform {
     /// Transforms a rectangle inside an area of a given size by applying this
     /// transformation.
     #[inline]
-    pub fn transform_rect_in<N: Sub<Output = N> + Sign + Copy + fmt::Debug, Kind: CoordinateSpace>(
+    pub fn transform_rect_in<
+        N: Sub<Output = N> + Sign + Copy + fmt::Debug,
+        Kind: CoordinateSpace,
+    >(
         &self,
         rect: Rectangle<N, Kind>,
         area: &Extent<N, Kind>,

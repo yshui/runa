@@ -1,11 +1,12 @@
-use super::protocol::*;
 use std::io::{BufRead, BufReader, Read};
-use thiserror::Error;
 
 use quick_xml::{
     events::{attributes::Attributes, Event},
     reader::Reader,
 };
+use thiserror::Error;
+
+use super::protocol::*;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Ill-formed protocol file")]
@@ -31,15 +32,14 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 fn extract_end_tag<R: BufRead>(reader: &mut Reader<R>, tag: &[u8]) -> Result<()> {
     match reader.read_event_into(&mut Vec::new())? {
-        Event::End(bytes) => {
+        Event::End(bytes) =>
             if bytes.name().local_name().as_ref() != tag {
                 return Err(Error::UnexpectedEndTag {
                     expected: String::from_utf8_lossy(tag).into_owned(),
-                    actual: String::from_utf8_lossy(bytes.name().local_name().as_ref())
+                    actual:   String::from_utf8_lossy(bytes.name().local_name().as_ref())
                         .into_owned(),
-                });
-            }
-        }
+                })
+            },
         other => return Err(Error::UnexpectedToken(format!("{:?}", other))),
     }
     Ok(())
@@ -66,9 +66,9 @@ fn parse_protocol<R: BufRead>(mut reader: Reader<R>) -> Result<Protocol> {
             {
                 Protocol::new(String::from_utf8(attr.value.into_owned())?)
             } else {
-                return Err(Error::NoName);
+                return Err(Error::NoName)
             }
-        }
+        },
         other => return Err(Error::UnexpectedToken(format!("{:?}", other))),
     };
 
@@ -79,45 +79,42 @@ fn parse_protocol<R: BufRead>(mut reader: Reader<R>) -> Result<Protocol> {
                     b"copyright" => {
                         // parse the copyright
                         let copyright = match reader.read_event_into(&mut Vec::new()) {
-                            Ok(Event::Text(copyright)) => {
-                                copyright.unescape().ok().map(std::borrow::Cow::into_owned)
-                            }
-                            Ok(Event::CData(copyright)) => {
-                                String::from_utf8(copyright.into_inner().into()).ok()
-                            }
+                            Ok(Event::Text(copyright)) =>
+                                copyright.unescape().ok().map(std::borrow::Cow::into_owned),
+                            Ok(Event::CData(copyright)) =>
+                                String::from_utf8(copyright.into_inner().into()).ok(),
                             Err(e) => return Err(e.into()),
                             _ => return Err(Error::IllFormed),
                         };
 
                         extract_end_tag(&mut reader, b"copyright")?;
                         protocol.copyright = copyright
-                    }
+                    },
                     b"interface" => {
                         protocol
                             .interfaces
                             .push(parse_interface(&mut reader, bytes.attributes())?);
-                    }
+                    },
                     b"description" => {
                         protocol.description =
                             Some(parse_description(&mut reader, bytes.attributes())?);
-                    }
-                    _ => {
+                    },
+                    _ =>
                         return Err(Error::UnexpectedToken(String::from_utf8(
                             bytes.local_name().as_ref().to_owned(),
-                        )?))
-                    }
+                        )?)),
                 }
-            }
+            },
             Ok(Event::End(bytes)) => {
                 assert!(
                     bytes.local_name().as_ref() == b"protocol",
                     "Unexpected closing token `{}`",
                     String::from_utf8_lossy(bytes.local_name().as_ref())
                 );
-                break;
-            }
+                break
+            },
             // ignore comments
-            Ok(Event::Comment(_)) => {}
+            Ok(Event::Comment(_)) => {},
             e => return Err(Error::UnexpectedToken(format!("{:?}", e))),
         }
     }
@@ -131,33 +128,35 @@ fn parse_interface<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Res
         match attr.key.local_name().as_ref() {
             b"name" => interface.name = String::from_utf8(attr.value.into_owned())?,
             b"version" => interface.version = std::str::from_utf8(attr.value.as_ref())?.parse()?,
-            _ => {}
+            _ => {},
         }
     }
 
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Start(bytes)) => match bytes.local_name().as_ref() {
-                b"description" => {
-                    interface.description = Some(parse_description(reader, bytes.attributes())?)
-                }
-                b"request" => interface
-                    .requests
-                    .push(parse_event_or_request(reader, bytes.attributes(), b"request")?),
-                b"event" => interface
-                    .events
-                    .push(parse_event_or_request(reader, bytes.attributes(), b"event")?),
+                b"description" =>
+                    interface.description = Some(parse_description(reader, bytes.attributes())?),
+                b"request" => interface.requests.push(parse_event_or_request(
+                    reader,
+                    bytes.attributes(),
+                    b"request",
+                )?),
+                b"event" => interface.events.push(parse_event_or_request(
+                    reader,
+                    bytes.attributes(),
+                    b"event",
+                )?),
                 b"enum" => interface
                     .enums
                     .push(parse_enum(reader, bytes.attributes())?),
-                _ => {
+                _ =>
                     return Err(Error::UnexpectedToken(String::from_utf8(
                         bytes.local_name().as_ref().to_owned(),
-                    )?))
-                }
+                    )?)),
             },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"interface" => break,
-            _ => {}
+            _ => {},
         }
     }
 
@@ -179,8 +178,8 @@ fn parse_description<R: BufRead>(
     }
 
     let mut description = String::new();
-    // Some protocols have comments inside their descriptions, so we need to parse them in a loop and
-    // concatenate the parts into a single block of text
+    // Some protocols have comments inside their descriptions, so we need to parse
+    // them in a loop and concatenate the parts into a single block of text
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Text(bytes)) => {
@@ -188,9 +187,9 @@ fn parse_description<R: BufRead>(
                     description.push_str("\n\n");
                 }
                 description.push_str(&bytes.unescape().unwrap_or_default())
-            }
+            },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"description" => break,
-            Ok(Event::Comment(_)) => {}
+            Ok(Event::Comment(_)) => {},
             Err(e) => return Err(e.into()),
             e => return Err(Error::UnexpectedToken(format!("{:?}", e))),
         }
@@ -205,86 +204,85 @@ fn parse_enum<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Result<E
         match attr.key.local_name().as_ref() {
             b"name" => enu.name = String::from_utf8(attr.value.into_owned())?,
             b"since" => enu.since = std::str::from_utf8(&attr.value)?.parse()?,
-            b"bitfield" => {
+            b"bitfield" =>
                 if &attr.value[..] == b"true" {
                     enu.bitfield = true
-                }
-            }
-            _ => {}
+                },
+            _ => {},
         }
     }
 
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Start(bytes)) => match bytes.local_name().as_ref() {
-                b"description" => {
-                    enu.description = Some(parse_description(reader, bytes.attributes())?)
-                }
+                b"description" =>
+                    enu.description = Some(parse_description(reader, bytes.attributes())?),
                 b"entry" => enu.entries.push(parse_entry(reader, bytes.attributes())?),
-                _ => {
+                _ =>
                     return Err(Error::UnexpectedToken(String::from_utf8(
                         bytes.local_name().as_ref().to_owned(),
-                    )?))
-                }
+                    )?)),
             },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"enum" => break,
-            _ => {}
+            _ => {},
         }
     }
 
     Ok(enu)
 }
 
-fn parse_event_or_request<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes, tag: &[u8]) -> Result<Message> {
+fn parse_event_or_request<R: BufRead>(
+    reader: &mut Reader<R>,
+    attrs: Attributes,
+    tag: &[u8],
+) -> Result<Message> {
     let mut message = Message::new();
     for attr in attrs.filter_map(|res| res.ok()) {
         match attr.key.local_name().as_ref() {
             b"name" => message.name = String::from_utf8(attr.value.into_owned())?,
             b"type" => message.typ = Some(parse_type(&attr.value)?),
             b"since" => message.since = std::str::from_utf8(&attr.value)?.parse()?,
-            _ => {}
+            _ => {},
         }
     }
 
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Start(bytes)) => match bytes.local_name().as_ref() {
-                b"description" => {
-                    message.description = Some(parse_description(reader, bytes.attributes())?)
-                }
+                b"description" =>
+                    message.description = Some(parse_description(reader, bytes.attributes())?),
                 b"arg" => {
                     let arg = parse_arg(reader, bytes.attributes())?;
                     if arg.typ == Type::NewId && arg.interface.is_none() {
                         // Push implicit parameter: interface and version
                         message.args.push(Arg {
-                            name: "interface".to_string(),
-                            typ: Type::String,
-                            interface: None,
-                            summary: Some("interface of the bound object".into()),
+                            name:        "interface".to_string(),
+                            typ:         Type::String,
+                            interface:   None,
+                            summary:     Some("interface of the bound object".into()),
                             description: None,
-                            allow_null: false,
-                            enum_: None,
+                            allow_null:  false,
+                            enum_:       None,
                         });
                         message.args.push(Arg {
-                            name: "version".to_string(),
-                            typ: Type::Uint,
-                            interface: None,
-                            summary: Some("interface version of the bound object".into()),
+                            name:        "version".to_string(),
+                            typ:         Type::Uint,
+                            interface:   None,
+                            summary:     Some("interface version of the bound object".into()),
                             description: None,
-                            allow_null: false,
-                            enum_: None,
+                            allow_null:  false,
+                            enum_:       None,
                         });
                     }
                     message.args.push(arg);
-                }
-                _ => {
+                },
+                _ =>
                     return Err(Error::UnexpectedToken(String::from_utf8(
                         bytes.local_name().as_ref().to_owned(),
-                    )?))
-                }
+                    )?)),
             },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == tag => break,
-            _ => {}
+            _ => {},
         }
     }
 
@@ -297,39 +295,35 @@ fn parse_arg<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Result<Ar
         match attr.key.local_name().as_ref() {
             b"name" => arg.name = String::from_utf8(attr.value.into_owned())?,
             b"type" => arg.typ = parse_type(&attr.value)?,
-            b"summary" => {
+            b"summary" =>
                 arg.summary = Some(
                     String::from_utf8_lossy(&attr.value)
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
-                )
-            }
+                ),
             b"interface" => arg.interface = Some(String::from_utf8(attr.value.into_owned())?),
-            b"allow-null" => {
+            b"allow-null" =>
                 if &*attr.value == b"true" {
                     arg.allow_null = true
-                }
-            }
+                },
             b"enum" => arg.enum_ = Some(String::from_utf8(attr.value.into_owned())?),
-            _ => {}
+            _ => {},
         }
     }
 
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Start(bytes)) => match bytes.local_name().as_ref() {
-                b"description" => {
-                    arg.description = Some(parse_description(reader, bytes.attributes())?)
-                }
-                _ => {
+                b"description" =>
+                    arg.description = Some(parse_description(reader, bytes.attributes())?),
+                _ =>
                     return Err(Error::UnexpectedToken(String::from_utf8(
                         bytes.local_name().as_ref().to_owned(),
-                    )?))
-                }
+                    )?)),
             },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"arg" => break,
-            _ => {}
+            _ => {},
         }
     }
 
@@ -347,11 +341,10 @@ fn parse_type(txt: &[u8]) -> Result<Type> {
         b"array" => Type::Array,
         b"fd" => Type::Fd,
         b"destructor" => Type::Destructor,
-        e => {
+        e =>
             return Err(Error::UnexpectedType(
                 String::from_utf8_lossy(e).into_owned(),
-            ))
-        }
+            )),
     })
 }
 
@@ -366,34 +359,31 @@ fn parse_entry<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Result<
                 } else {
                     std::str::from_utf8(&attr.value)?.parse()?
                 };
-            }
+            },
             b"since" => entry.since = std::str::from_utf8(&attr.value)?.parse()?,
-            b"summary" => {
+            b"summary" =>
                 entry.summary = Some(
                     String::from_utf8_lossy(&attr.value)
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
-                )
-            }
-            _ => {}
+                ),
+            _ => {},
         }
     }
 
     loop {
         match reader.read_event_into(&mut Vec::new()) {
             Ok(Event::Start(bytes)) => match bytes.local_name().as_ref() {
-                b"description" => {
-                    entry.description = Some(parse_description(reader, bytes.attributes())?)
-                }
-                _ => {
+                b"description" =>
+                    entry.description = Some(parse_description(reader, bytes.attributes())?),
+                _ =>
                     return Err(Error::UnexpectedToken(
                         String::from_utf8_lossy(bytes.local_name().as_ref()).into_owned(),
-                    ))
-                }
+                    )),
             },
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"entry" => break,
-            _ => {}
+            _ => {},
         }
     }
 

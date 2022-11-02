@@ -1,132 +1,19 @@
 use std::{
-    cell::RefCell,
-    collections::VecDeque,
     io::Result,
-    os::unix::io::{BorrowedFd, OwnedFd},
+    os::{
+        fd::RawFd,
+        unix::io::{BorrowedFd, OwnedFd},
+    },
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 
-use std::task::ready;
 use pin_project_lite::pin_project;
 
-use crate::{AsyncReadWithFd, AsyncWriteWithFd};
-
-pub trait AsyncBufReadWithFd: AsyncReadWithFd {
-    /// Reads enough data to return a buffer at least the given size.
-    fn poll_fill_buf_until<'a>(
-        self: Pin<&'a mut Self>,
-        cx: &mut Context<'_>,
-        len: usize,
-    ) -> Poll<Result<()>>;
-    /// Pop 1 file descriptor from the buffer, return None if the buffer is
-    /// empty. This takes shared references, mainly because we want to have
-    /// the deserialized value borrow from the BufReader, but while
-    /// deserializing, we also need to pop file descriptors. As a
-    /// compromise, we have to pop file descriptors using a shared reference.
-    /// Implementations would have to use a RefCell, a Mutex, or something
-    /// similar.
-    fn next_fd(&self) -> Option<OwnedFd>;
-    fn buffer(&self) -> &[u8];
-    fn consume(self: Pin<&mut Self>, amt: usize);
-}
-
-pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
-
-impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
-    type Output = Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        let len = this.1;
-        let inner = this.0.take().expect("FillBufUtil polled after completion");
-        match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
-            Poll::Pending => {
-                this.0 = Some(inner);
-                Poll::Pending
-            },
-            ready => ready,
-        }
-    }
-}
-
-pub trait AsyncBufReadWithFdExt: AsyncBufReadWithFd {
-    fn fill_buf_until<'a>(self: &'a mut Self, len: usize) -> FillBufUtil<'a, Self>
-    where
-        Self: Unpin,
-    {
-        FillBufUtil(Some(self), len)
-    }
-}
-
-impl<T: AsyncBufReadWithFd + ?Sized> AsyncBufReadWithFdExt for T {}
-
-pub trait AsyncBufWriteWithFd: AsyncWriteWithFd {
-    /// Waits until there are at least `demand` bytes available in the buffer,
-    /// and `demand_fd` available slots in the file descriptor buffer.
-    /// Implementation shold first try to flush the buffer, until enough free
-    /// space is available. If buffer is not big enough after a complete
-    /// flush, it should allocate more space.
-    fn poll_reserve(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        demand: usize,
-        demand_fd: usize,
-    ) -> Poll<Result<()>>;
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
-
-    /// Write data into the buffer, until the buffer is full. This function
-    /// should just do memory copy and cannot fail. Return the number of
-    /// bytes accepted.
-    fn try_write(self: Pin<&mut Self>, buf: &[u8]) -> usize;
-
-    /// Move file descriptor into the buffer, until the buffer is full. Return
-    /// the number of file descriptors accepted.
-    fn try_push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) -> usize;
-}
-
-pub struct Reserve<'a, W: ?Sized>(Pin<&'a mut W>, (usize, usize));
-
-impl<'a, W: AsyncBufWriteWithFd + Unpin + ?Sized> std::future::Future for Reserve<'a, W> {
-    type Output = Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (demand, demand_fd) = self.1;
-        // Poll to ready with a dummy write function, because we can only use the
-        // function once, and we can't lose it if we return Poll::Pending.
-        self.0.as_mut().poll_reserve(cx, demand, demand_fd)
-    }
-}
-
-type Flush<'a, T: Unpin + AsyncBufWriteWithFd + 'a> = impl std::future::Future<Output = Result<()>> + 'a;
-
-pub trait AsyncBufWriteWithFdExt: AsyncBufWriteWithFd {
-    fn reserve(&mut self, demand: usize, demand_fd: usize) -> Reserve<'_, Self>
-    where
-        Self: Unpin,
-    {
-        Reserve(Pin::new(self), (demand, demand_fd))
-    }
-    fn flush(&mut self) -> Flush<'_, Self>
-    where
-        Self: Unpin + Sized,
-    {
-        struct Flush<'a, W: ?Sized>(Pin<&'a mut W>);
-
-        impl<'a, W: AsyncBufWriteWithFd + Unpin + ?Sized> std::future::Future for Flush<'a, W> {
-            type Output = Result<()>;
-
-            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                self.0.as_mut().poll_flush(cx)
-            }
-        }
-
-        Flush(Pin::new(self))
-    }
-}
-
-impl<T: AsyncBufWriteWithFd + ?Sized> AsyncBufWriteWithFdExt for T {}
+use crate::traits::{
+    buf::{AsyncBufReadWithFd, AsyncBufWriteWithFd},
+    AsyncReadWithFd, AsyncWriteWithFd,
+};
 
 pin_project! {
 /// A buffered reader for reading data with file descriptors.
@@ -150,7 +37,7 @@ pub struct BufReaderWithFd<T> {
     filled_data: usize,
     pos_data: usize,
 
-    fd_buf: RefCell<VecDeque<OwnedFd>>,
+    fd_buf: Vec<RawFd>,
 }
 }
 
@@ -198,7 +85,7 @@ impl<T> BufReaderWithFd<T> {
             pos_data: 0,
             cap_data,
 
-            fd_buf: RefCell::new(VecDeque::with_capacity(cap_fd)),
+            fd_buf: Vec::with_capacity(cap_fd),
         }
     }
 
@@ -210,14 +97,15 @@ impl<T> BufReaderWithFd<T> {
     }
 }
 
-impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
+unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
     fn poll_fill_buf_until(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         len: usize,
     ) -> Poll<std::io::Result<()>> {
         if self.pos_data + len > self.buf.len() || self.filled_data == self.pos_data {
-            // Try to shrink before we grow it. Or if the buf is empty.
+            // Try to shrink buffer before we grow it. Or adjust buffer pointers when the
+            // buf is empty.
             self.as_mut().shrink();
         }
         while self.filled_data - self.pos_data < len {
@@ -234,15 +122,17 @@ impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
             // post condition from the if above: buf.len() >= len + pos_data
             // combined: filled_data < buf.len()
             let buf = unsafe { &mut this.buf.get_unchecked_mut(*this.filled_data..) };
-            let last_fd_len = this.fd_buf.get_mut().len();
-            let bytes =
-                ready!(this
-                    .inner
-                    .poll_read_with_fds(cx, buf, this.fd_buf.get_mut(), None))?;
-            if bytes == 0 && last_fd_len == this.fd_buf.get_mut().len() {
+            let mut fd_buf = [0; crate::SCM_MAX_FD as usize];
+            let (bytes, nfds) = ready!(this.inner.poll_read_with_fds(cx, buf, &mut fd_buf[..]))?;
+            if bytes == 0 && nfds == 0 {
                 // We hit EOF while the buffer is not filled
-                return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()));
+                tracing::debug!(
+                    "EOF while the buffer is not filled, filled {}",
+                    this.filled_data
+                );
+                return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()))
             }
+            this.fd_buf.extend_from_slice(&fd_buf[..nfds]);
             *this.filled_data += bytes;
         }
 
@@ -250,8 +140,8 @@ impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
     }
 
     #[inline]
-    fn next_fd(&self) -> Option<OwnedFd> {
-        self.fd_buf.borrow_mut().pop_front()
+    fn fds(&self) -> &[RawFd] {
+        &self.fd_buf[..]
     }
 
     #[inline]
@@ -259,20 +149,20 @@ impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
         self.buffer()
     }
 
-    fn consume(self: Pin<&mut Self>, amt: usize) {
+    fn consume(self: Pin<&mut Self>, amt: usize, amt_fd: usize) {
         let this = self.project();
         *this.pos_data = std::cmp::min(*this.pos_data + amt, *this.filled_data);
+        this.fd_buf.drain(..amt_fd);
     }
 }
 
-impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
+unsafe impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
     fn poll_read_with_fds(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         mut buf: &mut [u8],
-        fds: &mut impl Extend<OwnedFd>,
-        fd_limit: Option<usize>,
-    ) -> Poll<std::io::Result<usize>> {
+        fds: &mut [RawFd],
+    ) -> Poll<std::io::Result<(usize, usize)>> {
         ready!(self.as_mut().poll_fill_buf_until(cx, 1))?;
         let our_buf = self.as_ref().get_ref().buffer();
         let read_len = std::cmp::min(our_buf.len(), buf.len());
@@ -280,18 +170,13 @@ impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
         buf = &mut buf[read_len..];
 
         let this = self.as_mut().project();
-        let fd_limit = if let Some(fd_limit) = fd_limit {
-            let fd_len = this.fd_buf.get_mut().len();
-            fds.extend(this.fd_buf.get_mut().drain(..fd_limit));
-            Some(fd_limit - std::cmp::min(fd_len, fd_limit))
-        } else {
-            fds.extend(this.fd_buf.get_mut().drain(..));
-            None
-        };
+        let fd_len = std::cmp::min(this.fd_buf.len(), fds.len());
+        fds.copy_from_slice(&this.fd_buf[..fd_len]);
 
-        self.as_mut().consume(read_len);
+        self.as_mut().consume(read_len, fd_len);
 
         let mut read = read_len;
+        let mut fd_read = fd_len;
         if !buf.is_empty() {
             // If we still have buffer left, we try to read directly into the buffer to
             // opportunistically avoid copying.
@@ -300,15 +185,16 @@ impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
             // called we will fill our buffer instead re-entering this if
             // branch.
             let this = self.project();
-            match this.inner.poll_read_with_fds(cx, buf, fds, fd_limit)? {
-                Poll::Ready(bytes) => {
+            match this.inner.poll_read_with_fds(cx, buf, &mut fds[fd_len..])? {
+                Poll::Ready((bytes, nfds)) => {
                     read += bytes;
+                    fd_read += nfds;
                 },
                 Poll::Pending => {}, // This is fine - we already read data.
             }
         }
 
-        Poll::Ready(Ok(read))
+        Poll::Ready(Ok((read, fd_read)))
     }
 }
 
@@ -494,18 +380,20 @@ impl<T: AsyncWriteWithFd> AsyncWriteWithFd for BufWriterWithFd<T> {
 
 #[cfg(test)]
 mod test {
-    use std::pin::Pin;
+    use std::{
+        os::fd::{AsRawFd, IntoRawFd},
+        pin::Pin,
+    };
 
     use anyhow::Result;
     use arbitrary::Arbitrary;
     use smol::Task;
     use tracing::debug;
 
-    use super::{
-        AsyncBufReadWithFd, AsyncBufWriteWithFd, AsyncBufWriteWithFdExt, BufReaderWithFd,
-        BufWriterWithFd,
+    use crate::{
+        traits::buf::{AsyncBufReadWithFd, AsyncBufWriteWithFd, AsyncBufWriteWithFdExt},
+        BufReaderWithFd, BufWriterWithFd, ReadWithFd, WriteWithFd,
     };
-    use crate::{ReadWithFd, WriteWithFd};
     async fn buf_roundtrip_seeded(raw: &[u8], executor: &smol::LocalExecutor<'_>) {
         let mut source = arbitrary::Unstructured::new(raw);
         let (rx, tx) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -513,29 +401,39 @@ mod test {
         let (rx, _) = crate::split_unixstream(rx).unwrap();
         let mut tx = BufWriterWithFd::new(tx);
         let mut rx = BufReaderWithFd::new(rx);
-        let task: Task<Result<()>> = executor.spawn(async move {
+        let task: Task<Result<_>> = executor.spawn(async move {
             debug!("start");
-            // Read data and drop them
             use futures_lite::AsyncBufRead;
 
-            use crate::AsyncBufReadWithFdExt;
+            use crate::traits::buf::AsyncBufReadWithFdExt;
+            let mut bytes = Vec::new();
+            let mut fds = Vec::new();
             loop {
-                rx.fill_buf_until(4).await?;
-                let buf = rx.buffer();
-                if buf.len() < 4 {
-                    break
-                }
+                let buf = if let Err(e) = rx.fill_buf_until(4).await {
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                        break
+                    } else {
+                        return Err(e.into())
+                    }
+                } else {
+                    rx.buffer()
+                };
+                assert!(buf.len() >= 4);
                 let len: [u8; 4] = buf[..4].try_into().unwrap();
                 let len = u32::from_le_bytes(len) as usize;
                 debug!("len: {:?}", len);
                 rx.fill_buf_until(len).await?;
-                Pin::new(&mut rx).consume(len);
-                while let Some(fd) = rx.next_fd() {
-                    debug!("fd: {:?}", fd);
-                }
+                bytes.extend_from_slice(&rx.buffer()[4..len]);
+                fds.extend_from_slice(rx.fds());
+                debug!("fds: {:?}", rx.fds());
+                let nfds = rx.fds().len();
+                Pin::new(&mut rx).consume(len, nfds);
             }
-            Ok(())
+            Ok((bytes, fds))
         });
+        let mut sent_bytes = Vec::new();
+        let mut sent_fds = Vec::new();
+        use crate::traits::buf::AsyncBufWriteWithFdExt;
         while let Ok(packet) = <&[u8]>::arbitrary(&mut source) {
             if packet.is_empty() {
                 break
@@ -544,6 +442,7 @@ mod test {
             let fds = if has_fd {
                 let fd: std::os::unix::io::OwnedFd =
                     std::fs::File::open("/dev/null").unwrap().into();
+                sent_fds.push(fd.as_raw_fd());
                 Some(fd)
             } else {
                 None
@@ -554,11 +453,17 @@ mod test {
                 .unwrap();
             assert_eq!(Pin::new(&mut tx).try_write(&len), 4);
             assert_eq!(Pin::new(&mut tx).try_write(packet), packet.len());
+            debug!("send len: {:?}", packet.len() + 4);
+            sent_bytes.extend_from_slice(packet);
             Pin::new(&mut tx).try_push_fds(&mut fds.into_iter());
         }
         tx.flush().await.unwrap();
         drop(tx);
-        task.await.unwrap();
+        let (bytes, fds) = task.await.unwrap();
+        assert_eq!(bytes, sent_bytes);
+        // The actual file descriptor number is not preserved, so we just check the
+        // number of file descriptors matches.
+        assert_eq!(fds.len(), sent_fds.len());
     }
     #[test]
     fn buf_roundtrip() {

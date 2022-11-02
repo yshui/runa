@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use futures_lite::{stream::StreamExt, Future};
 use thiserror::Error;
-use wl_io::AsyncBufReadWithFd;
+use wl_io::traits::buf::AsyncBufReadWithFd;
 
 pub mod connection;
 pub mod error;
@@ -16,7 +16,16 @@ pub mod server;
 
 #[doc(hidden)]
 pub mod __private {
-    pub use wl_protocol::wayland::wl_display;
+    // Re-exports used by macros
+    pub use wl_common::InterfaceMessageDispatch;
+    pub use wl_io::{
+        de::Deserializer as DeserializerImpl,
+        traits::{
+            buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
+            de::Deserializer,
+        },
+    };
+    pub use wl_protocol::{wayland::wl_display, ProtocolError};
     pub use wl_types;
 }
 
@@ -53,7 +62,9 @@ where
     pub async fn run(&mut self) -> Result<(), ConnectionManagerError<Ctx::Error, E>> {
         while let Some(conn) = self.listeners.next().await {
             let conn = conn.map_err(ConnectionManagerError::Listener)?;
-            self.ctx.new_connection(conn).map_err(ConnectionManagerError::Server)?;
+            self.ctx
+                .new_connection(conn)
+                .map_err(ConnectionManagerError::Server)?;
         }
         Ok(())
     }
@@ -205,4 +216,151 @@ pub trait Extra<T> {
 
 pub trait ExtraMut<T>: Extra<T> {
     fn extra_mut<'a>(&'a mut self) -> &'a mut T;
+}
+
+/// Generate message dispatch and event handling functions, given a list of
+/// global objects.
+///
+/// This macro generate these functions:
+///
+/// * Dispatch
+///
+/// ```rust
+/// async fn dispatch<'a, 'b: 'a, R>(ctx: &'a mut Ctx, reader: Pin<&mutR>) -> bool;
+/// ```
+///
+/// This uses the object store in `Ctx` to dispatch a message from `reader`.
+/// Returns whether the client connection needs to be dropped.
+///
+/// * Event handling
+///
+/// ```rust
+/// async handle_events(ctx: &mut Ctx) -> Result<(), Error>;
+/// ```
+///
+/// This handles events set on `Ctx`'s event handle. See
+/// [`crate::connection::Evented`] and [`crate::server::EventSource`] for more
+/// info on the mechanism. See [`crate::server::Globals`] for an example of
+/// `EventSource`.
+///
+/// # Example
+///
+/// ```rust
+/// use wl_server::globals::*;
+/// message_switch! {
+///     error: wl_server::error::Error,
+///     globals: [ Display, Registry ],
+///     ctx: ClientContext,
+/// }
+/// ```
+#[macro_export]
+macro_rules! message_switch {
+    (ctx: $ctx:ty, error: $error:ty, globals: [$($global:ty),+$(,)?],$(,)?) => {
+        async fn dispatch<'a, 'b: 'a, R>(
+            ctx: &'a mut $ctx,
+            mut reader: Pin<&mut R>) -> bool
+        where
+            R: $crate::__private::AsyncBufReadWithFd + 'b
+        {
+            use $crate::__private::AsyncBufReadWithFdExt;
+            use $crate::{
+                __private::{
+                    wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
+                },
+                objects::DISPLAY_ID
+            };
+            let (object_id, len, buf, fd) =
+                match R::next_message(reader.as_mut()).await {
+                    Ok(v) => v,
+                    // I/O error, no point sending the error to the client
+                    Err(e) => return true,
+                };
+            let mut de = DeserializerImpl::new(buf, fd);
+            let (mut fatal, error) = 'dispatch: {
+                let obj = ctx.objects().borrow().get(object_id).map(Rc::clone);
+                if let Some(obj) = obj {
+                    $({
+                        let tmp = <$global as $crate::globals::Global<_>>::
+                            dispatch(obj.as_ref(), ctx, object_id, de.borrow_mut()).await;
+                        match tmp {
+                            Ok(true) => {
+                                tracing::trace!("Dispatched {} to {}", obj.interface(), std::any::type_name::<$global>());
+                                break 'dispatch (false, None)
+                            },
+                            Err(e) => break 'dispatch (
+                                e.fatal(),
+                                e.wayland_error()
+                                .map(|(object_id, error_code)|
+                                    (
+                                        object_id,
+                                        error_code,
+                                        std::ffi::CString::new(e.to_string()).unwrap()
+                                    )
+                                )
+                            ),
+                            Ok(false) => {
+                                // not dispatched
+                                assert_eq!(de.consumed(), (0, 0));
+                            }
+                        }
+                    })+
+                    panic!("Unhandled interface {}", obj.interface());
+                } else {
+                    (
+                        true,
+                        Some((
+                            DISPLAY_ID,
+                            wl_display::enums::Error::InvalidObject as u32,
+                            std::ffi::CString::new(format!("Invalid object id {}", object_id)).unwrap()
+                        ))
+                    )
+                }
+            };
+            if let Some((object_id, error_code, msg)) = error {
+                // We are going to disconnect the client so we don't care about the
+                // error.
+                fatal |= ctx.send(DISPLAY_ID, wl_display::events::Error {
+                    object_id: wl_types::Object(object_id),
+                    code: error_code,
+                    message: wl_types::Str(msg.as_c_str()),
+                }).await.is_err();
+            }
+            if !fatal {
+                let (bytes_read, fds_read) = de.consumed();
+                assert_eq!(bytes_read, len as usize, "unparsed bytes in buffer {object_id}");
+                reader.consume(bytes_read, fds_read);
+            }
+            fatal
+        }
+        async fn handle_events(ctx: &mut $ctx) -> Result<(), $error> {
+            use $crate::{connection::Evented, server::{EventSource, Server}};
+            let events = ctx.reset_events();
+            for i in events.iter_ones() {$(
+                if let Some(task) =
+                    <$global as $crate::globals::Global<_>>::handle_events(ctx, i)
+                {
+                    task.await?;
+                }
+            )+}
+            Ok(())
+        }
+        fn globals() -> impl Iterator<
+            Item = Box<dyn $crate::globals::GlobalMeta<
+                <$ctx as $crate::connection::Connection>::Context
+            >>
+        >
+        {
+            [$(Box::new(<$global as $crate::globals::Global<$ctx>>::INIT) as _),+].into_iter()
+        }
+    };
+    (ctx: $ctx:ty, globals: [$($global:ty),+$(,)?], error: $error:ty $(,)?) => {
+        $crate::message_switch! {
+            ctx: $ctx,
+            error: $error,
+            globals: [ $($global),+ ],
+        }
+    };
+    ($id:ident: $val:tt, $($id2:ident: $val2:tt),+$(,)?) => {
+        $crate::message_switch! {$($id2: $val2),+, $id: $val }
+    }
 }

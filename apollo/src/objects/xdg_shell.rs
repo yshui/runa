@@ -7,7 +7,6 @@ use wl_server::{
     error::Error,
     objects::{interface_message_dispatch, InterfaceMeta},
     provide_any::request_ref,
-    server::ServerBuilder,
     Extra,
 };
 
@@ -88,20 +87,5 @@ where
         id: wl_types::NewId,
     ) -> Self::CreatePositionerFut<'a> {
         async move { unimplemented!() }
-    }
-}
-
-impl<Sh: Shell> WmBase<Sh> {
-    pub fn init_server<S: ServerBuilder>(builder: &mut S) -> Result<(), Infallible> {
-        builder.global(crate::globals::xdg_shell::WmBase::<Sh>::default());
-        Ok(())
-    }
-
-    pub async fn handle_events<Ctx: 'static>(
-        ctx: &Ctx,
-        slot: usize,
-        event: &'static str,
-    ) -> Result<(), Infallible> {
-        Ok(())
     }
 }

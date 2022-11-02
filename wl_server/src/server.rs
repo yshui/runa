@@ -5,28 +5,15 @@ use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 use hashbrown::{hash_map, HashMap};
 use wl_common::Serial;
-use wl_protocol::wayland::wl_registry::v1 as wl_registry;
 
-use crate::globals::Global;
+use crate::globals::GlobalMeta;
 
 pub trait Server: EventSource {
     /// The per client context type.
     type Connection: crate::connection::Connection<Context = Self> + 'static;
     type Globals: Globals<Self>;
-    type Builder: ServerBuilder<Output = Self>;
 
     fn globals(&self) -> &Self::Globals;
-    fn builder() -> Self::Builder;
-}
-
-pub trait ServerBuilder {
-    type Output: Server;
-    /// Add a new global to the server
-    fn global(&mut self, global: impl Global<Self::Output> + 'static) -> &mut Self;
-    /// Add a new event slot to the server
-    fn event_slot(&mut self, event: &'static str) -> &mut Self;
-    /// Create the server object
-    fn build(self) -> Self::Output;
 }
 
 pub trait EventSource {
@@ -40,9 +27,6 @@ pub trait EventSource {
     fn remove_listener(&self, handle: crate::events::EventHandle) -> bool;
     /// Notify all added listeners.
     fn notify(&self, slot: u8);
-    /// Get information about allocated slots. Slots are fixed once an event
-    /// source object is created. See [`ServerBuilder::event_slot`].
-    fn slots(&self) -> &[&'static str];
 }
 
 #[derive(Default, Debug)]
@@ -53,7 +37,10 @@ pub struct Listeners {
 
 impl Listeners {
     pub fn new(slots: Vec<&'static str>) -> Self {
-        Self { slots, ..Default::default() }
+        Self {
+            slots,
+            ..Default::default()
+        }
     }
 }
 
@@ -88,114 +75,72 @@ impl EventSource for Listeners {
             hash_map::Entry::Vacant(_) => false,
         }
     }
-
-    fn slots(&self) -> &[&'static str] {
-        &self.slots
-    }
 }
 
 pub trait Globals<S: Server + EventSource + ?Sized> {
     /// Add a global to the store, return its allocated ID.
-    fn insert<T: Global<S> + 'static>(&self, server: &S, global: T) -> u32;
+    fn insert<T: GlobalMeta<S> + 'static>(&self, server: &S, global: T) -> u32;
     /// Get the global with the given id.
-    fn get(&self, id: u32) -> Option<Rc<dyn Global<S>>>;
+    fn get(&self, id: u32) -> Option<Rc<dyn GlobalMeta<S>>>;
     fn with<F, R>(&self, id: u32, f: F) -> Option<R>
     where
-        F: FnOnce(&Rc<dyn Global<S>>) -> R;
+        F: FnOnce(&Rc<dyn GlobalMeta<S>>) -> R;
     fn for_each<F>(&self, f: F)
     where
-        F: FnMut(u32, &Rc<dyn Global<S>>);
+        F: FnMut(u32, &Rc<dyn GlobalMeta<S>>);
     /// Remove the global with the given id.
     fn remove(&self, server: &S, id: u32) -> bool;
     /// Search the registry for a global with the given interface, return any if
     /// there are multiple. Should only be used for finding singletons, like
     /// wl_registry.
-    fn get_by_interface(&self, interface: &str) -> Option<Rc<dyn Global<S>>> {
+    fn get_by_interface(&self, interface: &str) -> Option<Rc<dyn GlobalMeta<S>>> {
         self.map_by_interface(interface, Clone::clone)
     }
     fn map_by_interface<F, R>(&self, interface: &str, f: F) -> Option<R>
     where
-        F: FnOnce(&Rc<dyn Global<S>>) -> R;
+        F: FnOnce(&Rc<dyn GlobalMeta<S>>) -> R;
 }
 
 pub struct GlobalStore<S: Server> {
-    globals:   wl_common::IdAlloc<Rc<dyn Global<S>>>,
-    registry_event_slot: Option<u8>,
-    _server:             PhantomData<S>,
+    globals: wl_common::IdAlloc<Rc<dyn GlobalMeta<S>>>,
 }
 
-pub struct GlobalStoreBuilder<S: Server> {
-    globals:             Vec<Box<dyn Global<S>>>,
-    registry_event_slot: Option<u8>,
-}
-
-impl<S: Server> Default for GlobalStoreBuilder<S> {
-    fn default() -> Self {
-        Self {
-            globals:             Vec::new(),
-            registry_event_slot: None,
-        }
-    }
-}
-
-impl<S: Server> GlobalStoreBuilder<S> {
-    pub fn global(&mut self, global: impl Global<S> + 'static) -> &mut Self {
-        self.globals.push(Box::new(global));
-        self
-    }
-
-    pub fn registry_event_slot(&mut self, slot: u8) -> &mut Self {
-        self.registry_event_slot = Some(slot);
-        self
-    }
-
-    pub fn build(self) -> GlobalStore<S> {
-        let Self {
-            globals,
-            registry_event_slot,
-        } = self;
+impl<S: Server> FromIterator<Box<dyn GlobalMeta<S>>> for GlobalStore<S> {
+    fn from_iter<T: IntoIterator<Item = Box<dyn GlobalMeta<S>>>>(iter: T) -> Self {
         let id_alloc = wl_common::IdAlloc::default();
-        id_alloc.next_serial(Rc::new(crate::globals::Display) as Rc<dyn Global<S>>);
-        for global in globals {
+        for global in iter.into_iter() {
             id_alloc.next_serial(global.into());
         }
-        GlobalStore {
-            globals: id_alloc,
-            registry_event_slot,
-            _server: PhantomData,
-        }
+        GlobalStore { globals: id_alloc }
     }
 }
 
-
-/// GlobalStore will notify listeners when globals are added or removed. The notification will be
-/// sent to the slot registered as "wl_registry".
+/// GlobalStore will notify listeners when globals are added or removed. The
+/// notification will be sent to the slot registered as "wl_registry".
 impl<S: Server + EventSource> Globals<S> for GlobalStore<S> {
-    fn insert<T: Global<S> + 'static>(&self, server: &S, global: T) -> u32
+    fn insert<T: GlobalMeta<S> + 'static>(&self, server: &S, global: T) -> u32
     where
         S: EventSource,
     {
         let id = self.globals.next_serial(Rc::new(global));
-        if let Some(slot) = self.registry_event_slot {
-            server.notify(slot);
-        }
+        server.notify(*crate::globals::REGISTRY_EVENT_SLOT as u8);
         id
     }
 
-    fn get(&self, id: u32) -> Option<Rc<dyn Global<S>>> {
+    fn get(&self, id: u32) -> Option<Rc<dyn GlobalMeta<S>>> {
         self.globals.get(id)
     }
 
     fn with<F, R>(&self, id: u32, f: F) -> Option<R>
     where
-        F: FnOnce(&Rc<dyn Global<S>>) -> R,
+        F: FnOnce(&Rc<dyn GlobalMeta<S>>) -> R,
     {
         self.globals.with(id, f)
     }
 
     fn for_each<F>(&self, f: F)
     where
-        F: FnMut(u32, &Rc<dyn Global<S>>),
+        F: FnMut(u32, &Rc<dyn GlobalMeta<S>>),
     {
         self.globals.for_each(f)
     }
@@ -206,16 +151,14 @@ impl<S: Server + EventSource> Globals<S> for GlobalStore<S> {
     {
         let removed = self.globals.expire(id);
         if removed {
-            if let Some(slot) = self.registry_event_slot {
-                server.notify(slot);
-            }
+            server.notify(*crate::globals::REGISTRY_EVENT_SLOT as u8);
         }
         removed
     }
 
     fn map_by_interface<F, R>(&self, interface: &str, f: F) -> Option<R>
     where
-        F: FnOnce(&Rc<dyn Global<S>>) -> R,
+        F: FnOnce(&Rc<dyn GlobalMeta<S>>) -> R,
     {
         let mut f = Some(f);
         self.globals.find_map(move |g| {

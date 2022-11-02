@@ -9,6 +9,7 @@ members = [
   "wl_types",
   "wl_macros",
   "wl_io",
+  "wl_io_traits",
   "wl_protocol",
   "crescent",
 ]

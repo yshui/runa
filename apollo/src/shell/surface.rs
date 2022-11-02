@@ -171,7 +171,11 @@ pub mod roles {
                 stack_index,
                 stashed_state: shell.allocate(super::SurfaceState::new(surface.clone())),
             };
-            tracing::debug!("attach {:p} to {:p}", Rc::as_ptr(&surface), Rc::as_ptr(&parent));
+            tracing::debug!(
+                "attach {:p} to {:p}",
+                Rc::as_ptr(&surface),
+                Rc::as_ptr(&parent)
+            );
             surface.set_role(role);
             true
         }

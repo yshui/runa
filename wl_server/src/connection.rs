@@ -12,6 +12,7 @@ use std::{
 };
 
 use hashbrown::{hash_map, HashMap};
+use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 use crate::{
@@ -166,7 +167,7 @@ pub trait Connection: Sized + 'static {
     fn server_context(&self) -> &Self::Context;
 
     /// Send a message to the client.
-    fn send<'a, 'b, 'c, M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b>(
+    fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
         &'a self,
         object_id: u32,
         msg: M,
@@ -189,8 +190,8 @@ pub fn send_to<'a, 'b, 'c, M, C>(
     msg: M,
 ) -> impl Future<Output = Result<(), std::io::Error>> + 'c
 where
-    M: wl_io::Serialize + Unpin + std::fmt::Debug + 'b,
-    C: wl_io::AsyncBufWriteWithFd + Unpin,
+    M: ser::Serialize + Unpin + std::fmt::Debug + 'b,
+    C: AsyncBufWriteWithFd + Unpin,
     'a: 'c,
     'b: 'c,
 {
@@ -204,8 +205,8 @@ where
     }
     impl<'a, M, C> Future for Send<'a, M, C>
     where
-        M: wl_io::Serialize + Unpin,
-        C: wl_io::AsyncBufWriteWithFd + Unpin,
+        M: ser::Serialize + Unpin,
+        C: AsyncBufWriteWithFd + Unpin,
     {
         type Output = Result<(), std::io::Error>;
 
@@ -237,7 +238,7 @@ where
 /// connection object in a RefCell. This function makes sure to not hold RefMut
 /// across await.
 pub fn flush_to<'a>(
-    conn: &'a RefCell<impl wl_io::AsyncBufWriteWithFd + Unpin>,
+    conn: &'a RefCell<impl AsyncBufWriteWithFd + Unpin>,
 ) -> impl Future<Output = Result<(), std::io::Error>> + 'a {
     use std::task::{Context, Poll};
     struct Flush<'a, C> {
@@ -245,7 +246,7 @@ pub fn flush_to<'a>(
     }
     impl<'a, C> Future for Flush<'a, C>
     where
-        C: wl_io::AsyncBufWriteWithFd + Unpin,
+        C: AsyncBufWriteWithFd + Unpin,
     {
         type Output = Result<(), std::io::Error>;
 
@@ -297,7 +298,7 @@ pub trait EventStates {
 
 /// For storing arbitrary additional states in the connection object. State
 /// slots are statically assigned.
-pub struct SlottedStates<const N: usize> {
+pub struct SlottedStates<const N: usize = { crate::globals::MAX_EVENT_SLOT }> {
     states: RefCell<[Option<Box<dyn Provider>>; N]>,
 }
 

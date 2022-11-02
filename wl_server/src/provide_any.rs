@@ -124,6 +124,7 @@ impl<const N: usize> SlottedProvider for ProviderArray<N> {
             }
         }
     }
+
     fn provide_mut<'a>(&'a mut self, slot: usize, demand: &mut Demand<'a>) {
         if slot < N {
             if let Some(provider) = &mut self.providers[slot] {

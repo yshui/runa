@@ -6,7 +6,6 @@ edition = "2021"
 [build-dependencies]
 wl_scanner = { path = "../wl_scanner" }
 wl_spec = { path = "../wl_spec" }
-rust-format = "0.3"
 
 [dependencies]
 futures-executor = "0.3"

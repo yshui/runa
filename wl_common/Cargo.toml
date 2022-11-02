@@ -5,8 +5,7 @@ edition = "2021"
 
 [dependencies]
 futures-lite = "1.12"
-serde = { version = "1.0", features = ["derive"] }
-wl_io = { path = "../wl_io" }
+wl_io_traits = { path = "../wl_io_traits" }
 wl_macros = { path = "../wl_macros" }
 
 hashbrown.workspace = true

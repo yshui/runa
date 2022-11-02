@@ -26,29 +26,18 @@ use wl_server::{
     error,
     objects::InterfaceMeta,
     provide_any::{request_ref, Demand},
-    server::ServerBuilder,
     Extra,
 };
 
 use crate::shell::Shell;
-pub struct Surface<S: Shell, Ctx>(pub(crate) Rc<crate::shell::surface::Surface<S>>, PhantomData<Ctx>);
+pub struct Surface<S: Shell, Ctx>(
+    pub(crate) Rc<crate::shell::surface::Surface<S>>,
+    PhantomData<Ctx>,
+);
 
 impl<S: Shell, Ctx> std::fmt::Debug for Surface<S, Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Surface").field(&self.0).finish()
-    }
-}
-
-impl<S: Shell, Ctx> Surface<S, Ctx> {
-    pub fn init_server<Srv>(server: &mut Srv) -> Result<(), Infallible> {
-        Ok(())
-    }
-    pub async fn handle_events(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), error::Error> {
-        Ok(())
     }
 }
 
@@ -249,21 +238,6 @@ impl<S: Shell> Compositor<S> {
     pub fn new() -> Self {
         Compositor(PhantomData)
     }
-
-    pub async fn handle_events<Ctx: 'static>(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), error::Error> {
-        Ok(())
-    }
-
-    pub fn init_server<Ctx: ServerBuilder>(server: &mut Ctx) -> Result<(), wl_common::Infallible> {
-        server
-            .global(crate::globals::Compositor::<S>::default())
-            .event_slot("wl_compositor");
-        Ok(())
-    }
 }
 
 impl<S: 'static, Ctx> InterfaceMeta<Ctx> for Compositor<S> {
@@ -277,19 +251,6 @@ impl<S: 'static, Ctx> InterfaceMeta<Ctx> for Compositor<S> {
 }
 
 pub struct Subsurface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
-
-impl<S: Shell> Subsurface<S> {
-    pub fn init_server<Srv>(server: &mut Srv) -> Result<(), Infallible> {
-        Ok(())
-    }
-    pub async fn handle_events<Ctx: 'static>(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), error::Error> {
-        Ok(())
-    }
-}
 
 impl<S: Shell, Ctx> InterfaceMeta<Ctx> for Subsurface<S> {
     fn interface(&self) -> &'static str {
@@ -358,19 +319,6 @@ pub struct Subcompositor<S: Shell>(PhantomData<S>);
 impl<Sh: Shell> Subcompositor<Sh> {
     pub fn new() -> Self {
         Self(PhantomData)
-    }
-
-    pub fn init_server<S: ServerBuilder>(server: &mut S) -> Result<(), Infallible> {
-        server.global(crate::globals::Subcompositor::<Sh>::default());
-        Ok(())
-    }
-
-    pub async fn handle_events<Ctx>(
-        _ctx: &Ctx,
-        _slot: usize,
-        _event: &'static str,
-    ) -> Result<(), Infallible> {
-        Ok(())
     }
 }
 
@@ -443,7 +391,12 @@ where
         parent: wl_types::Object,
     ) -> Self::GetSubsurfaceFut<'a> {
         use wl_server::connection::{Entry as _, Objects};
-        tracing::debug!("get_subsurface, id: {:?}, surface: {:?}, parent: {:?}", id, surface, parent);
+        tracing::debug!(
+            "get_subsurface, id: {:?}, surface: {:?}, parent: {:?}",
+            id,
+            surface,
+            parent
+        );
         async move {
             let shell: &RefCell<S> = ctx.server_context().extra();
             let mut objects = ctx.objects().borrow_mut();

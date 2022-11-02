@@ -1,14 +1,22 @@
-use std::{future::Future, marker::PhantomData, pin::Pin};
+use std::{cell::RefCell, future::Future, marker::PhantomData, pin::Pin};
 
 pub mod xdg_shell;
 
+use futures_util::future::Pending;
+use wl_common::Infallible;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
 };
 use wl_server::{
-    connection::Connection, globals::Global, objects::InterfaceMeta, provide_any::Demand,
-    renderer_capability::RendererCapability, server::Server,
+    connection::Connection,
+    global_dispatch,
+    globals::{Global, GlobalMeta},
+    objects::InterfaceMeta,
+    provide_any::Demand,
+    renderer_capability::RendererCapability,
+    server::Server,
+    Extra,
 };
 
 use crate::shell::Shell;
@@ -22,7 +30,7 @@ impl<S> Default for Compositor<S> {
     }
 }
 
-impl<S: Server, Sh: Shell> Global<S> for Compositor<Sh> {
+impl<S: Server, Sh: Shell> GlobalMeta<S> for Compositor<Sh> {
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -53,6 +61,27 @@ impl<S: Server, Sh: Shell> Global<S> for Compositor<Sh> {
     }
 }
 
+impl<Ctx, Sh: Shell> Global<Ctx> for Compositor<Sh>
+where
+    Ctx: Connection,
+    Ctx::Context: Extra<RefCell<Sh>>,
+{
+    type Error = wl_server::error::Error;
+    type HandleEventsError = Infallible;
+    type HandleEventsFut<'a> = Pending<Result<(), Self::HandleEventsError>> where Ctx: 'a;
+
+    const INIT: Self = Self(PhantomData);
+
+    global_dispatch! {
+        "wl_compositor" => crate::objects::compositor::Compositor<Sh>,
+        "wl_surface" => crate::objects::compositor::Surface<Sh, Ctx>,
+    }
+
+    fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {
+        None
+    }
+}
+
 pub struct Subcompositor<S>(PhantomData<S>);
 
 impl<S> Default for Subcompositor<S> {
@@ -61,7 +90,28 @@ impl<S> Default for Subcompositor<S> {
     }
 }
 
-impl<S: Server, Sh: Shell> Global<S> for Subcompositor<Sh> {
+impl<Ctx, Sh: Shell> Global<Ctx> for Subcompositor<Sh>
+where
+    Ctx: Connection,
+    Ctx::Context: Extra<RefCell<Sh>>,
+{
+    type Error = wl_server::error::Error;
+    type HandleEventsError = Infallible;
+    type HandleEventsFut<'a> = Pending<Result<(), Self::HandleEventsError>> where Ctx: 'a;
+
+    const INIT: Self = Self(PhantomData);
+
+    global_dispatch! {
+        "wl_subcompositor" => crate::objects::compositor::Subcompositor<Sh>,
+        "wl_subsurface" => crate::objects::compositor::Subsurface<Sh>,
+    }
+
+    fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {
+        None
+    }
+}
+
+impl<S: Server, Sh: Shell> GlobalMeta<S> for Subcompositor<Sh> {
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -95,7 +145,27 @@ impl<S: Server, Sh: Shell> Global<S> for Subcompositor<Sh> {
 #[derive(Default)]
 pub struct Shm;
 
-impl<S: Server + RendererCapability> Global<S> for Shm {
+impl<Ctx> Global<Ctx> for Shm
+where
+    Ctx: Connection,
+{
+    type Error = wl_server::error::Error;
+    type HandleEventsError = Infallible;
+    type HandleEventsFut<'a> = Pending<Result<(), Self::HandleEventsError>>;
+
+    const INIT: Self = Self;
+
+    global_dispatch! {
+        "wl_shm" => crate::objects::shm::Shm,
+        "wl_shm_pool" => crate::objects::shm::ShmPool,
+    }
+
+    fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {
+        None
+    }
+}
+
+impl<S: Server + RendererCapability> GlobalMeta<S> for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }

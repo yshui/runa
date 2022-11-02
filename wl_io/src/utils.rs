@@ -1,12 +1,18 @@
 #![doc(hidden)]
 
 use std::{
-    cell::RefCell,
-    os::unix::io::{BorrowedFd, OwnedFd},
-    task::Poll, pin::Pin,
+    os::{
+        fd::RawFd,
+        unix::io::{BorrowedFd, OwnedFd},
+    },
+    pin::Pin,
+    task::Poll,
 };
 
-use super::{AsyncReadWithFd, AsyncWriteWithFd};
+use super::traits::{
+    buf::{AsyncBufReadWithFd, AsyncBufWriteWithFd},
+    AsyncReadWithFd, AsyncWriteWithFd,
+};
 
 #[derive(Default, Debug)]
 pub struct WritePool {
@@ -34,6 +40,34 @@ impl futures_lite::AsyncWrite for WritePool {
     fn poll_close(
         self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncBufWriteWithFd for WritePool {
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn try_write(mut self: Pin<&mut Self>, buf: &[u8]) -> usize {
+        self.inner.extend_from_slice(buf);
+        buf.len()
+    }
+
+    fn try_push_fds(mut self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) -> usize {
+        self.fds.extend(fds);
+        self.fds.len()
+    }
+
+    fn poll_reserve(
+        self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _demand: usize,
+        _demand_fd: usize,
     ) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
@@ -69,7 +103,7 @@ impl WritePool {
 #[derive(Debug)]
 pub struct ReadPool {
     inner: Vec<u8>,
-    fds:   RefCell<Vec<OwnedFd>>,
+    fds:   Vec<RawFd>,
 }
 
 impl std::io::Read for ReadPool {
@@ -105,7 +139,7 @@ impl futures_lite::AsyncBufRead for ReadPool {
     }
 }
 
-impl crate::AsyncBufReadWithFd for ReadPool {
+unsafe impl AsyncBufReadWithFd for ReadPool {
     fn poll_fill_buf_until<'a>(
         self: Pin<&'a mut Self>,
         _cx: &mut std::task::Context<'_>,
@@ -121,46 +155,42 @@ impl crate::AsyncBufReadWithFd for ReadPool {
         }
     }
 
-    fn next_fd(&self) -> Option<OwnedFd> {
-        self.fds.borrow_mut().drain(..1).next()
+    fn fds(&self) -> &[RawFd] {
+        &self.fds[..]
     }
 
     fn buffer(&self) -> &[u8] {
         &self.inner[..]
     }
-    fn consume(mut self: Pin<&mut Self>, amt: usize) {
+
+    fn consume(mut self: Pin<&mut Self>, amt: usize, amt_fd: usize) {
         self.inner.drain(..amt);
+        self.fds.drain(..amt_fd);
     }
 }
 
-impl AsyncReadWithFd for ReadPool {
+unsafe impl AsyncReadWithFd for ReadPool {
     fn poll_read_with_fds(
         mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
-        fds: &mut impl Extend<OwnedFd>,
-        fd_limit: Option<usize>,
-    ) -> Poll<std::io::Result<usize>> {
+        fds: &mut [RawFd],
+    ) -> Poll<std::io::Result<(usize, usize)>> {
         use std::io::Read;
         let len = self.read(buf).unwrap();
-        if let Some(fd_limit) = fd_limit {
-            fds.extend(self.fds.get_mut().drain(..fd_limit));
-        } else {
-            fds.extend(self.fds.get_mut().drain(..));
-        }
-        Poll::Ready(Ok(len))
+        let fd_len = std::cmp::min(fds.len(), self.fds.len());
+        fds.copy_from_slice(&self.fds[..fd_len]);
+        self.fds.drain(..fd_len);
+        Poll::Ready(Ok((len, fd_len)))
     }
 }
 
 impl ReadPool {
-    pub fn new(data: Vec<u8>, fds: Vec<OwnedFd>) -> Self {
-        Self {
-            inner: data,
-            fds:   RefCell::new(fds),
-        }
+    pub fn new(data: Vec<u8>, fds: Vec<RawFd>) -> Self {
+        Self { inner: data, fds }
     }
 
     pub fn is_eof(&self) -> bool {
-        self.inner.is_empty() && self.fds.borrow().is_empty()
+        self.inner.is_empty() && self.fds.is_empty()
     }
 }

@@ -1,6 +1,7 @@
 extern crate proc_macro;
 use darling::{FromDeriveInput, FromMeta, FromVariant};
 use proc_macro_error::ResultExt;
+use quote::quote;
 use syn::parse::Parse;
 
 macro_rules! die {
@@ -45,242 +46,6 @@ impl darling::FromField for Reject {
             "fields are not supported",
         ))
     }
-}
-
-/// Generate implementation of `MessageBroker` for a give collection of
-/// interfaces. Each interface in this enum should have a `#[wayland(impl =
-/// ...)]` attribute, pointing to the implementation type of the interface. Each
-/// of the implementation types must implement the `InterfaceMessageDispatch`
-/// trait, with `Ctx = connection_context`. And all of these implementations
-/// must share the same Error type. This Error type must accept conversion from
-/// `std::io::Error`.
-///
-/// (The `InterfaceMessageDispatch` can be generated using the
-/// `interface_message_dispatch` macro.)
-///
-/// Your crate must depends the `wl_protocol` and the `wl_common` crate to use
-/// this. (TODO: allow override)
-///
-/// # Field arguments
-///
-/// * `impl`: The implementation type of the interface. It must implement the
-///   <interface>::Dispatch trait.
-///
-/// # Enum arguments
-///
-/// * `connection_context`: The context type that is passed to `dispatch`
-///   functions. All the type argument `Ctx` in the field arguments will be
-///   replaced with this type.
-///
-/// # Example
-///
-/// ```rust
-/// #[message_broker]
-/// #[wayland(connection_context = "crate::MyServer")]
-/// enum Interfaces {
-///     #[wayland(
-///         impl = "wl_compositor::WlCompositor",
-///         version = 1,
-///         protocol = "wayland"
-///     )]
-///     WlCompositor,
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn message_broker(
-    _attrs: proc_macro::TokenStream,
-    tokens: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    use quote::quote;
-    use syn::Error;
-
-    #[derive(FromVariant)]
-    #[darling(attributes(wayland))]
-    struct Interface {
-        #[darling(rename = "impl")]
-        imp:    syn::TypePath,
-        ident:  syn::Ident,
-        #[allow(unused)]
-        fields: darling::ast::Fields<Reject>,
-    }
-
-    #[derive(FromDeriveInput)]
-    #[darling(attributes(wayland))]
-    struct Interfaces {
-        ident:              syn::Ident,
-        data:               darling::ast::Data<Interface, Reject>,
-        connection_context: syn::Type,
-    }
-    impl syn::parse::Parse for Interfaces {
-        fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-            let input: syn::DeriveInput = input.parse()?;
-            if input.generics.params.len() != 0 {
-                die!(input.generics=>
-                    "Types with generic parameters are not supported"
-                );
-            }
-            let input2 = Interfaces::from_derive_input(&input)?;
-            if input2.data.is_struct() {
-                die!(input =>
-                    "Must be an enum"
-                );
-            }
-            let enum_ = input2.data.as_ref().take_enum().unwrap();
-            if enum_.iter().any(|v| !v.fields.is_unit()) {
-                die!(input =>
-                    "All variants must be unit variants"
-                );
-            }
-            Ok(input2)
-        }
-    }
-    let input = syn::parse_macro_input!(tokens as Interfaces);
-    let mut enum_ = input.data.take_enum().unwrap();
-    // Replace the Ctx type argument with the server context types
-    for iface in &mut enum_ {
-        let path = &mut iface.imp.path;
-        for seg in path.segments.iter_mut() {
-            if let syn::PathArguments::AngleBracketed(ref mut args) = seg.arguments {
-                for arg in args.args.iter_mut() {
-                    match arg {
-                        syn::GenericArgument::Type(ty) =>
-                            if let syn::Type::Path(path) = ty {
-                                if path.path.is_ident("Ctx") {
-                                    *ty = input.connection_context.clone();
-                                }
-                            },
-                        syn::GenericArgument::Binding(binding) => {
-                            if let syn::Type::Path(path) = &mut binding.ty {
-                                if path.path.is_ident("Ctx") && path.qself.is_none() {
-                                    binding.ty = input.connection_context.clone();
-                                }
-                            }
-                        },
-                        _ => (),
-                    }
-                }
-            }
-        }
-    }
-    let name = &input.ident;
-    let ret = enum_.iter().map(|i| {
-        use heck::ToSnakeCase;
-        let iface = i.ident.to_string().to_snake_case();
-        let imp = &i.imp;
-        quote! {
-            #iface => {
-                use ::wl_server::provide_any::request_ref;
-                use ::std::ops::Deref;
-                let real_obj: &#imp = request_ref(obj.deref())
-                    .expect("Wrong InterfaceMeta impl");
-                match ::wl_common::InterfaceMessageDispatch::dispatch(real_obj, ctx, object_id, &mut de).await {
-                    Ok(()) => (false, None),
-                    Err(e) => {
-                        (
-                            e.fatal(),
-                            e.wayland_error()
-                             .map(|(object_id, error_code)| (
-                                object_id,
-                                error_code,
-                                std::ffi::CString::new(e.to_string()).unwrap()
-                            ))
-                        )
-                    }
-                }
-            }
-        }
-    });
-    let ctx = &input.connection_context;
-    let inits = enum_.iter().map(|i| {
-        let imp = &i.imp;
-        quote! { #imp::init_server(&mut builder).unwrap(); }
-    });
-    let handle_events = enum_.iter().map(|i| {
-        let imp = &i.imp;
-        quote! { #imp::handle_events(ctx, i, slot_names[i]).await?; }
-    });
-
-    // Get the error type of the first interface. They are all supposed to be the
-    // same.
-    let imp0 = &enum_[0].imp;
-    let error = quote! {
-        <#imp0 as ::wl_common::InterfaceMessageDispatch<#ctx>>::Error
-    };
-    let orig_var = enum_.iter().map(|i| &i.ident);
-    quote! {
-        pub enum #name {
-            #(#orig_var),*
-        }
-        const _: () = {
-            use std::pin::Pin;
-            impl #name {
-                fn init_server() -> <#ctx as ::wl_server::connection::Connection>::Context {
-                    let mut builder = <<#ctx as ::wl_server::connection::Connection>::Context as ::wl_server::server::Server>::builder();
-                    #(#inits)*
-                    use ::wl_server::server::ServerBuilder;
-                    builder.build()
-                }
-                /// Dispatch a message from `reader` to the context. Returns whether the client
-                /// needs to be disconnected.
-                async fn dispatch<'a, 'b: 'a, R>(
-                    ctx: &'a mut #ctx,
-                    mut reader: Pin<&mut R>
-                ) -> bool
-                where
-                    R: ::wl_common::__private::AsyncBufReadWithFd + 'b,
-                {
-                    use ::wl_server::{__private::{wl_types, wl_display::v1 as wl_display}, objects::DISPLAY_ID};
-                    use ::wl_protocol::ProtocolError;
-                    let (object_id, len, mut de) = match ::wl_common::Deserializer::next_message(reader.as_mut()).await {
-                        Ok(v) => v,
-                        Err(e) => return true,
-                    };
-                    // ManuallyDrop needed because limit of Rust's dropck.
-                    let (mut fatal, error) = {
-                        let obj = ctx.objects().borrow().get(object_id).map(Rc::clone);
-                        if let Some(obj) = obj {
-                            match obj.interface() {
-                                #(#ret),*,
-                                _ => unreachable!(),
-                            }
-                        } else {
-                            (
-                                true,
-                                Some((
-                                    object_id,
-                                    wl_display::enums::Error::InvalidObject as u32,
-                                    std::ffi::CString::new("Invalid object id").unwrap()
-                                ))
-                            )
-                        }
-                    };
-                    // We are going to disconnect the client so we don't care about the
-                    // error.
-                    // TODO: check if there is leftover data and fail if so
-                    reader.consume(len);
-                    if let Some((object_id, error_code, msg)) = error {
-                        fatal |= ctx.send(DISPLAY_ID, wl_display::events::Error {
-                            object_id: wl_types::Object(object_id),
-                            code: error_code,
-                            message: wl_types::Str(msg.as_c_str()),
-                        }).await.is_err();
-                    }
-                    fatal
-                }
-                async fn handle_events(ctx: &mut #ctx) -> Result<(), #error> {
-                    use ::wl_server::connection::Evented;
-                    use ::wl_server::server::{EventSource, Server};
-                    let events = ctx.reset_events();
-                    let slot_names = ctx.server_context().slots();
-                    for i in events.iter_ones() {
-                        #(#handle_events)*
-                    }
-                    Ok(())
-                }
-            }
-        };
-    }
-    .into()
 }
 
 struct DispatchItem {
@@ -419,7 +184,7 @@ pub fn interface_message_dispatch(
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     use heck::ToPascalCase;
-    use quote::{format_ident, quote};
+    use quote::format_ident;
     #[derive(FromMeta)]
     struct Attributes {
         #[darling(default)]
@@ -559,24 +324,22 @@ pub fn interface_message_dispatch(
             //}
             impl #generics #our_trait for #self_ty #where_clause {
                 type Error = #error;
-                type Fut<'a, R> = impl ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
+                type Fut<'a, 'b, D> = impl ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
                 where
                     Self: 'a,
                     Ctx: 'a,
-                    R: 'a + ::wl_common::__private::AsyncBufReadWithFd;
-                fn dispatch<'a, R>(
+                    D: ::wl_io::traits::de::Deserializer<'b>,
+                    'b: 'a;
+                fn dispatch<'a, 'b: 'a, D: ::wl_io::traits::de::Deserializer<'b>>(
                     &'a self,
                     ctx: &'a mut Ctx,
                     object_id: u32,
-                    reader: &mut ::wl_common::Deserializer<'a, R>,
-                ) -> Self::Fut<'a, R>
-                where
-                    R: ::wl_common::__private::AsyncBufReadWithFd
+                    mut reader: D,
+                ) -> Self::Fut<'a, 'b, D>
                 {
-                    let msg: ::std::result::Result<#message_ty, _> = reader.deserialize();
-                    // TODO: check if the length of the message matches the expected length
+                    let msg: ::std::result::Result<#message_ty, _> =
+                        ::wl_io::traits::de::Deserialize::deserialize(&mut reader);
                     async move {
-                        // TODO: handle deserialization error, send the client an error message
                         let msg = msg?;
                         match msg {
                             #(#match_items),*

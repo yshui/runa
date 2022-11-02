@@ -1,4 +1,9 @@
-use std::{cell::Cell, hash::Hash, pin::Pin, rc::{Rc, Weak}};
+use std::{
+    cell::Cell,
+    hash::Hash,
+    pin::Pin,
+    rc::{Rc, Weak},
+};
 
 use event_listener::EventListener;
 use futures_lite::Future;

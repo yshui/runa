@@ -16,12 +16,70 @@ pub enum Error {
 
     #[error("Unknown type: {0}")]
     UnknownEnum(String),
+
+    #[error("Cannot decide type of enum: {0}")]
+    BadEnumType(String),
 }
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+struct EnumInfo {
+    is_bitfield: bool,
+    is_int:      Option<bool>,
+}
 /// Mapping from enum names to whether it's a bitflags
 /// interface -> name -> bool.
-type EnumInfo<'a> = HashMap<&'a str, HashMap<&'a str, bool>>;
+struct EnumInfos<'a>(HashMap<&'a str, HashMap<&'a str, EnumInfo>>);
+impl<'a> EnumInfos<'a> {
+    fn get(&self, current_iface_name: &str, enum_: &str) -> Result<&EnumInfo, Error> {
+        Ok(if let Some((iface, enum_)) = enum_.split_once('.') {
+            self.0
+                .get(iface)
+                .ok_or_else(|| Error::UnknownInterface(iface.to_string()))?
+                .get(enum_)
+                .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+        } else {
+            self.0
+                .get(current_iface_name)
+                .unwrap()
+                .get(enum_)
+                .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+        })
+    }
+
+    fn get_mut(&mut self, current_iface_name: &str, enum_: &str) -> Result<&mut EnumInfo, Error> {
+        Ok(if let Some((iface, enum_)) = enum_.split_once('.') {
+            self.0
+                .get_mut(iface)
+                .ok_or_else(|| Error::UnknownInterface(iface.to_string()))?
+                .get_mut(enum_)
+                .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+        } else {
+            self.0
+                .get_mut(current_iface_name)
+                .unwrap()
+                .get_mut(enum_)
+                .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+        })
+    }
+}
+fn enum_type_name(enum_: &str, iface_version: &HashMap<&str, u32>) -> Result<TokenStream> {
+    Ok(if let Some((iface, name)) = enum_.split_once('.') {
+        let version = iface_version
+            .get(iface)
+            .ok_or(Error::UnknownInterface(enum_.to_string()))?;
+        let iface = format_ident!("{}", iface);
+        let name = format_ident!("{}", name.to_pascal_case());
+        let version = format_ident!("v{}", version);
+        quote! {
+            __generated_root::#iface::#version::enums::#name
+        }
+    } else {
+        let name = format_ident!("{}", enum_.to_pascal_case());
+        quote! {
+            enums::#name
+        }
+    })
+}
 fn generate_arg_type_with_lifetime(
     arg: &wl_spec::protocol::Arg,
     lifetime: &Option<Lifetime>,
@@ -29,22 +87,7 @@ fn generate_arg_type_with_lifetime(
 ) -> Result<TokenStream> {
     use wl_spec::protocol::Type::*;
     if let Some(enum_) = &arg.enum_ {
-        if let Some((iface, name)) = enum_.split_once('.') {
-            let version = iface_version
-                .get(iface)
-                .ok_or(Error::UnknownInterface(enum_.to_string()))?;
-            let iface = format_ident!("{}", iface);
-            let name = format_ident!("{}", name.to_pascal_case());
-            let version = format_ident!("v{}", version);
-            Ok(quote! {
-                __generated_root::#iface::#version::enums::#name
-            })
-        } else {
-            let name = format_ident!("{}", enum_.to_pascal_case());
-            Ok(quote! {
-                enums::#name
-            })
-        }
+        enum_type_name(enum_, iface_version)
     } else {
         Ok(match arg.typ {
             Int => quote!(i32),
@@ -94,7 +137,7 @@ fn generate_serialize_for_type(
     current_iface_name: &str,
     name: &TokenStream,
     arg: &wl_spec::protocol::Arg,
-    enum_info: &EnumInfo,
+    enum_info: &EnumInfos,
 ) -> Result<TokenStream> {
     use wl_spec::protocol::Type::*;
     if let Fd = arg.typ {
@@ -108,26 +151,19 @@ fn generate_serialize_for_type(
     let get = match arg.typ {
         Int | Uint =>
             if let Some(enum_) = &arg.enum_ {
-                let is_bitfield = if let Some((iface, enum_)) = enum_.split_once('.') {
-                    *enum_info
-                        .get(iface)
-                        .ok_or_else(|| Error::UnknownInterface(iface.to_string()))?
-                        .get(enum_)
-                        .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+                let info = enum_info.get(current_iface_name, enum_)?;
+                let repr = if info.is_int.unwrap_or(false) {
+                    quote!(i32)
                 } else {
-                    *enum_info
-                        .get(current_iface_name)
-                        .unwrap()
-                        .get(enum_.as_str())
-                        .ok_or_else(|| Error::UnknownEnum(enum_.to_string()))?
+                    quote!(u32)
                 };
-                if is_bitfield {
+                if info.is_bitfield {
                     quote! {
                         let buf = #name.bits().to_ne_bytes();
                     }
                 } else {
                     quote! {
-                        let buf: u32 = #name.into();
+                        let buf: #repr = #name.into();
                         let buf = buf.to_ne_bytes();
                     }
                 }
@@ -172,6 +208,54 @@ fn generate_serialize_for_type(
         Destructor => quote! {},
     })
 }
+fn generate_deserialize_for_type(
+    current_iface_name: &str,
+    arg: &wl_spec::protocol::Arg,
+    enum_info: &EnumInfos,
+    iface_version: &HashMap<&str, u32>,
+) -> Result<TokenStream> {
+    use wl_spec::protocol::Type::*;
+    Ok(match arg.typ {
+        Int | Uint => {
+            let v = if arg.typ == Int {
+                quote! { let tmp = deserializer.pop_i32(); }
+            } else {
+                quote! { let tmp = deserializer.pop_u32(); }
+            };
+            let err = if arg.typ == Int {
+                quote! { ::wl_scanner_support::io::de::Error::InvalidIntEnum }
+            } else {
+                quote! { ::wl_scanner_support::io::de::Error::InvalidUintEnum }
+            };
+            if let Some(enum_) = &arg.enum_ {
+                let is_bitfield = enum_info.get(current_iface_name, enum_)?.is_bitfield;
+                let enum_ty = enum_type_name(enum_, iface_version)?;
+                let enum_ty = quote! { super::#enum_ty };
+                if is_bitfield {
+                    quote! { {
+                        #v
+                        #enum_ty::from_bits(tmp).ok_or_else(|| #err(tmp, std::any::type_name::<#enum_ty>()))?
+                    } }
+                } else {
+                    quote! { {
+                        #v
+                        #enum_ty::try_from(tmp).map_err(|_| #err(tmp, std::any::type_name::<#enum_ty>()))?
+                    } }
+                }
+            } else {
+                quote! { { #v tmp } }
+            }
+        },
+        Fixed => quote! { deserializer.pop_i32().into() },
+        Object | NewId => quote! { deserializer.pop_u32().into() },
+        Fd => quote! { deserializer.pop_fd().into() },
+        String | Array => quote! { {
+            let len = deserializer.pop_u32();
+            deserializer.pop_bytes(len as usize).into()
+        } },
+        Destructor => quote! {},
+    })
+}
 fn generate_message_variant(
     iface_name: &str,
     opcode: u16,
@@ -179,7 +263,7 @@ fn generate_message_variant(
     is_owned: bool,
     _parent: &Ident,
     iface_version: &HashMap<&str, u32>,
-    enum_info: &EnumInfo,
+    enum_info: &EnumInfos,
     event_or_request: EventOrRequest,
     parent_is_borrowed: bool,
 ) -> Result<(TokenStream, TokenStream)> {
@@ -189,15 +273,9 @@ fn generate_message_variant(
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
             let ty = generate_arg_type(&arg, is_owned, iface_version)?;
-            let attr = if !is_owned && type_is_borrowed(&arg.typ) {
-                quote!(#[serde(borrow)])
-            } else {
-                quote!()
-            };
             let doc_comment = generate_doc_comment(&arg.description);
             Ok(quote! {
                 #doc_comment
-                #attr
                 pub #name: #ty,
             })
         })
@@ -219,11 +297,7 @@ fn generate_message_variant(
     } else {
         quote!()
     };
-    let lifetime = if is_borrowed {
-        quote!(<'a>)
-    } else {
-        quote!()
-    };
+    let lifetime = if is_borrowed { quote!(<'a>) } else { quote!() };
     // Generate experssion for length calculation
     let fixed_len: u32 = request
         .args
@@ -275,6 +349,23 @@ fn generate_message_variant(
             })
         })
         .collect::<Result<TokenStream>>()?;
+    let deserialize = request
+        .args
+        .iter()
+        .map(|arg| {
+            let name = format_ident!("{}", arg.name);
+            let deserialize =
+                generate_deserialize_for_type(iface_name, &arg, enum_info, iface_version)?;
+            Ok(quote! {
+                #name: #deserialize,
+            })
+        })
+        .collect::<Result<TokenStream>>()?;
+    let deserializer_var = if request.args.is_empty() {
+        quote! { _deserializer }
+    } else {
+        quote! { mut deserializer }
+    };
     let doc_comment = generate_doc_comment(&request.description);
     let nfds: u8 = request
         .args
@@ -290,16 +381,15 @@ fn generate_message_variant(
     };
     let public = quote! {
         #doc_comment
-        #[derive(::wl_scanner_support::serde::Deserialize, Debug, PartialEq, Eq)]
-        #[serde(crate = "::wl_scanner_support::serde")]
+        #[derive(Debug, PartialEq, Eq)]
         pub struct #name #lifetime {
             #args
         }
         impl #lifetime #name #lifetime {
             pub const OPCODE: u16 = #opcode;
         }
-        impl #lifetime ::wl_scanner_support::io::Serialize for #name #lifetime {
-            fn serialize<W: ::wl_scanner_support::io::AsyncBufWriteWithFd>(
+        impl #lifetime ::wl_scanner_support::io::ser::Serialize for #name #lifetime {
+            fn serialize<W: ::wl_scanner_support::io::buf::AsyncBufWriteWithFd>(
                 #mut_ self,
                 mut writer: ::std::pin::Pin<&mut W>
             ) {
@@ -316,6 +406,15 @@ fn generate_message_variant(
             #[inline]
             fn nfds(&self) -> u8 {
                 #nfds
+            }
+        }
+        impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #name #lifetime {
+            fn deserialize<D: ::wl_scanner_support::io::de::Deserializer<'a>>(
+                #deserializer_var: D
+            ) -> Result<Self, ::wl_scanner_support::io::de::Error> {
+                Ok(Self {
+                    #deserialize
+                })
             }
         }
         impl #parent_lifetime Into<super::#parent_type_name #parent_lifetime> for #name #lifetime {
@@ -396,7 +495,7 @@ fn generate_event_or_request(
     iface_name: &str,
     messages: &[Message],
     iface_version: &HashMap<&str, u32>,
-    enum_info: &EnumInfo,
+    enum_info: &EnumInfos,
     event_or_request: EventOrRequest,
 ) -> Result<(TokenStream, TokenStream)> {
     if messages.is_empty() {
@@ -445,13 +544,7 @@ fn generate_event_or_request(
             } else {
                 quote! {}
             };
-            let attr = if is_borrowed {
-                quote! { #[serde(borrow)] }
-            } else {
-                quote! {}
-            };
             quote! {
-                #attr
                 #name(#mod_name::#name #lifetime),
             }
         });
@@ -462,6 +555,17 @@ fn generate_event_or_request(
                 Self::#name(v) => v.serialize(writer),
             }
         });
+        let enum_deserialize_cases: TokenStream = messages
+            .iter()
+            .enumerate()
+            .map(|(opcode, v)| {
+                let name = format_ident!("{}", v.name.to_pascal_case());
+                let opcode = opcode as u32;
+                quote! {
+                    #opcode => Ok(Self::#name(<#mod_name::#name>::deserialize(deserializer)?)),
+                }
+            })
+            .collect();
         let enum_len_cases = messages.iter().map(|v| {
             let name = format_ident!("{}", v.name.to_pascal_case());
             quote! {
@@ -485,14 +589,13 @@ fn generate_event_or_request(
             }
             #[doc = "Collection of all possible types of messages, see individual message types "]
             #[doc = "for more information."]
-            #[derive(Debug, PartialEq, Eq, ::wl_scanner_support::serde::Deserialize)]
-            #[serde(crate = "::wl_scanner_support::serde")]
+            #[derive(Debug, PartialEq, Eq)]
             pub enum #type_name #enum_lifetime {
                 #(#enum_members)*
             }
             #dispatch
-            impl #enum_lifetime ::wl_scanner_support::io::Serialize for #type_name #enum_lifetime {
-                fn serialize<W: ::wl_scanner_support::io::AsyncBufWriteWithFd>(
+            impl #enum_lifetime ::wl_scanner_support::io::ser::Serialize for #type_name #enum_lifetime {
+                fn serialize<W: ::wl_scanner_support::io::buf::AsyncBufWriteWithFd>(
                     self,
                     writer: ::std::pin::Pin<&mut W>
                 ) {
@@ -510,6 +613,21 @@ fn generate_event_or_request(
                 fn nfds(&self) -> u8 {
                     match self {
                         #(#enum_nfds_cases)*
+                    }
+                }
+            }
+            impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #type_name #enum_lifetime {
+                fn deserialize<D: ::wl_scanner_support::io::de::Deserializer<'a>>(
+                    mut deserializer: D
+                ) -> ::std::result::Result<Self, ::wl_scanner_support::io::de::Error> {
+                    let _object_id = deserializer.pop_u32();
+                    let header = deserializer.pop_u32();
+                    let opcode = header & 0xFFFF;
+                    match opcode {
+                        #enum_deserialize_cases
+                        _ => Err(
+                            ::wl_scanner_support::io::de::Error::UnknownOpcode(
+                                opcode, std::any::type_name::<Self>())),
                     }
                 }
             }
@@ -602,83 +720,73 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
         quote! {}
     }
 }
-fn generate_enums(enums: &[Enum]) -> TokenStream {
-    let enums = enums
-        .iter()
-        .map(|e| {
-            let doc = generate_doc_comment(&e.description);
-            let name = format_ident!("{}", e.name.to_pascal_case());
-            let is_bitfield = e.bitfield;
-            let members = e.entries.iter().map(|e| {
-                let name = if e.name.chars().all(|x| x.is_ascii_digit()) {
-                    format_ident!("_{}", e.name)
-                } else {
-                    if is_bitfield {
-                        format_ident!("{}", e.name.TO_SHOUTY_SNEK_CASE())
-                    } else {
-                        format_ident!("{}", e.name.to_pascal_case())
-                    }
-                };
-                let value = e.value;
-                let summary = e.summary.as_deref().unwrap_or("");
-                let summary = summary.replace('[', "\\[").replace(']', "\\]");
+fn generate_enums(enums: &[Enum], current_iface_name: &str, enum_info: &EnumInfos) -> TokenStream {
+    let enums = enums.iter().map(|e| {
+        let doc = generate_doc_comment(&e.description);
+        let name = format_ident!("{}", e.name.to_pascal_case());
+        let info = enum_info.get(current_iface_name, &e.name).unwrap();
+        let is_bitfield = e.bitfield;
+        assert_eq!(info.is_bitfield, is_bitfield);
+        let repr = if info.is_int.unwrap_or(false) {
+            quote! { i32 }
+        } else {
+            quote! { u32 }
+        };
+        let members = e.entries.iter().map(|e| {
+            let name = if e.name.chars().all(|x| x.is_ascii_digit()) {
+                format_ident!("_{}", e.name)
+            } else {
                 if is_bitfield {
-                    quote! {
-                        #[doc = #summary]
-                        const #name = #value;
-                    }
+                    format_ident!("{}", e.name.TO_SHOUTY_SNEK_CASE())
                 } else {
-                    quote! {
-                        #[doc = #summary]
-                        #name = #value,
-                    }
+                    format_ident!("{}", e.name.to_pascal_case())
                 }
-            });
+            };
+            let value = if info.is_int.unwrap_or(false) {
+                let value = e.value as i32;
+                quote! { #value }
+            } else {
+                let value = e.value;
+                quote! { #value }
+            };
+            let summary = e.summary.as_deref().unwrap_or("");
+            let summary = summary.replace('[', "\\[").replace(']', "\\]");
             if is_bitfield {
                 quote! {
-                    ::wl_scanner_support::bitflags! {
-                        #doc
-                        #[derive(
-                            ::wl_scanner_support::serde::Serialize,
-                            ::wl_scanner_support::serde::Deserialize,
-                        )]
-                        #[serde(crate = "::wl_scanner_support::serde")]
-                        pub struct #name: u32 {
-                            #(#members)*
-                        }
-                    }
+                    #[doc = #summary]
+                    const #name = #value;
                 }
             } else {
                 quote! {
-                    #doc
-                    #[derive(
-                        ::wl_scanner_support::num_enum::IntoPrimitive,
-                        ::wl_scanner_support::num_enum::TryFromPrimitive,
-                        Debug, Clone, Copy, PartialEq, Eq
-                    )]
-                    #[repr(u32)]
-                    pub enum #name {
-                        #(#members)*
-                    }
-                    impl ::wl_scanner_support::serde::Serialize for #name {
-                        fn serialize<S: ::wl_scanner_support::serde::Serializer>(&self, serializer: S)
-                        -> ::std::result::Result<S::Ok, S::Error> {
-                            let num: u32 = (*self).into();
-                            serializer.serialize_u32(num)
-                        }
-                    }
-                    impl<'de> ::wl_scanner_support::serde::Deserialize<'de> for #name {
-                        fn deserialize<D: ::wl_scanner_support::serde::Deserializer<'de>>(deserializer: D)
-                        -> ::std::result::Result<Self, D::Error> {
-                            use ::wl_scanner_support::serde::de::Error;
-                            let value = u32::deserialize(deserializer)?;
-                            Self::try_from(value)
-                                .map_err(|_| D::Error::custom("invalid enum value"))
-                        }
-                    }
+                    #[doc = #summary]
+                    #name = #value,
                 }
             }
         });
+        if is_bitfield {
+            quote! {
+                ::wl_scanner_support::bitflags! {
+                    #doc
+                    pub struct #name: #repr {
+                        #(#members)*
+                    }
+                }
+            }
+        } else {
+            quote! {
+                #doc
+                #[derive(
+                    ::wl_scanner_support::num_enum::IntoPrimitive,
+                    ::wl_scanner_support::num_enum::TryFromPrimitive,
+                    Debug, Clone, Copy, PartialEq, Eq
+                )]
+                #[repr(#repr)]
+                pub enum #name {
+                    #(#members)*
+                }
+            }
+        }
+    });
     quote! {
         pub mod enums {
             #(#enums)*
@@ -688,7 +796,7 @@ fn generate_enums(enums: &[Enum]) -> TokenStream {
 fn generate_interface(
     iface: &Interface,
     iface_version: &HashMap<&str, u32>,
-    enum_info: &EnumInfo,
+    enum_info: &EnumInfos,
 ) -> Result<TokenStream> {
     let name = format_ident!("{}", iface.name);
     let version = format_ident!("v{}", iface.version);
@@ -708,7 +816,7 @@ fn generate_interface(
         EventOrRequest::Event,
     )?;
     let doc_comment = generate_doc_comment(&iface.description);
-    let enums = generate_enums(&iface.enums);
+    let enums = generate_enums(&iface.enums, &iface.name, enum_info);
 
     let iface_name = &iface.name;
     let iface_version = iface.version;
@@ -734,25 +842,56 @@ fn generate_interface(
     })
 }
 
+fn scan_enum(proto: &Protocol, enum_info: &mut EnumInfos) -> Result<()> {
+    for iface in proto.interfaces.iter() {
+        for req in iface.requests.iter().chain(iface.events.iter()) {
+            for arg in req.args.iter() {
+                if let Some(ref enum_) = arg.enum_ {
+                    let info = enum_info.get_mut(&iface.name, &enum_)?;
+                    let is_int = arg.typ == wl_spec::protocol::Type::Int;
+
+                    eprintln!("{}::{}: is_int={}", iface.name, enum_, is_int);
+                    if let Some(old) = info.is_int {
+                        if old != is_int {
+                            return Err(Error::BadEnumType(enum_.clone()))
+                        }
+                    } else {
+                        info.is_int = Some(is_int);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn generate_protocol(proto: &Protocol) -> Result<TokenStream> {
     let iface_version = proto
         .interfaces
         .iter()
         .map(|i| (i.name.as_str(), i.version))
         .collect();
-    let enum_info: EnumInfo = proto
-        .interfaces
-        .iter()
-        .map(|i| {
-            (
-                i.name.as_str(),
-                i.enums
-                    .iter()
-                    .map(move |e| (e.name.as_str(), e.bitfield))
-                    .collect(),
-            )
-        })
-        .collect();
+    let mut enum_info = EnumInfos(
+        proto
+            .interfaces
+            .iter()
+            .map(|i| {
+                (
+                    i.name.as_str(),
+                    i.enums
+                        .iter()
+                        .map(move |e| {
+                            (e.name.as_str(), EnumInfo {
+                                is_bitfield: e.bitfield,
+                                is_int:      None,
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    scan_enum(proto, &mut enum_info)?;
     let interfaces = proto
         .interfaces
         .iter()

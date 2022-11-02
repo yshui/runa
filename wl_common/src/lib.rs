@@ -5,12 +5,11 @@ use std::{
 
 use futures_lite::Future;
 use hashbrown::{hash_map, HashMap};
-pub use wl_io::de::Deserializer;
 pub mod utils;
 
 #[doc(hidden)]
 pub mod __private {
-    pub use ::wl_io::AsyncBufReadWithFd;
+    pub use ::wl_io_traits::buf::AsyncBufReadWithFd;
 }
 
 /// Event serial management.
@@ -120,7 +119,7 @@ pub trait MessageDispatch {
     type Fut<'a>: Future<Output = Result<(), Self::Error>> + 'a;
     fn dispatch<'a, R>(&self, reader: Pin<&mut R>) -> Self::Fut<'a>
     where
-        R: wl_io::AsyncBufReadWithFd + 'a;
+        R: wl_io_traits::buf::AsyncBufReadWithFd + 'a;
 }
 
 /// The entry point of an interface implementation, called when message of a
@@ -129,21 +128,20 @@ pub trait InterfaceMessageDispatch<Ctx> {
     type Error;
     // TODO: the R parameter might be unnecessary, see:
     //       https://github.com/rust-lang/rust/issues/42940
-    type Fut<'a, R>: Future<Output = Result<(), Self::Error>> + 'a
+    type Fut<'a, 'b, D>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a,
         Ctx: 'a,
-        R: 'a + wl_io::AsyncBufReadWithFd;
-    fn dispatch<'a, R>(
+        D: wl_io_traits::de::Deserializer<'b>,
+        'b: 'a;
+    fn dispatch<'a, 'b: 'a, D: wl_io_traits::de::Deserializer<'b>>(
         &'a self,
         ctx: &'a mut Ctx,
         object_id: u32,
-        reader: &mut Deserializer<'a, R>,
-    ) -> Self::Fut<'a, R>
-    where
-        R: wl_io::AsyncBufReadWithFd;
+        reader: D,
+    ) -> Self::Fut<'a, 'b, D>;
 }
 
-pub use wl_macros::{interface_message_dispatch, message_broker};
-
 pub use std::convert::Infallible;
+
+pub use wl_macros::interface_message_dispatch;

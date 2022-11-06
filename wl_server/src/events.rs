@@ -1,12 +1,10 @@
 use std::{
     cell::Cell,
     hash::Hash,
-    pin::Pin,
     rc::{Rc, Weak},
 };
 
 use event_listener::EventListener;
-use futures_lite::Future;
 
 pub type Flags = bitvec::array::BitArray<[u64; 1], bitvec::order::LocalBits>;
 

@@ -1,9 +1,5 @@
 use std::os::fd::RawFd;
 
-/// When passed this string as name, deserialize_newtype_struct will try
-/// to deserialize a file descriptor.
-pub const WAYLAND_FD_NEWTYPE_NAME: &str = "\0__WaylandFd__";
-
 /// Holds a value that is deserialized from borrowed data from `reader`.
 /// This prevents the reader from being used again while this accessor is alive.
 /// Also this accessor will advance the reader to the next message when dropped.
@@ -79,6 +75,7 @@ impl<'a> Deserializer<'a> {
         }
     }
 
+    #[inline]
     pub fn borrow_mut<'b>(&'b mut self) -> DeserializerRefMut<'a, 'b> {
         DeserializerRefMut {
             bytes:      self.bytes,
@@ -99,7 +96,7 @@ impl<'a> Deserializer<'a> {
     where
         T: crate::traits::de::Deserialize<'a>,
     {
-        T::deserialize(self)
+        T::deserialize(self.borrow_mut())
     }
 }
 

@@ -137,6 +137,15 @@ impl<const N: usize> SlottedProvider for ProviderArray<N> {
 #[repr(transparent)]
 pub struct Demand<'a>(dyn Erased<'a> + 'a);
 
+pub struct Receiver<'a, 'b, I: tags::Type<'a>>(&'b mut TaggedOption<'a, I>);
+
+impl<'a, 'b, I: tags::Type<'a>> Receiver<'a, 'b, I> {
+    #[inline]
+    pub fn provide(&mut self, value: I::Reified) {
+        self.0 .0 = Some(value)
+    }
+}
+
 impl<'a> Demand<'a> {
     /// Create a new `&mut Demand` from a `&mut dyn Erased` trait object.
     fn new<'b>(erased: &'b mut (dyn Erased<'a> + 'a)) -> &'b mut Demand<'a> {
@@ -194,6 +203,22 @@ impl<'a> Demand<'a> {
 
     pub fn provide_mut<T: ?Sized + 'static>(&mut self, value: &'a mut T) -> &mut Self {
         self.provide::<tags::RefMut<tags::MaybeSizedValue<T>>>(value)
+    }
+
+    /// Provide a mutable references. But first check if `T` will be accepted.
+    ///
+    /// This is because `provide_mut` takes a `&'a mut T`, which means once you called that, you
+    /// won't be able to provide anything else. Because it's not possible to have multiple mutable
+    /// references.
+    ///
+    /// This method breaks up the process into two steps, first you check if `T` will be accepted,
+    /// and you only pass the `&'a mut T` only if it will be accepted.
+    pub fn maybe_provide_mut<T: ?Sized + 'static>(
+        &mut self,
+    ) -> Option<Receiver<'a, '_, tags::RefMut<tags::MaybeSizedValue<T>>>> {
+        self.0
+            .downcast_mut::<tags::RefMut<tags::MaybeSizedValue<T>>>()
+            .map(Receiver)
     }
 
     /// Provide a value with the given `Type` tag.

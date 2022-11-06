@@ -12,6 +12,10 @@ pub enum Error {
     UnknownGlobal(u32),
     #[error("Unknown object: {0}")]
     UnknownObject(u32),
+    #[error("An unknown error occurred: {0}")]
+    UnknownError(&'static str),
+    #[error("An unknown fatal error occurred: {0}")]
+    UnknownFatalError(&'static str),
     #[error("{source}")]
     Custom {
         #[source]
@@ -47,6 +51,8 @@ impl wl_protocol::ProtocolError for Error {
             Self::IdExists(_) => Some((1, InvalidObject as u32)),
             Self::UnknownGlobal(_) => Some((1, InvalidObject as u32)),
             Self::UnknownObject(_) => Some((1, InvalidObject as u32)),
+            Self::UnknownError(_) => Some((1, Implementation as u32)),
+            Self::UnknownFatalError(_) => Some((1, Implementation as u32)),
             Self::Custom {
                 object_id_and_code, ..
             } => *object_id_and_code,
@@ -61,7 +67,9 @@ impl wl_protocol::ProtocolError for Error {
             Self::Io(_) |
             Self::IdExists(_) |
             Self::UnknownGlobal(_) |
-            Self::UnknownObject(_) => true,
+            Self::UnknownObject(_) |
+            Self::UnknownFatalError(_) => true,
+            Self::UnknownError(_) => false,
             Self::Custom { fatal, .. } => *fatal,
         }
     }

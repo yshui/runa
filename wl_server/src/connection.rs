@@ -4,7 +4,7 @@
 //! Here are also some default implementations of these traits.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     future::Future,
     pin::Pin,
     rc::Rc,
@@ -13,11 +13,10 @@ use std::{
 
 use hashbrown::{hash_map, HashMap};
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
-use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 use crate::{
     objects::InterfaceMeta,
-    provide_any::{request_mut, request_ref, Demand, Provider},
+    provide_any::{request_mut, request_ref, Provider},
 };
 
 /// Per client mapping from object ID to objects. This is the reference

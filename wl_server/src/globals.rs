@@ -303,6 +303,7 @@ where
     }
 }
 
+// TODO: support multiple versions of the same interface
 /// Generate a `fn dispatch` implementation for GlobalDispatch
 #[macro_export]
 macro_rules! global_dispatch {

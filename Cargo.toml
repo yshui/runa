@@ -23,4 +23,5 @@ hashbrown = "0.12"
 futures-lite = "1.12.0"
 futures-util = "0.3.24"
 thiserror = "1.0.35"
+derivative = "2.2.0"
 dlv-list = { git = "https://github.com/yshui/dlv-list-rs" }

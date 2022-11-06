@@ -13,9 +13,10 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{borrow::BorrowMut, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
-use wl_common::{interface_message_dispatch, Infallible};
+use derivative::Derivative;
+use wl_common::{interface_message_dispatch, utils::geometry::Point};
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
     wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
@@ -29,17 +30,14 @@ use wl_server::{
     Extra,
 };
 
-use crate::shell::Shell;
+use crate::shell::{surface::roles, Shell};
+
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""))]
 pub struct Surface<S: Shell, Ctx>(
     pub(crate) Rc<crate::shell::surface::Surface<S>>,
     PhantomData<Ctx>,
 );
-
-impl<S: Shell, Ctx> std::fmt::Debug for Surface<S, Ctx> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Surface").field(&self.0).finish()
-    }
-}
 
 impl<S: Shell, Ctx: Connection> InterfaceMeta<Ctx> for Surface<S, Ctx>
 where
@@ -123,7 +121,11 @@ where
     }
 
     fn commit<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::CommitFut<'a> {
-        async move { unimplemented!() }
+        async move {
+            let shell: &RefCell<S> = ctx.server_context().extra();
+            self.0.commit(&mut shell.borrow_mut());
+            Ok(())
+        }
     }
 
     fn set_buffer_scale<'a>(
@@ -178,13 +180,9 @@ where
 }
 
 /// The reference implementation of wl_compositor
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""))]
 pub struct Compositor<S>(PhantomData<S>);
-
-impl<S> std::fmt::Debug for Compositor<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Compositor").finish()
-    }
-}
 
 #[interface_message_dispatch]
 impl<S: Shell, Ctx: Connection> wl_compositor::RequestDispatch<Ctx> for Compositor<S>
@@ -216,6 +214,7 @@ where
                 let pending = shell.allocate(surface::SurfaceState::new(surface.clone()));
                 surface.set_current(current);
                 surface.set_pending(pending);
+                shell.commit(None, current);
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 entry.or_insert(Surface(surface, PhantomData::<Ctx>));
                 Ok(())
@@ -263,7 +262,10 @@ impl<S: Shell, Ctx> InterfaceMeta<Ctx> for Subsurface<S> {
 }
 
 #[interface_message_dispatch]
-impl<S: Shell, Ctx> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S> {
+impl<S: Shell, Ctx: Connection> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S>
+where
+    Ctx::Context: Extra<RefCell<S>>,
+{
     type Error = error::Error;
 
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -306,11 +308,20 @@ impl<S: Shell, Ctx> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S> {
     fn set_position<'a>(
         &'a self,
         ctx: &'a mut Ctx,
-        object_id: u32,
+        _object_id: u32,
         x: i32,
         y: i32,
     ) -> Self::SetPositionFut<'a> {
-        async move { unimplemented!() }
+        async move {
+            let mut shell = ctx.server_context().extra().borrow_mut();
+            let role = self.0.role::<roles::Subsurface<S>>().unwrap();
+            let parent = role.parent.pending_mut(&mut shell);
+            let parent_antirole = parent
+                .antirole_mut::<roles::SubsurfaceParent<S>>(*roles::SUBSURFACE_PARENT_SLOT)
+                .unwrap();
+            parent_antirole.children.get_mut(role.stack_index).unwrap().position = Point::new(x, y);
+            Ok(())
+        }
     }
 }
 

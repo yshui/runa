@@ -7,7 +7,6 @@ pub trait Shell: Sized + 'static {
     /// The key to surfaces. Default value of `Key` must be an invalid key.
     /// Using the default key should always result in an error, or getting None.
     type Key: std::fmt::Debug + Copy + PartialEq + Eq + Default;
-    type Data: Default;
     /// Allocate a SurfaceState and returns a handle to it.
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key;
     /// Deallocate a SurfaceState.
@@ -52,31 +51,23 @@ pub trait Shell: Sized + 'static {
 
 #[derive(Default)]
 pub struct DefaultShell {
-    storage: SlotMap<DefaultKey, surface::SurfaceState<Self>>,
+    storage: SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
 }
 impl std::fmt::Debug for DefaultShell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DefaultShell").finish()
     }
 }
-macro_rules! tdbg {
-    ($t:expr) => {{
-        let tmp = ($t);
-        tracing::debug!("{:?}", tmp);
-        tmp
-    }};
-}
 #[derive(Default)]
 pub struct DefaultShellData {
     pub(crate) is_current: bool,
 }
 impl Shell for DefaultShell {
-    type Data = DefaultShellData;
     type Key = DefaultKey;
 
     #[tracing::instrument(skip_all)]
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key {
-        tdbg!(self.storage.insert(state))
+        self.storage.insert((state, DefaultShellData::default()))
     }
 
     fn deallocate(&mut self, key: Self::Key) {
@@ -85,16 +76,16 @@ impl Shell for DefaultShell {
     }
 
     fn get_mut(&mut self, key: Self::Key) -> Option<&mut surface::SurfaceState<Self>> {
-        self.storage.get_mut(key)
+        self.storage.get_mut(key).map(|v| &mut v.0)
     }
 
     fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>> {
-        self.storage.get(key)
+        self.storage.get(key).map(|v| &v.0)
     }
 
     fn rotate(&mut self, to_key: Self::Key, from_key: Self::Key) {
         let [to, from] = self.storage.get_disjoint_mut([to_key, from_key]).unwrap();
-        to.rotate_from(from);
+        to.0.rotate_from(&from.0);
     }
 
     fn role_added(&mut self, key: Self::Key, role: &'static str) {
@@ -102,14 +93,13 @@ impl Shell for DefaultShell {
     }
 
     fn commit(&mut self, old: Option<Self::Key>, new: Self::Key) {
-        let data = &mut self.storage.get_mut(new).unwrap().data;
+        let data = &mut self.storage.get_mut(new).unwrap().1;
         assert!(!data.is_current);
         data.is_current = true;
         if let Some(old) = old {
-            let data = &mut self.storage.get_mut(old).unwrap().data;
+            let data = &mut self.storage.get_mut(old).unwrap().1;
             assert!(data.is_current);
             data.is_current = false;
         }
-        todo!()
     }
 }

@@ -334,11 +334,11 @@ pub fn interface_message_dispatch(
                     &'a self,
                     ctx: &'a mut Ctx,
                     object_id: u32,
-                    mut reader: D,
+                    reader: D,
                 ) -> Self::Fut<'a, 'b, D>
                 {
                     let msg: ::std::result::Result<#message_ty, _> =
-                        ::wl_io::traits::de::Deserialize::deserialize(&mut reader);
+                        ::wl_io::traits::de::Deserialize::deserialize(reader);
                     async move {
                         let msg = msg?;
                         match msg {

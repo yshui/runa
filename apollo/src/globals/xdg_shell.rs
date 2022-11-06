@@ -36,6 +36,8 @@ where
 
     global_dispatch! {
         "xdg_wm_base" => crate::objects::xdg_shell::WmBase<S>,
+        "xdg_surface" => crate::objects::xdg_shell::Surface<S>,
+        "xdg_toplevel" => crate::objects::xdg_shell::TopLevel<S>,
     }
 
     fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {

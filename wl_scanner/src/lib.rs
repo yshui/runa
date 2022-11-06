@@ -409,6 +409,7 @@ fn generate_message_variant(
             }
         }
         impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #name #lifetime {
+            #[inline]
             fn deserialize<D: ::wl_scanner_support::io::de::Deserializer<'a>>(
                 #deserializer_var: D
             ) -> Result<Self, ::wl_scanner_support::io::de::Error> {

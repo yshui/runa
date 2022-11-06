@@ -23,6 +23,7 @@ dlv-list.workspace = true
 wl_types = { version = "0.1.0", path = "../wl_types" }
 memmap2 = "0.5.7"
 lazy_static = "1.4.0"
+derivative.workspace = true
 
 [features]
 default = []

@@ -36,19 +36,3 @@ impl<Ctx> wl_buffer::RequestDispatch<Ctx> for BufferBase {
         async move { unimplemented!() }
     }
 }
-
-pub struct ShmBuffer<Data> {
-    base: BufferBase,
-    data: Data,
-}
-
-impl<Data: 'static, Ctx> InterfaceMeta<Ctx> for ShmBuffer<Data> {
-    fn interface(&self) -> &'static str {
-        wl_buffer::NAME
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-        demand.provide_ref(&self.base);
-    }
-}

@@ -18,4 +18,8 @@ wl_server = { version = "0.1.0", path = "../wl_server" }
 wl_types = { version = "0.1.0", path = "../wl_types" }
 tracing.workspace = true
 futures-channel = "0.3.25"
+derivative.workspace = true
 wl_io = { version = "0.1.0", path = "../wl_io" }
+memmap2 = "0.5.7"
+spin = { version = "0.9.4", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
+libc = "0.2.137"

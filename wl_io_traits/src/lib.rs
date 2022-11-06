@@ -164,28 +164,6 @@ pub mod de {
         }
     }
 
-    impl<'a, D: Deserializer<'a>> Deserializer<'a> for &'_ mut D {
-        #[inline]
-        fn pop_bytes(&mut self, len: usize) -> &'a [u8] {
-            (**self).pop_bytes(len)
-        }
-
-        #[inline]
-        fn pop_fd(&mut self) -> RawFd {
-            (**self).pop_fd()
-        }
-
-        #[inline]
-        fn pop_i32(&mut self) -> i32 {
-            (**self).pop_i32()
-        }
-
-        #[inline]
-        fn pop_u32(&mut self) -> u32 {
-            (**self).pop_u32()
-        }
-    }
-
     pub enum Error {
         InvalidIntEnum(i32, &'static str),
         InvalidUintEnum(u32, &'static str),

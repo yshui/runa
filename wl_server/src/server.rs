@@ -1,7 +1,7 @@
 //! These are traits that are typically implemented by the server context
 //! singleton, and related types and traits.
 
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use hashbrown::{hash_map, HashMap};
 use wl_common::Serial;
@@ -32,16 +32,6 @@ pub trait EventSource {
 #[derive(Default, Debug)]
 pub struct Listeners {
     listeners: RefCell<HashMap<crate::events::EventHandle, usize>>,
-    slots:     Vec<&'static str>,
-}
-
-impl Listeners {
-    pub fn new(slots: Vec<&'static str>) -> Self {
-        Self {
-            slots,
-            ..Default::default()
-        }
-    }
 }
 
 impl EventSource for Listeners {

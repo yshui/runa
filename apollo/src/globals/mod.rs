@@ -18,17 +18,15 @@ use wl_server::{
     server::Server,
     Extra,
 };
+use derivative::Derivative;
 
 use crate::shell::Shell;
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
+#[derive(Derivative)]
+#[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor<S>(PhantomData<S>);
-impl<S> Default for Compositor<S> {
-    fn default() -> Self {
-        Compositor(PhantomData)
-    }
-}
 
 impl<S: Server, Sh: Shell> GlobalMeta<S> for Compositor<Sh> {
     fn interface(&self) -> &'static str {
@@ -82,13 +80,9 @@ where
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Subcompositor<S>(PhantomData<S>);
-
-impl<S> Default for Subcompositor<S> {
-    fn default() -> Self {
-        Subcompositor(PhantomData)
-    }
-}
 
 impl<Ctx, Sh: Shell> Global<Ctx> for Subcompositor<Sh>
 where

@@ -116,6 +116,7 @@ pub mod ser {
     /// For now instead of a Serializer trait, we take types that impls
     /// AsyncBufWriteWithFd directly, because we expect to only serialize to
     /// binary, but this might change in the future.
+    #[allow(clippy::len_without_is_empty)]
     pub trait Serialize {
         /// Serialize into the buffered writer. This function returns no errors,
         /// failures in seializing are generally program errors, and triggers
@@ -151,16 +152,14 @@ pub mod de {
         fn pop_i32(&mut self) -> i32 {
             let slice = self.pop_bytes(4);
             // Safety: slice is guaranteed to be 4 bytes long
-            let ret = i32::from_ne_bytes(slice.try_into().unwrap());
-            ret
+            i32::from_ne_bytes(slice.try_into().unwrap())
         }
 
         #[inline]
         fn pop_u32(&mut self) -> u32 {
             let slice = self.pop_bytes(4);
             // Safety: slice is guaranteed to be 4 bytes long
-            let ret = u32::from_ne_bytes(slice.try_into().unwrap());
-            ret
+            u32::from_ne_bytes(slice.try_into().unwrap())
         }
     }
 
@@ -248,7 +247,7 @@ pub mod buf {
     pub type NextMessageFut<'a, T: AsyncBufReadWithFd + 'a> =
         impl Future<Output = Result<(u32, usize, &'a [u8], &'a [RawFd])>> + 'a;
     pub trait AsyncBufReadWithFdExt: AsyncBufReadWithFd {
-        fn fill_buf_until<'a>(self: &'a mut Self, len: usize) -> FillBufUtil<'a, Self>
+        fn fill_buf_until(&mut self, len: usize) -> FillBufUtil<'_, Self>
         where
             Self: Unpin,
         {

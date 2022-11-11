@@ -1,4 +1,5 @@
-#![feature(type_alias_impl_trait)]
+#![allow(incomplete_features)]
+#![feature(type_alias_impl_trait, trait_upcasting)]
 use std::pin::Pin;
 
 use futures_lite::{stream::StreamExt, Future};
@@ -209,6 +210,7 @@ where
 
 /// Implemented by the compositor to expose extra states from server or client
 /// contexts
+// TODO: maybe delete?
 pub trait Extra<T> {
     /// Get the extra state
     fn extra<'a>(&'a self) -> &'a T;

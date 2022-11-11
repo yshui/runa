@@ -8,7 +8,10 @@ use std::{
 
 use dlv_list::{Index, VecList};
 use spin::mutex::Mutex;
-use wl_common::interface_message_dispatch;
+use wl_common::{
+    interface_message_dispatch,
+    utils::geometry::{Extent, Logical},
+};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_shm::v1 as wl_shm,
     wl_shm_pool::v1 as wl_shm_pool,
@@ -16,9 +19,11 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{Connection, Objects},
     error,
-    objects::{InterfaceMeta, DISPLAY_ID},
+    objects::{Object, ObjectMeta, DISPLAY_ID},
     provide_any::{self, Demand},
 };
+
+use crate::shell::buffers::HasBuffer;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 struct MapRecord {
@@ -112,13 +117,10 @@ impl Shm {
         Shm
     }
 }
-impl<Ctx> InterfaceMeta<Ctx> for Shm {
+impl<Ctx> Object<Ctx> for Shm {}
+impl ObjectMeta for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
-    }
-
-    fn provide<'a>(&'a self, demand: &mut provide_any::Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 
@@ -176,6 +178,7 @@ where
         mut fd: wl_types::Fd,
         size: i32,
     ) -> Self::CreatePoolFut<'a> {
+        tracing::debug!("creating shm_pool with size {}", size);
         async move {
             if size <= 0 {
                 ctx.send(DISPLAY_ID, wl_display::events::Error {
@@ -240,6 +243,7 @@ impl ShmPoolInner {
     // Safety:  caller must ensure all the requirements states on [`ShmPool::map`]
     // are met.
     unsafe fn as_ref(&self) -> &[u8] {
+        tracing::debug!("mapping shm_pool {:p}, size {}", self, self.len);
         assert!(self.addr != std::ptr::null());
         unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.len) }
     }
@@ -283,20 +287,15 @@ impl ShmPool {
     /// the client shrunk the pool after you have mapped it, you will get a
     /// SIGBUS when accessing the removed section of memory. `handle_sigbus`
     /// will automatcally map in zero pages in that case.
-    pub unsafe fn map<T>(&self) -> std::io::Result<Ref<[u8]>> {
-        Ok(Ref::map(self.inner.borrow(), |inner: &ShmPoolInner| {
-            inner.as_ref()
-        }))
+    pub unsafe fn map(&self) -> Ref<[u8]> {
+        Ref::map(self.inner.borrow(), |inner: &ShmPoolInner| inner.as_ref())
     }
 }
 
-impl<Ctx> InterfaceMeta<Ctx> for ShmPool {
+impl<Ctx> Object<Ctx> for ShmPool {}
+impl ObjectMeta for ShmPool {
     fn interface(&self) -> &'static str {
         wl_shm_pool::NAME
-    }
-
-    fn provide<'a>(&'a self, demand: &mut provide_any::Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 
@@ -304,6 +303,8 @@ impl<Ctx> InterfaceMeta<Ctx> for ShmPool {
 impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
     Ctx: Connection,
+    Ctx::Context: HasBuffer,
+    <Ctx::Context as HasBuffer>::Buffer: From<Buffer>,
 {
     type Error = error::Error;
 
@@ -315,9 +316,9 @@ where
         async move {
             let len = size as usize;
             let mut inner = self.inner.borrow_mut();
+            tracing::debug!("resize shm_pool {:p} to {}", &*inner, size);
             if len > inner.len {
                 let fd = inner.fd.as_raw_fd();
-                inner.len = len;
                 inner.unmap();
 
                 // Safety: mapping the file descriptor is harmless until we try to access it.
@@ -336,6 +337,7 @@ where
                 }
 
                 inner.addr = addr;
+                inner.len = len;
                 // update th map record
                 inner.map = MAP_RECORDS.lock().push_back(MapRecord { start: addr, len });
             }
@@ -359,15 +361,21 @@ where
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(id.0);
             if entry.is_vacant() {
-                entry.or_insert(Buffer {
-                    base: crate::shell::buffers::BufferBase,
-                    pool: self.inner.clone(),
-                    offset,
-                    width,
-                    height,
-                    stride,
-                    format,
-                });
+                let buffer = crate::objects::Buffer {
+                    buffer: Rc::new(
+                        Buffer {
+                            base: Default::default(),
+                            pool: self.inner.clone(),
+                            offset,
+                            width,
+                            height,
+                            stride,
+                            format,
+                        }
+                        .into(),
+                    ),
+                };
+                entry.or_insert(buffer);
                 Ok(())
             } else {
                 Err(wl_server::error::Error::IdExists(id.0))
@@ -376,7 +384,14 @@ where
     }
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
-        async move { unimplemented!() }
+        async move {
+            ctx.objects().borrow_mut().remove(ctx, object_id).unwrap();
+            ctx.send(DISPLAY_ID, wl_display::events::DeleteId {
+                id: object_id.into(),
+            })
+            .await?;
+            Ok(())
+        }
     }
 }
 
@@ -387,17 +402,51 @@ pub struct Buffer {
     width:  i32,
     height: i32,
     stride: i32,
-    format: wl_protocol::wayland::wl_shm::v1::enums::Format,
+    format: wl_shm::enums::Format,
 }
 
-impl<Ctx> InterfaceMeta<Ctx> for Buffer {
-    fn interface(&self) -> &'static str {
-        wl_buffer::NAME
+impl crate::shell::buffers::Buffer for Buffer {
+    fn damage(&self) {
+        self.base.damage();
     }
 
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand
-            .provide_ref(self)
-            .provide_ref(&self.base);
+    fn clear_damage(&self) {
+        self.base.clear_damage();
+    }
+
+    fn get_damage(&self) -> bool {
+        self.base.get_damage()
+    }
+
+    fn dimension(&self) -> Extent<u32, Logical> {
+        Extent::new(self.width as u32, self.height as u32)
+    }
+}
+
+impl Buffer {
+    pub fn pool(&self) -> ShmPool {
+        ShmPool {
+            inner: self.pool.clone(),
+        }
+    }
+
+    pub fn offset(&self) -> i32 {
+        self.offset
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn stride(&self) -> i32 {
+        self.stride
+    }
+
+    pub fn format(&self) -> wl_shm::enums::Format {
+        self.format
     }
 }

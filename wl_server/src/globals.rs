@@ -7,14 +7,13 @@ use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 use crate::{
     connection::{Connection, EventStates, Evented},
     global_dispatch,
-    objects::InterfaceMeta,
-    provide_any::Demand,
+    objects::Object,
     server::{EventSource, Server},
 };
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-pub trait GlobalMeta<S: Server + ?Sized> {
+pub trait GlobalMeta<S: Server>: std::any::Any {
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
     /// Called when the global is bound to a client, return the client side
@@ -25,12 +24,11 @@ pub trait GlobalMeta<S: Server + ?Sized> {
         client: &'b S::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c;
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>);
 }
 
 /// Maximum number of events that can be associated to globals
@@ -65,18 +63,12 @@ pub trait Global<Ctx> {
     /// recognized by the global, and `Err` if the interface is recognized but
     /// an error occurs while dispatching it.
     fn dispatch<'a, D: Deserializer<'a>>(
-        obj: &'a dyn InterfaceMeta<Ctx>,
+        obj: &'a dyn Object<Ctx>,
         ctx: &'a mut Ctx,
         object_id: u32,
         reader: D,
     ) -> Self::Fut<'a, D>;
     fn handle_events<'a>(ctx: &'a mut Ctx, slot: usize) -> Option<Self::HandleEventsFut<'a>>;
-}
-
-impl<'b, S: Server> crate::provide_any::Provider for dyn GlobalMeta<S> + 'b {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        self.provide(demand)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -99,17 +91,13 @@ where
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c,
     {
         (Box::new(crate::objects::Display), None)
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 impl<Ctx> Global<Ctx> for Display
@@ -162,7 +150,7 @@ where
         client: &'b S::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
@@ -200,10 +188,6 @@ where
                 Ok(())
             })),
         )
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 
@@ -313,20 +297,25 @@ macro_rules! global_dispatch {
             Ctx: 'a,
             D: $crate::__private::Deserializer<'a> + 'a;
         fn dispatch<'a, D: $crate::__private::Deserializer<'a>>(
-            obj: &'a dyn $crate::objects::InterfaceMeta<Ctx>,
+            obj: &'a dyn $crate::objects::Object<Ctx>,
             ctx: &'a mut Ctx,
             object_id: u32,
             reader: D,
         ) -> Self::Fut<'a, D> {
             async move {
+                use std::any::Any;
                 match obj.interface() {
                     $(
                         $iface => {
-                            let obj: &$obj = $crate::provide_any::request_ref(obj).unwrap();
-                            $crate::__private::InterfaceMessageDispatch::
-                                dispatch(obj, ctx, object_id, reader)
-                                .await
-                                .map(|()| true)
+                            let obj: Option<&$obj> = (obj as &dyn Any).downcast_ref();
+                            if let Some(obj) = obj {
+                                $crate::__private::InterfaceMessageDispatch::
+                                    dispatch(obj, ctx, object_id, reader)
+                                    .await
+                                    .map(|()| true)
+                            } else {
+                                Ok(false)
+                            }
                         }
                     )*
                     _ => Ok(false),

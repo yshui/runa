@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 
 use heck::{ToPascalCase, ToShoutySnekCase};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -62,61 +62,147 @@ impl<'a> EnumInfos<'a> {
         })
     }
 }
-fn enum_type_name(enum_: &str, iface_version: &HashMap<&str, u32>) -> Result<TokenStream> {
-    Ok(if let Some((iface, name)) = enum_.split_once('.') {
-        let version = iface_version
-            .get(iface)
-            .ok_or(Error::UnknownInterface(enum_.to_string()))?;
-        let iface = format_ident!("{}", iface);
-        let name = format_ident!("{}", name.to_pascal_case());
-        let version = format_ident!("v{}", version);
-        quote! {
-            __generated_root::#iface::#version::enums::#name
-        }
+fn to_path<'a>(arr: impl IntoIterator<Item = &'a str>, leading_colon: bool) -> syn::Path {
+    syn::Path {
+        leading_colon: if leading_colon {
+            Some(Default::default())
+        } else {
+            None
+        },
+        segments:      arr
+            .into_iter()
+            .map(|s| syn::PathSegment::from(syn::Ident::new(s, Span::call_site())))
+            .collect(),
+    }
+}
+macro_rules! path {
+    ($($seg:ident)::*) => {
+        to_path([ $( stringify!($seg) ),* ], false)
+    };
+    (::$($seg:ident)::*) => {
+        to_path([ $( stringify!($seg) ),* ], true)
+    };
+}
+macro_rules! type_path {
+    ($($seg:ident)::*) => {
+        syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: to_path([ $( stringify!($seg) ),* ], false),
+        })
+    };
+    (::$($seg:ident)::*) => {
+        syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: to_path([ $( stringify!($seg) ),* ], true),
+        })
+    };
+}
+fn enum_type_name(enum_: &str, iface_version: &HashMap<&str, u32>) -> syn::Path {
+    if let Some((iface, name)) = enum_.split_once('.') {
+        let version = iface_version.get(iface).unwrap();
+        to_path(
+            [
+                "__generated_root",
+                iface,
+                &format!("v{}", version),
+                "enums",
+                &name.to_pascal_case(),
+            ],
+            false,
+        )
     } else {
-        let name = format_ident!("{}", enum_.to_pascal_case());
-        quote! {
-            enums::#name
-        }
-    })
+        to_path(["enums", &enum_.to_pascal_case()], false)
+    }
 }
 fn generate_arg_type_with_lifetime(
     arg: &wl_spec::protocol::Arg,
     lifetime: &Option<Lifetime>,
     iface_version: &HashMap<&str, u32>,
-) -> Result<TokenStream> {
+) -> syn::Type {
     use wl_spec::protocol::Type::*;
     if let Some(enum_) = &arg.enum_ {
-        enum_type_name(enum_, iface_version)
+        syn::Type::Path(syn::TypePath {
+            path:  enum_type_name(enum_, iface_version),
+            qself: None,
+        })
     } else {
-        Ok(match arg.typ {
-            Int => quote!(i32),
-            Uint => quote!(u32),
-            Fixed => quote!(::wl_scanner_support::wayland_types::Fixed),
+        match arg.typ {
+            Int => type_path!(i32),
+            Uint => type_path!(u32),
+            Fixed => type_path!(::wl_scanner_support::wayland_types::Fixed),
             Array =>
                 if let Some(lifetime) = lifetime {
-                    quote!(&#lifetime [u8])
+                    // &#lifetime [u8]
+                    syn::Type::Reference(syn::TypeReference {
+                        and_token:  Default::default(),
+                        lifetime:   Some(lifetime.clone()),
+                        mutability: None,
+                        elem:       Box::new(syn::Type::Slice(syn::TypeSlice {
+                            bracket_token: Default::default(),
+                            elem:          Box::new(type_path!(u8)),
+                        })),
+                    })
                 } else {
-                    quote!(Box<[u8]>)
+                    // Box<[u8]>
+                    syn::Type::Path(syn::TypePath {
+                        qself: None,
+                        path: syn::Path {
+                            leading_colon: None,
+                            segments: [syn::PathSegment {
+                                ident:     syn::Ident::new("Box", Span::call_site()),
+                                arguments: syn::PathArguments::AngleBracketed(
+                                    syn::AngleBracketedGenericArguments {
+                                        colon2_token: None,
+                                        lt_token:     Default::default(),
+                                        args:         [syn::GenericArgument::Type(
+                                            syn::Type::Slice(syn::TypeSlice {
+                                                bracket_token: Default::default(),
+                                                elem:          Box::new(type_path!(u8)),
+                                            }),
+                                        )]
+                                        .into_iter()
+                                        .collect(),
+                                        gt_token:     Default::default(),
+                                    },
+                                ),
+                            }]
+                            .into_iter()
+                            .collect(),
+                        },
+                    })
                 },
-            Fd => quote!(::wl_scanner_support::wayland_types::Fd),
+            Fd => type_path!(::wl_scanner_support::wayland_types::Fd),
             String =>
                 if let Some(lifetime) = lifetime {
-                    quote!(::wl_scanner_support::wayland_types::Str<#lifetime>)
+                    // Str<#lifetime>
+                    let mut ty = path!(::wl_scanner_support::wayland_types::Str);
+                    ty.segments.last_mut().unwrap().arguments =
+                        syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                            colon2_token: None,
+                            lt_token:     Default::default(),
+                            args:         [syn::GenericArgument::Lifetime(lifetime.clone())]
+                                .into_iter()
+                                .collect(),
+                            gt_token:     Default::default(),
+                        });
+                    syn::Type::Path(syn::TypePath {
+                        path:  ty,
+                        qself: None,
+                    })
                 } else {
-                    quote!(::wl_scanner_support::wayland_types::String)
+                    type_path!(::wl_scanner_support::wayland_types::String)
                 },
-            Object => quote!(::wl_scanner_support::wayland_types::Object),
-            NewId => quote!(::wl_scanner_support::wayland_types::NewId),
-            Destructor => return Err(Error::InvalidArgumentType),
-        })
+            Object => type_path!(::wl_scanner_support::wayland_types::Object),
+            NewId => type_path!(::wl_scanner_support::wayland_types::NewId),
+            Destructor => panic!("InvalidArgumentType"),
+        }
     }
 }
 fn generate_arg_type(
     arg: &wl_spec::protocol::Arg,
     is_owned: bool,
     iface_version: &HashMap<&str, u32>,
-) -> Result<TokenStream> {
+) -> syn::Type {
     generate_arg_type_with_lifetime(
         arg,
         &(!is_owned).then(|| Lifetime::new("'a", Span::call_site())),
@@ -135,60 +221,58 @@ fn type_is_borrowed(ty: &wl_spec::protocol::Type) -> bool {
 
 fn generate_serialize_for_type(
     current_iface_name: &str,
-    name: &TokenStream,
+    name: &syn::Ident,
     arg: &wl_spec::protocol::Arg,
     enum_info: &EnumInfos,
-) -> Result<TokenStream> {
+) -> TokenStream {
     use wl_spec::protocol::Type::*;
     if let Fd = arg.typ {
-        return Ok(quote! {
-            let pushed = writer
+        return quote! {
+            writer
                 .as_mut()
-                .try_push_fds(&mut ::std::iter::once(#name.take().expect("trying to send raw fd")));
-            assert_eq!(pushed, 1, "not enough space in writer");
-        })
+                .push_fds(&mut ::std::iter::once(self.#name.take().expect("trying to send raw fd")));
+        }
     }
     let get = match arg.typ {
         Int | Uint =>
             if let Some(enum_) = &arg.enum_ {
-                let info = enum_info.get(current_iface_name, enum_)?;
+                let info = enum_info.get(current_iface_name, enum_).unwrap();
                 let repr = if info.is_int.unwrap_or(false) {
-                    quote!(i32)
+                    path!(i32)
                 } else {
-                    quote!(u32)
+                    path!(u32)
                 };
                 if info.is_bitfield {
                     quote! {
-                        let buf = #name.bits().to_ne_bytes();
+                        let buf = self.#name.bits().to_ne_bytes();
                     }
                 } else {
                     quote! {
-                        let buf: #repr = #name.into();
+                        let buf: #repr = self.#name.into();
                         let buf = buf.to_ne_bytes();
                     }
                 }
             } else {
                 quote! {
-                    let buf = #name.to_ne_bytes();
+                    let buf = self.#name.to_ne_bytes();
                 }
             },
         Fixed | Object | NewId => quote! {
-            let buf = #name.0.to_ne_bytes();
+            let buf = self.#name.0.to_ne_bytes();
         },
         Fd => unreachable!(),
         String => quote! {
-            let buf = #name.0.to_bytes_with_nul();
+            let buf = self.#name.0.to_bytes_with_nul();
         },
         Array => quote! {
-            let buf = #name;
+            let buf = self.#name;
         },
         Destructor => quote! {},
     };
-    Ok(match arg.typ {
+    match arg.typ {
         Int | Uint | Fixed | Object | NewId => quote! {
             #get
-            let written = writer.as_mut().try_write(&buf);
-            assert_eq!(written, buf.len(), "not enough space in writer");
+            writer.as_mut().write(&buf);
         },
         String | Array => quote! {
             #get
@@ -199,23 +283,22 @@ fn generate_serialize_for_type(
             // [0, 4): length
             // [4, buf.len()+4): buf
             // [buf.len()+4, aligned_len): alignment
-            let mut written = writer.as_mut().try_write(&len_buf);
-            written += writer.as_mut().try_write(buf);
-            written += writer.as_mut().try_write(&align_buf[..(aligned_len - buf.len() - 4)]);
-            assert_eq!(written, aligned_len, "not enough space in writer");
+            writer.as_mut().write(&len_buf);
+            writer.as_mut().write(buf);
+            writer.as_mut().write(&align_buf[..(aligned_len - buf.len() - 4)]);
         },
         Fd => unreachable!(),
         Destructor => quote! {},
-    })
+    }
 }
 fn generate_deserialize_for_type(
     current_iface_name: &str,
     arg: &wl_spec::protocol::Arg,
     enum_info: &EnumInfos,
     iface_version: &HashMap<&str, u32>,
-) -> Result<TokenStream> {
+) -> TokenStream {
     use wl_spec::protocol::Type::*;
-    Ok(match arg.typ {
+    match arg.typ {
         Int | Uint => {
             let v = if arg.typ == Int {
                 quote! { let tmp = deserializer.pop_i32(); }
@@ -228,8 +311,11 @@ fn generate_deserialize_for_type(
                 quote! { ::wl_scanner_support::io::de::Error::InvalidUintEnum }
             };
             if let Some(enum_) = &arg.enum_ {
-                let is_bitfield = enum_info.get(current_iface_name, enum_)?.is_bitfield;
-                let enum_ty = enum_type_name(enum_, iface_version)?;
+                let is_bitfield = enum_info
+                    .get(current_iface_name, enum_)
+                    .unwrap()
+                    .is_bitfield;
+                let enum_ty = enum_type_name(enum_, iface_version);
                 let enum_ty = quote! { super::#enum_ty };
                 if is_bitfield {
                     quote! { {
@@ -254,7 +340,7 @@ fn generate_deserialize_for_type(
             deserializer.pop_bytes(len as usize).into()
         } },
         Destructor => quote! {},
-    })
+    }
 }
 fn generate_message_variant(
     iface_name: &str,
@@ -266,21 +352,19 @@ fn generate_message_variant(
     enum_info: &EnumInfos,
     event_or_request: EventOrRequest,
     parent_is_borrowed: bool,
-) -> Result<(TokenStream, TokenStream)> {
+) -> TokenStream {
     let args = &request.args;
-    let args: Result<TokenStream> = args
+    let args = args
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
-            let ty = generate_arg_type(&arg, is_owned, iface_version)?;
+            let ty = generate_arg_type(&arg, is_owned, iface_version);
             let doc_comment = generate_doc_comment(&arg.description);
-            Ok(quote! {
+            quote! {
                 #doc_comment
-                pub #name: #ty,
-            })
-        })
-        .collect();
-    let args = args?;
+                pub #name: #ty
+            }
+        });
     let pname = request.name.as_str().to_pascal_case();
     let name = format_ident!("{}", pname);
     let is_borrowed = if !is_owned {
@@ -292,75 +376,67 @@ fn generate_message_variant(
         EventOrRequest::Event => format_ident!("Event"),
         EventOrRequest::Request => format_ident!("Request"),
     };
+    let empty = quote! {};
+    let lta = quote!(<'a>);
     let parent_lifetime = if parent_is_borrowed {
-        quote!(<'a>)
+        &lta
     } else {
-        quote!()
+        &empty
     };
-    let lifetime = if is_borrowed { quote!(<'a>) } else { quote!() };
+    let lifetime = if is_borrowed { &lta } else { &empty };
     // Generate experssion for length calculation
     let fixed_len: u32 = request
         .args
         .iter()
         .filter(|arg| match arg.typ {
-            wl_spec::protocol::Type::Int
+            | wl_spec::protocol::Type::Int
             | wl_spec::protocol::Type::Uint
             | wl_spec::protocol::Type::Fixed
             | wl_spec::protocol::Type::Object
             | wl_spec::protocol::Type::String // string and array has a length prefix, so they
             | wl_spec::protocol::Type::Array  // count, too.
             | wl_spec::protocol::Type::NewId => true,
-            wl_spec::protocol::Type::Fd
+            | wl_spec::protocol::Type::Fd
             | wl_spec::protocol::Type::Destructor=> false,
         })
         .count() as u32 *
         4;
-    let variable_len: TokenStream = request
-        .args
-        .iter()
-        .map(|arg| {
-            let name = format_ident!("{}", arg.name);
-            match &arg.typ {
-                wl_spec::protocol::Type::Int |
-                wl_spec::protocol::Type::Uint |
-                wl_spec::protocol::Type::Fixed |
-                wl_spec::protocol::Type::Object |
-                wl_spec::protocol::Type::NewId |
-                wl_spec::protocol::Type::Fd |
-                wl_spec::protocol::Type::Destructor => quote! {},
-                wl_spec::protocol::Type::String => quote! {
-                    + ((self.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
-                },
-                wl_spec::protocol::Type::Array => quote! {
-                    + ((self.#name.len() + 3) & !3) as u32
-                },
-            }
-        })
-        .collect();
+    let variable_len = request.args.iter().map(|arg| {
+        let name = format_ident!("{}", arg.name);
+        match &arg.typ {
+            wl_spec::protocol::Type::Int |
+            wl_spec::protocol::Type::Uint |
+            wl_spec::protocol::Type::Fixed |
+            wl_spec::protocol::Type::Object |
+            wl_spec::protocol::Type::NewId |
+            wl_spec::protocol::Type::Fd |
+            wl_spec::protocol::Type::Destructor => quote! {},
+            wl_spec::protocol::Type::String => quote! {
+                + ((self.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
+            },
+            wl_spec::protocol::Type::Array => quote! {
+                + ((self.#name.len() + 3) & !3) as u32
+            },
+        }
+    });
     let serialize = request
         .args
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
-            let name = quote! { self.#name };
-            let serialize = generate_serialize_for_type(iface_name, &name, &arg, enum_info)?;
-            Ok(quote! {
-                #serialize
-            })
-        })
-        .collect::<Result<TokenStream>>()?;
+            generate_serialize_for_type(iface_name, &name, &arg, enum_info)
+        });
     let deserialize = request
         .args
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
             let deserialize =
-                generate_deserialize_for_type(iface_name, &arg, enum_info, iface_version)?;
-            Ok(quote! {
-                #name: #deserialize,
-            })
-        })
-        .collect::<Result<TokenStream>>()?;
+                generate_deserialize_for_type(iface_name, &arg, enum_info, iface_version);
+            quote! {
+                #name: #deserialize
+            }
+        });
     let deserializer_var = if request.args.is_empty() {
         quote! { _deserializer }
     } else {
@@ -383,7 +459,7 @@ fn generate_message_variant(
         #doc_comment
         #[derive(Debug, PartialEq, Eq)]
         pub struct #name #lifetime {
-            #args
+            #(#args),*
         }
         impl #lifetime #name #lifetime {
             pub const OPCODE: u16 = #opcode;
@@ -395,13 +471,12 @@ fn generate_message_variant(
             ) {
                 let msg_len = self.len() as u32;
                 let prefix: u32 = (msg_len << 16) + (#opcode as u32);
-                let written = writer.as_mut().try_write(&prefix.to_ne_bytes());
-                assert_eq!(written, 4, "not enough space in writer");
-                #serialize
+                writer.as_mut().write(&prefix.to_ne_bytes());
+                #(#serialize)*
             }
             #[inline]
             fn len(&self) -> u16 {
-                (#fixed_len #variable_len + 8) as u16 // 8 is the header
+                (#fixed_len #(#variable_len)* + 8) as u16 // 8 is the header
             }
             #[inline]
             fn nfds(&self) -> u8 {
@@ -414,7 +489,7 @@ fn generate_message_variant(
                 #deserializer_var: D
             ) -> Result<Self, ::wl_scanner_support::io::de::Error> {
                 Ok(Self {
-                    #deserialize
+                    #(#deserialize),*
                 })
             }
         }
@@ -426,14 +501,14 @@ fn generate_message_variant(
         }
     };
 
-    Ok((public, quote! {}))
+    public
 }
 
 fn generate_dispatch_trait(
     messages: &[Message],
     event_or_request: EventOrRequest,
     iface_version: &HashMap<&str, u32>,
-) -> Result<TokenStream> {
+) -> TokenStream {
     let ty = match event_or_request {
         EventOrRequest::Event => format_ident!("EventDispatch"),
         EventOrRequest::Request => format_ident!("RequestDispatch"),
@@ -452,14 +527,13 @@ fn generate_dispatch_trait(
                 .iter()
                 .map(|arg| {
                     let name = format_ident!("{}", arg.name);
-                    let typ = generate_arg_type(&arg, false, iface_version)?;
-                    Ok(quote! {
+                    let typ = generate_arg_type(&arg, false, iface_version);
+                    quote! {
                         #name: #typ
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+                    }
+                });
             let doc_comment = generate_doc_comment(&m.description);
-            Ok(quote! {
+            quote! {
                 #doc_comment
                 fn #name<'a>(
                     &'a self,
@@ -468,22 +542,21 @@ fn generate_dispatch_trait(
                     #(#args),*
                 )
                 -> Self::#retty<'a>;
-            })
-        })
-        .collect::<Result<TokenStream>>()?;
+            }
+        });
     let futs = messages
         .iter()
         .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
-    Ok(quote! {
+    quote! {
         pub trait #ty<Ctx> {
             type Error: ::wl_scanner_support::ProtocolError;
             #(
                 type #futs<'a>: ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
                     where Ctx: 'a, Self: 'a;
             )*
-            #methods
+            #(#methods)*
         }
-    })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -498,9 +571,9 @@ fn generate_event_or_request(
     iface_version: &HashMap<&str, u32>,
     enum_info: &EnumInfos,
     event_or_request: EventOrRequest,
-) -> Result<(TokenStream, TokenStream)> {
+) -> TokenStream {
     if messages.is_empty() {
-        Ok((quote! {}, quote! {}))
+        quote! {}
     } else {
         let mod_name = match event_or_request {
             EventOrRequest::Event => format_ident!("events"),
@@ -513,7 +586,7 @@ fn generate_event_or_request(
         let enum_is_borrowed = messages
             .iter()
             .any(|v| v.args.iter().any(|arg| type_is_borrowed(&arg.typ)));
-        let (public, private): (TokenStream, TokenStream) = messages
+        let public = messages
             .iter()
             .enumerate()
             .map(|(opcode, v)| {
@@ -528,10 +601,7 @@ fn generate_event_or_request(
                     event_or_request,
                     enum_is_borrowed,
                 )
-            })
-            .collect::<Result<Vec<(TokenStream, TokenStream)>>>()?
-            .into_iter()
-            .unzip();
+            });
         let enum_lifetime = if enum_is_borrowed {
             quote! { <'a> }
         } else {
@@ -556,7 +626,7 @@ fn generate_event_or_request(
                 Self::#name(v) => v.serialize(writer),
             }
         });
-        let enum_deserialize_cases: TokenStream = messages
+        let enum_deserialize_cases = messages
             .iter()
             .enumerate()
             .map(|(opcode, v)| {
@@ -565,8 +635,7 @@ fn generate_event_or_request(
                 quote! {
                     #opcode => Ok(Self::#name(<#mod_name::#name>::deserialize(deserializer)?)),
                 }
-            })
-            .collect();
+            });
         let enum_len_cases = messages.iter().map(|v| {
             let name = format_ident!("{}", v.name.to_pascal_case());
             quote! {
@@ -579,14 +648,14 @@ fn generate_event_or_request(
                 Self::#name(v) => v.nfds(),
             }
         });
-        let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version)?;
+        let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version);
         let public = quote! {
             pub mod #mod_name {
                 #[allow(unused_imports)]
                 use super::enums;
                 #[allow(unused_imports)]
                 use super::__generated_root;
-                #public
+                #(#public)*
             }
             #[doc = "Collection of all possible types of messages, see individual message types "]
             #[doc = "for more information."]
@@ -625,7 +694,7 @@ fn generate_event_or_request(
                     let header = deserializer.pop_u32();
                     let opcode = header & 0xFFFF;
                     match opcode {
-                        #enum_deserialize_cases
+                        #(#enum_deserialize_cases)*
                         _ => Err(
                             ::wl_scanner_support::io::de::Error::UnknownOpcode(
                                 opcode, std::any::type_name::<Self>())),
@@ -633,7 +702,7 @@ fn generate_event_or_request(
                 }
             }
         };
-        Ok((public, private))
+        public
     }
 }
 fn wrap_links(line: &str) -> String {
@@ -709,13 +778,12 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
                 Some(quote! {
                     #[doc = #s]
                 })
-            })
-            .collect::<TokenStream>();
+            });
         let summary = summary.replace('[', "\\[").replace(']', "\\]");
         quote! {
             #[doc = #summary]
             #[doc = ""]
-            #desc
+            #(#desc)*
         }
     } else {
         quote! {}
@@ -798,30 +866,30 @@ fn generate_interface(
     iface: &Interface,
     iface_version: &HashMap<&str, u32>,
     enum_info: &EnumInfos,
-) -> Result<TokenStream> {
+) -> TokenStream {
     let name = format_ident!("{}", iface.name);
     let version = format_ident!("v{}", iface.version);
 
-    let (requests, requests_private) = generate_event_or_request(
+    let requests = generate_event_or_request(
         &iface.name,
         &iface.requests,
         iface_version,
         enum_info,
         EventOrRequest::Request,
-    )?;
-    let (events, events_private) = generate_event_or_request(
+    );
+    let events = generate_event_or_request(
         &iface.name,
         &iface.events,
         iface_version,
         enum_info,
         EventOrRequest::Event,
-    )?;
+    );
     let doc_comment = generate_doc_comment(&iface.description);
     let enums = generate_enums(&iface.enums, &iface.name, enum_info);
 
     let iface_name = &iface.name;
     let iface_version = iface.version;
-    Ok(quote! {
+    quote! {
         #doc_comment
         pub mod #name {
             pub mod #version {
@@ -833,14 +901,9 @@ fn generate_interface(
                 #requests
                 #events
                 #enums
-                #[doc(hidden)]
-                mod internal {
-                    #requests_private
-                    #events_private
-                }
             }
         }
-    })
+    }
 }
 
 fn scan_enum(proto: &Protocol, enum_info: &mut EnumInfos) -> Result<()> {
@@ -896,13 +959,12 @@ pub fn generate_protocol(proto: &Protocol) -> Result<TokenStream> {
     let interfaces = proto
         .interfaces
         .iter()
-        .map(|v| generate_interface(v, &iface_version, &enum_info))
-        .collect::<Result<TokenStream>>()?;
+        .map(|v| generate_interface(v, &iface_version, &enum_info));
     let name = format_ident!("{}", proto.name);
     Ok(quote! {
         pub mod #name {
             use super::#name as __generated_root;
-            #interfaces
+            #(#interfaces)*
         }
     })
 }

@@ -8,6 +8,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("NewId {0} sent by the client is already in use")]
     IdExists(u32),
+    #[error("Object {0} is invalid for this operation")]
+    InvalidObject(u32),
     #[error("Unknown Global: {0}")]
     UnknownGlobal(u32),
     #[error("Unknown object: {0}")]
@@ -51,6 +53,7 @@ impl wl_protocol::ProtocolError for Error {
             Self::IdExists(_) => Some((1, InvalidObject as u32)),
             Self::UnknownGlobal(_) => Some((1, InvalidObject as u32)),
             Self::UnknownObject(_) => Some((1, InvalidObject as u32)),
+            Self::InvalidObject(_) => Some((1, InvalidObject as u32)),
             Self::UnknownError(_) => Some((1, Implementation as u32)),
             Self::UnknownFatalError(_) => Some((1, Implementation as u32)),
             Self::Custom {
@@ -68,6 +71,7 @@ impl wl_protocol::ProtocolError for Error {
             Self::IdExists(_) |
             Self::UnknownGlobal(_) |
             Self::UnknownObject(_) |
+            Self::InvalidObject(_) |
             Self::UnknownFatalError(_) => true,
             Self::UnknownError(_) => false,
             Self::Custom { fatal, .. } => *fatal,

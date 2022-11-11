@@ -2,21 +2,21 @@
 use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc};
 
 use anyhow::Result;
-use apollo::shell::DefaultShell;
+use apollo::shell::{DefaultShell, HasShell, buffers::{HasBuffer, RendererBuffer}};
 use futures_util::TryStreamExt;
 use log::debug;
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     connection::{self, Connection as _, Objects, Store},
     renderer_capability::RendererCapability,
-    Extra,
 };
+mod render;
 
 #[derive(Debug)]
 pub struct CrescentState {
     globals:   wl_server::server::GlobalStore<Crescent>,
     listeners: wl_server::server::Listeners,
-    shell:     RefCell<DefaultShell>,
+    shell:     Rc<RefCell<<Crescent as HasShell>::Shell>>,
 }
 
 #[derive(Debug, Clone)]
@@ -29,10 +29,10 @@ impl Crescent {
         globals: [
             wl_server::globals::Display,
             wl_server::globals::Registry,
-            apollo::globals::Compositor<DefaultShell>,
-            apollo::globals::Subcompositor<DefaultShell>,
+            apollo::globals::Compositor,
+            apollo::globals::Subcompositor,
             apollo::globals::Shm,
-            apollo::globals::xdg_shell::WmBase<DefaultShell>,
+            apollo::globals::xdg_shell::WmBase,
         ],
     }
 }
@@ -45,9 +45,13 @@ impl wl_server::server::Server for Crescent {
         &self.0.globals
     }
 }
+impl HasBuffer for Crescent {
+    type Buffer = RendererBuffer<render::BufferData>;
+}
 
-impl Extra<RefCell<DefaultShell>> for Crescent {
-    fn extra(&self) -> &RefCell<DefaultShell> {
+impl HasShell for Crescent {
+    type Shell = DefaultShell<<Self as HasBuffer>::Buffer>;
+    fn shell(&self) -> &RefCell<Self::Shell> {
         &self.0.shell
     }
 }
@@ -131,6 +135,7 @@ impl connection::Connection for CrescentClient {
     }
 }
 
+// TODO: remove?
 impl wl_common::Serial for CrescentClient {
     type Data = ();
 
@@ -213,6 +218,27 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
 fn main() -> Result<()> {
     use futures_util::future;
     tracing_subscriber::fmt::init();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (event_tx, event_rx) = smol::channel::unbounded();
+    let _el = std::thread::spawn(move || {
+        use winit::platform::unix::EventLoopBuilderExtUnix;
+        let el = winit::event_loop::EventLoopBuilder::new()
+            .with_any_thread(true)
+            .build();
+        let window = winit::window::WindowBuilder::new()
+            .with_title("Crescent")
+            .with_maximized(true)
+            .build(&el)
+            .unwrap();
+        tx.send(window).unwrap();
+        let event_tx = event_tx;
+        el.run(move |event, _, cf| {
+            cf.set_wait();
+            let Some(event) = event.to_static() else { return };
+            smol::block_on(event_tx.send(event)).unwrap();
+        })
+    });
+    let window = rx.recv().unwrap();
     let (listener, _guard) = wl_server::wayland_listener_auto()?;
     let listener = smol::Async::new(listener)?;
     let server = Crescent(Rc::new(CrescentState {
@@ -220,6 +246,7 @@ fn main() -> Result<()> {
         listeners: Default::default(),
         shell:     Default::default(),
     }));
+    let shell2 = server.0.shell.clone();
     let executor = smol::LocalExecutor::new();
     let server = wl_server::AsyncServer::new(server, &executor);
     let incoming = Box::pin(
@@ -227,7 +254,12 @@ fn main() -> Result<()> {
             .incoming()
             .and_then(|conn| future::ready(conn.into_inner())),
     );
+    tracing::debug!("Size: {:?}", window.inner_size());
+    let renderer = smol::block_on(render::Renderer::new(&window, window.inner_size(), shell2));
     let mut cm = wl_server::ConnectionManager::new(incoming, server);
+    let _render = executor.spawn(async move {
+        renderer.render_loop(event_rx).await;
+    });
 
-    Ok(futures_executor::block_on(executor.run(cm.run()))?)
+    Ok(smol::block_on(executor.run(cm.run()))?)
 }

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
+use std::{any::Any, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
 use derivative::Derivative;
 use wl_common::utils::geometry::{Extent, Point, Rectangle};
@@ -9,34 +9,23 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::Connection,
     error::Error,
-    objects::{interface_message_dispatch, InterfaceMeta},
-    provide_any::{request_mut, request_ref, Demand},
-    Extra,
+    objects::{interface_message_dispatch, Object, ObjectMeta},
 };
 
-use crate::shell::{Shell, xdg};
-pub struct WmBase<S>(PhantomData<S>);
+use crate::shell::{xdg, HasShell, Shell};
+pub struct WmBase;
 
-impl<S> Default for WmBase<S> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<Ctx, S: 'static> InterfaceMeta<Ctx> for WmBase<S> {
+impl<Ctx> Object<Ctx> for WmBase {}
+impl ObjectMeta for WmBase {
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 
 #[interface_message_dispatch]
-impl<S: Shell, Ctx: Connection> xdg_wm_base::RequestDispatch<Ctx> for WmBase<S>
+impl<Ctx: Connection> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
-    Ctx::Context: Extra<RefCell<S>>,
+    Ctx::Context: HasShell,
 {
     type Error = Error;
 
@@ -69,12 +58,13 @@ where
                 .ok_or_else(|| Error::UnknownObject(surface.0))?
                 .clone();
             let entry = objects.entry(id.0);
-            let shell: &RefCell<S> = ctx.server_context().extra();
-            let surface: &crate::objects::compositor::Surface<S, Ctx> =
-                request_ref(surface.as_ref()).ok_or_else(|| Error::UnknownObject(surface_id))?;
+            let mut shell = ctx.server_context().shell().borrow_mut();
+            let surface: &crate::objects::compositor::Surface<Ctx> = (surface.as_ref() as &dyn Any)
+                .downcast_ref()
+                .ok_or_else(|| Error::UnknownObject(surface_id))?;
             if entry.is_vacant() {
                 let role = crate::shell::xdg::Surface::default();
-                surface.0.set_role(role);
+                surface.0.set_role(role, &mut shell);
                 entry.or_insert(Surface(surface.0.clone()));
                 Ok(())
             } else {
@@ -95,20 +85,27 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Surface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
+pub struct Surface<Ctx: Connection>(
+    Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
+)
+where
+    Ctx::Context: HasShell;
 
-impl<Ctx, S: Shell> InterfaceMeta<Ctx> for Surface<S> {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-    }
-
+impl<Ctx: Connection> Object<Ctx> for Surface<Ctx> where Ctx::Context: HasShell {}
+impl<Ctx: Connection> ObjectMeta for Surface<Ctx>
+where
+    Ctx::Context: HasShell,
+{
     fn interface(&self) -> &'static str {
         xdg_surface::NAME
     }
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S> {
+impl<Ctx: Connection> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
+where
+    Ctx::Context: HasShell,
+{
     type Error = wl_server::error::Error;
 
     type AckConfigureFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -145,12 +142,11 @@ impl<Ctx: Connection, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
             if entry.is_vacant() {
                 let role = crate::shell::xdg::TopLevel::default();
                 assert!(
-                    self.0
-                        .role::<xdg::Surface>()
-                        .is_some(),
+                    self.0.role::<xdg::Surface>().is_some(),
                     "xdg_surface object pointing to a surface without the xdg_surface role"
                 );
-                self.0.set_role(role);
+                let mut shell = ctx.server_context().shell().borrow_mut();
+                self.0.set_role(role, &mut shell);
                 entry.or_insert(TopLevel(self.0.clone()));
                 Ok(())
             } else {
@@ -190,20 +186,27 @@ impl<Ctx: Connection, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct TopLevel<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
+pub struct TopLevel<Ctx: Connection>(
+    Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
+)
+where
+    Ctx::Context: HasShell;
 
-impl<Ctx, S: Shell> InterfaceMeta<Ctx> for TopLevel<S> {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-    }
-
+impl<Ctx: Connection> Object<Ctx> for TopLevel<Ctx> where Ctx::Context: HasShell {}
+impl<Ctx: Connection> ObjectMeta for TopLevel<Ctx>
+where
+    Ctx::Context: HasShell,
+{
     fn interface(&self) -> &'static str {
         xdg_toplevel::NAME
     }
 }
 
 #[interface_message_dispatch]
-impl<Ctx, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S> {
+impl<Ctx: Connection> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
+where
+    Ctx::Context: HasShell,
+{
     type Error = wl_server::error::Error;
 
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;

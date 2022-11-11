@@ -331,20 +331,18 @@ impl<T: AsyncWriteWithFd> AsyncBufWriteWithFd for BufWriterWithFd<T> {
         Poll::Ready(Ok(()))
     }
 
-    fn try_write(self: Pin<&mut Self>, buf: &[u8]) -> usize {
+    fn write(self: Pin<&mut Self>, buf: &[u8]) {
         let this = self.project();
         let remaining_cap = this.buf.capacity() - this.buf.len();
-        let to_write = std::cmp::min(remaining_cap, buf.len());
-        this.buf.extend_from_slice(&buf[..to_write]);
-        to_write
+        assert!(remaining_cap >= buf.len());
+        this.buf.extend_from_slice(buf);
     }
 
-    fn try_push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) -> usize {
+    fn push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) {
         let this = self.project();
-        let last_len = this.fd_buf.len();
-        let fds = fds.take(this.fd_buf.capacity() - last_len);
+        let last_cap = this.fd_buf.capacity();
         this.fd_buf.extend(fds);
-        this.fd_buf.len() - last_len
+        assert!(this.fd_buf.len() <= last_cap);
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
@@ -451,11 +449,11 @@ mod test {
             tx.reserve(packet.len() + 4, if fds.is_some() { 1 } else { 0 })
                 .await
                 .unwrap();
-            assert_eq!(Pin::new(&mut tx).try_write(&len), 4);
-            assert_eq!(Pin::new(&mut tx).try_write(packet), packet.len());
+            Pin::new(&mut tx).write(&len);
+            Pin::new(&mut tx).write(packet);
             debug!("send len: {:?}", packet.len() + 4);
             sent_bytes.extend_from_slice(packet);
-            Pin::new(&mut tx).try_push_fds(&mut fds.into_iter());
+            Pin::new(&mut tx).push_fds(&mut fds.into_iter());
         }
         tx.flush().await.unwrap();
         drop(tx);

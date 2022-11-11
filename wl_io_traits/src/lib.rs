@@ -332,14 +332,21 @@ pub mod buf {
 
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
 
-        /// Write data into the buffer, until the buffer is full. This function
-        /// should just do memory copy and cannot fail. Return the number of
-        /// bytes accepted.
-        fn try_write(self: Pin<&mut Self>, buf: &[u8]) -> usize;
+        /// Write data into the buffer. This function should just do memory copy and cannot fail.
+        /// If the buffer is not big enough, this means the caller has not called poll_reserve
+        /// properly, and this function should panic.
+        ///
+        /// # Panic
+        ///
+        /// This function should panic if the buffer is not big enough.
+        fn write(self: Pin<&mut Self>, buf: &[u8]);
 
         /// Move file descriptor into the buffer, until the buffer is full.
-        /// Return the number of file descriptors accepted.
-        fn try_push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) -> usize;
+        ///
+        /// # Panic
+        ///
+        /// This function should panic if the buffer is not big enough.
+        fn push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>);
     }
 
     pub struct Reserve<'a, W: ?Sized>(Pin<&'a mut W>, (usize, usize));

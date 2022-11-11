@@ -12,23 +12,21 @@ use wl_server::{
     connection::Connection,
     global_dispatch,
     globals::{Global, GlobalMeta},
-    objects::InterfaceMeta,
-    provide_any::Demand,
+    objects::Object,
     renderer_capability::RendererCapability,
     server::Server,
-    Extra,
 };
 use derivative::Derivative;
 
-use crate::shell::Shell;
+use crate::shell::{Shell, HasShell, buffers::HasBuffer};
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]
-pub struct Compositor<S>(PhantomData<S>);
+pub struct Compositor;
 
-impl<S: Server, Sh: Shell> GlobalMeta<S> for Compositor<Sh> {
+impl<S: Server + HasShell> GlobalMeta<S> for Compositor {
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -42,37 +40,34 @@ impl<S: Server, Sh: Shell> GlobalMeta<S> for Compositor<Sh> {
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c,
     {
         (
-            Box::new(crate::objects::compositor::Compositor::<Sh>::new()),
+            Box::new(crate::objects::compositor::Compositor),
             None,
         )
     }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-    }
 }
 
-impl<Ctx, Sh: Shell> Global<Ctx> for Compositor<Sh>
+impl<Ctx> Global<Ctx> for Compositor
 where
     Ctx: Connection,
-    Ctx::Context: Extra<RefCell<Sh>>,
+    Ctx::Context: HasShell,
 {
     type Error = wl_server::error::Error;
     type HandleEventsError = Infallible;
     type HandleEventsFut<'a> = Pending<Result<(), Self::HandleEventsError>> where Ctx: 'a;
 
-    const INIT: Self = Self(PhantomData);
+    const INIT: Self = Self;
 
     global_dispatch! {
-        "wl_compositor" => crate::objects::compositor::Compositor<Sh>,
-        "wl_surface" => crate::objects::compositor::Surface<Sh, Ctx>,
+        "wl_compositor" => crate::objects::compositor::Compositor,
+        "wl_surface" => crate::objects::compositor::Surface<Ctx>,
+        "wl_buffer" => crate::objects::Buffer<Ctx>,
     }
 
     fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {
@@ -80,24 +75,23 @@ where
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Default(bound = ""), Debug(bound = ""))]
-pub struct Subcompositor<S>(PhantomData<S>);
+#[derive(Debug)]
+pub struct Subcompositor;
 
-impl<Ctx, Sh: Shell> Global<Ctx> for Subcompositor<Sh>
+impl<Ctx> Global<Ctx> for Subcompositor
 where
     Ctx: Connection,
-    Ctx::Context: Extra<RefCell<Sh>>,
+    Ctx::Context: HasShell,
 {
     type Error = wl_server::error::Error;
     type HandleEventsError = Infallible;
     type HandleEventsFut<'a> = Pending<Result<(), Self::HandleEventsError>> where Ctx: 'a;
 
-    const INIT: Self = Self(PhantomData);
+    const INIT: Self = Self;
 
     global_dispatch! {
-        "wl_subcompositor" => crate::objects::compositor::Subcompositor<Sh>,
-        "wl_subsurface" => crate::objects::compositor::Subsurface<Sh>,
+        "wl_subcompositor" => crate::objects::compositor::Subcompositor,
+        "wl_subsurface" => crate::objects::compositor::Subsurface<Ctx>,
     }
 
     fn handle_events<'a>(_ctx: &'a mut Ctx, _slot: usize) -> Option<Self::HandleEventsFut<'a>> {
@@ -105,7 +99,7 @@ where
     }
 }
 
-impl<S: Server, Sh: Shell> GlobalMeta<S> for Subcompositor<Sh> {
+impl<S: Server> GlobalMeta<S> for Subcompositor {
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -119,20 +113,16 @@ impl<S: Server, Sh: Shell> GlobalMeta<S> for Subcompositor<Sh> {
         _client: &'b <S as Server>::Connection,
         _object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
         'b: 'c,
     {
         (
-            Box::new(crate::objects::compositor::Subcompositor::<Sh>::new()),
+            Box::new(crate::objects::compositor::Subcompositor),
             None,
         )
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
     }
 }
 
@@ -142,6 +132,8 @@ pub struct Shm;
 impl<Ctx> Global<Ctx> for Shm
 where
     Ctx: Connection,
+    Ctx::Context: HasBuffer,
+    <Ctx::Context as HasBuffer>::Buffer: From<crate::objects::shm::Buffer>,
 {
     type Error = wl_server::error::Error;
     type HandleEventsError = Infallible;
@@ -173,7 +165,7 @@ impl<S: Server + RendererCapability> GlobalMeta<S> for Shm {
         client: &'b <S as Server>::Connection,
         object_id: u32,
     ) -> (
-        Box<dyn InterfaceMeta<S::Connection>>,
+        Box<dyn Object<S::Connection>>,
         Option<PinnedFuture<'c, std::io::Result<()>>>,
     )
     where
@@ -195,9 +187,5 @@ impl<S: Server + RendererCapability> GlobalMeta<S> for Shm {
                 Ok(())
             })),
         )
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
     }
 }

@@ -6,7 +6,9 @@
 use std::{future::Future, rc::Weak};
 
 pub use ::wl_common::interface_message_dispatch;
-use ::wl_protocol::wayland::{wl_callback, wl_display, wl_registry::v1 as wl_registry};
+use ::wl_protocol::wayland::{
+    wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
+};
 use hashbrown::{HashMap, HashSet};
 use tracing::debug;
 
@@ -26,19 +28,22 @@ use crate::{
 /// If a object is a proxy of a global, it has to recognize if the global's
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
-pub trait InterfaceMeta<Ctx>: 'static {
+pub trait ObjectMeta: std::any::Any {
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
-    /// Case self to &dyn Any
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>);
-    /// Called when the object is removed from the object store.
-    fn on_drop(&self, _ctx: &Ctx) {}
+    // TODO: maybe delete?
+    fn provide<'a>(&'a self, _demand: &mut Demand<'a>) {}
 }
 
-impl<Ctx: 'static> Provider for dyn InterfaceMeta<Ctx> {
+impl Provider for dyn ObjectMeta {
     fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
         self.provide(demand)
     }
+}
+
+pub trait Object<Ctx>: ObjectMeta {
+    /// Called when the object is removed from the object store.
+    fn on_drop(&self, _ctx: &Ctx) {}
 }
 
 /// The object ID of the wl_display object
@@ -49,7 +54,7 @@ pub const DISPLAY_ID: u32 = 1;
 pub struct Display;
 
 #[interface_message_dispatch]
-impl<Ctx> wl_display::v1::RequestDispatch<Ctx> for Display
+impl<Ctx> wl_display::RequestDispatch<Ctx> for Display
 where
     Ctx: Connection + connection::Evented<Ctx> + wl_common::Serial + std::fmt::Debug,
     Ctx::Context: EventSource,
@@ -80,9 +85,7 @@ where
             .await?;
             ctx.send(
                 DISPLAY_ID,
-                wl_display::v1::Event::DeleteId(wl_display::v1::events::DeleteId {
-                    id: callback.0,
-                }),
+                wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
             )
             .await?;
             Ok(())
@@ -128,15 +131,12 @@ where
     }
 }
 
-impl<Ctx> InterfaceMeta<Ctx> for Display {
+impl ObjectMeta for Display {
     fn interface(&self) -> &'static str {
-        wl_display::v1::NAME
-    }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
+        wl_display::NAME
     }
 }
+impl<Ctx> Object<Ctx> for Display {}
 
 pub struct Registry<Ctx> {
     slot: u8,
@@ -209,16 +209,6 @@ impl<Ctx: Connection> std::fmt::Debug for RegistryState<Ctx> {
             .field("new_registry_objects", &self.new_registry_objects)
             .field("known_globals", &DebugMap::<Ctx>(&self.known_globals))
             .finish()
-    }
-}
-
-impl<Ctx: Connection> crate::provide_any::Provider for RegistryState<Ctx> {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-    }
-
-    fn provide_mut<'a>(&'a mut self, demand: &mut Demand<'a>) {
-        demand.provide_mut(self);
     }
 }
 
@@ -296,26 +286,43 @@ impl<Ctx> ::std::fmt::Debug for Registry<Ctx> {
     }
 }
 
-impl<Ctx: Connection + connection::Evented<Ctx> + 'static> InterfaceMeta<Ctx> for Registry<Ctx>
-where
-    Ctx::Context: EventSource,
-{
+impl<Ctx: 'static> ObjectMeta for Registry<Ctx> {
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }
-
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        demand.provide_ref(self);
-    }
-
+}
+impl<Ctx: Connection + connection::Evented<Ctx> + 'static> Object<Ctx> for Registry<Ctx>
+where
+    Ctx::Context: EventSource,
+{
     fn on_drop(&self, ctx: &Ctx) {
         let server_context = ctx.server_context();
         server_context.remove_listener(ctx.event_handle());
     }
 }
 
-pub struct StateSlots;
+#[derive(Debug, Default)]
+pub struct Callback;
+impl<Ctx> Object<Ctx> for Callback {}
+impl ObjectMeta for Callback {
+    fn interface(&self) -> &'static str {
+        wl_protocol::wayland::wl_callback::v1::NAME
+    }
+}
 
-impl StateSlots {
-    pub const COMPOSITOR: usize = 0;
+impl Callback {
+    pub async fn fire(object_id: u32, data: u32, ctx: &mut impl Connection) -> std::io::Result<()> {
+        ctx.send(
+            object_id,
+            wl_protocol::wayland::wl_callback::v1::events::Done {
+                callback_data: data,
+            },
+        )
+        .await?;
+        let mut objects = ctx.objects().borrow_mut();
+        objects.remove(ctx, object_id).unwrap();
+        ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            .await?;
+        Ok(())
+    }
 }

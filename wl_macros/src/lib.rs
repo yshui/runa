@@ -1,5 +1,5 @@
 extern crate proc_macro;
-use darling::{FromDeriveInput, FromMeta, FromVariant};
+use darling::FromMeta;
 use proc_macro_error::ResultExt;
 use quote::quote;
 use syn::parse::Parse;

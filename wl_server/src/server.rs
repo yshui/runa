@@ -8,7 +8,7 @@ use wl_common::Serial;
 
 use crate::globals::GlobalMeta;
 
-pub trait Server: EventSource {
+pub trait Server: EventSource + Sized + 'static {
     /// The per client context type.
     type Connection: crate::connection::Connection<Context = Self> + 'static;
     type Globals: Globals<Self>;
@@ -67,7 +67,7 @@ impl EventSource for Listeners {
     }
 }
 
-pub trait Globals<S: Server + EventSource + ?Sized> {
+pub trait Globals<S: Server + EventSource> {
     /// Add a global to the store, return its allocated ID.
     fn insert<T: GlobalMeta<S> + 'static>(&self, server: &S, global: T) -> u32;
     /// Get the global with the given id.

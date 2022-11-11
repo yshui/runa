@@ -53,14 +53,12 @@ impl AsyncBufWriteWithFd for WritePool {
         Poll::Ready(Ok(()))
     }
 
-    fn try_write(mut self: Pin<&mut Self>, buf: &[u8]) -> usize {
+    fn write(mut self: Pin<&mut Self>, buf: &[u8]) {
         self.inner.extend_from_slice(buf);
-        buf.len()
     }
 
-    fn try_push_fds(mut self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) -> usize {
+    fn push_fds(mut self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) {
         self.fds.extend(fds);
-        self.fds.len()
     }
 
     fn poll_reserve(

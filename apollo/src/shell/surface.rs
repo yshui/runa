@@ -532,6 +532,7 @@ pub mod roles {
                         let next_child =
                             unsafe { parent_antirole.children.get(next_child).unwrap_unchecked() };
                         if next_child.key != parent_key {
+                            offset += next_child.position;
                             // the next surface in the parent's stack is not the parent itself. we
                             // need to find the bottom most surface in `next`'s descendants.
                             let end = find_end(next_child.key, self.shell, direction);

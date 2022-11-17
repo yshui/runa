@@ -25,7 +25,7 @@ pub struct Renderer {
     size:           PhysicalSize<u32>,
     pipeline:       wgpu::RenderPipeline,
     vertices:       Vec<Vertex>,
-    indices:        Vec<u16>,
+    index_buffer:   wgpu::Buffer,
     uniform_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     textures:       Vec<wgpu::BindGroup>,
@@ -212,6 +212,11 @@ impl Renderer {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
         });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&[0u16, 1, 2, 0, 2, 3]),
+            usage:    wgpu::BufferUsages::INDEX,
+        });
         Renderer {
             uniform: Self::create_uniforms(&device, &bind_group_layout, size),
             uniform_layout: bind_group_layout,
@@ -225,7 +230,7 @@ impl Renderer {
             size,
             shell: shell.clone(),
             vertices: Vec::new(),
-            indices: Vec::new(),
+            index_buffer,
             format,
         }
     }
@@ -234,7 +239,6 @@ impl Renderer {
         use apollo::shell::surface::roles::subsurface_iter;
         let shell = self.shell.borrow();
         self.vertices.clear();
-        self.indices.clear();
         self.textures.clear();
         for surface in shell.stack() {
             for (subsurface, offset) in subsurface_iter(*surface, &*shell) {
@@ -242,35 +246,6 @@ impl Renderer {
                 let Some(buffer) = state.buffer() else { continue };
                 let dimensions = buffer.dimension();
                 let current_index = self.vertices.len() as u16;
-                self.vertices.extend_from_slice(&[
-                    Vertex {
-                        position: [offset.x as f32, offset.y as f32],
-                        uv:       [0., 0.],
-                    },
-                    Vertex {
-                        position: [offset.x as f32 + dimensions.w as f32, offset.y as f32],
-                        uv:       [1., 0.],
-                    },
-                    Vertex {
-                        position: [
-                            offset.x as f32 + dimensions.w as f32,
-                            offset.y as f32 + dimensions.h as f32,
-                        ],
-                        uv:       [1., 1.],
-                    },
-                    Vertex {
-                        position: [offset.x as f32, offset.y as f32 + dimensions.h as f32],
-                        uv:       [0., 1.],
-                    },
-                ]);
-                self.indices.extend_from_slice(&[
-                    current_index,
-                    current_index + 1,
-                    current_index + 2,
-                    current_index,
-                    current_index + 2,
-                    current_index + 3,
-                ]);
                 let mut texture = buffer.data.texture.borrow_mut();
                 if buffer.get_damage() || texture.is_none() {
                     // Upload the texture
@@ -347,6 +322,27 @@ impl Renderer {
                         ],
                     });
                 self.textures.push(texture_bind_group);
+                self.vertices.extend_from_slice(&[
+                    Vertex {
+                        position: [offset.x as f32, offset.y as f32],
+                        uv:       [0., 0.],
+                    },
+                    Vertex {
+                        position: [offset.x as f32 + dimensions.w as f32, offset.y as f32],
+                        uv:       [1., 0.],
+                    },
+                    Vertex {
+                        position: [
+                            offset.x as f32 + dimensions.w as f32,
+                            offset.y as f32 + dimensions.h as f32,
+                        ],
+                        uv:       [1., 1.],
+                    },
+                    Vertex {
+                        position: [offset.x as f32, offset.y as f32 + dimensions.h as f32],
+                        uv:       [0., 1.],
+                    },
+                ]);
             }
         }
         let vertex_buffer = self
@@ -355,13 +351,6 @@ impl Renderer {
                 label:    Some("Vertex Buffer"),
                 contents: bytemuck::cast_slice(&self.vertices),
                 usage:    wgpu::BufferUsages::VERTEX,
-            });
-        let index_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label:    Some("Index Buffer"),
-                contents: bytemuck::cast_slice(&self.indices),
-                usage:    wgpu::BufferUsages::INDEX,
             });
         let mut encoder = self
             .device
@@ -387,7 +376,7 @@ impl Renderer {
                 });
                 pass.set_pipeline(&self.pipeline);
                 pass.set_index_buffer(
-                    index_buffer.slice((i * 6 * std::mem::size_of::<u16>()) as u64..),
+                    self.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint16,
                 );
                 pass.set_vertex_buffer(

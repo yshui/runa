@@ -15,6 +15,9 @@ pub trait Buffer: 'static {
     fn get_damage(&self) -> bool;
     // TODO: really logical?
     fn dimension(&self) -> Extent<u32, Logical>;
+    /// Return the object id for the buffer object.
+    /// Used for sending release event to the client.
+    fn object_id(&self) -> u32;
 }
 
 pub trait HasBuffer {
@@ -27,9 +30,18 @@ pub trait HasBuffer {
 /// implementation of the wl_buffer interface.
 ///
 /// All buffer implementations in this crate uses this.
-#[derive(Default)]
 pub struct BufferBase {
     damaged: Cell<bool>,
+    object_id: u32,
+}
+
+impl BufferBase {
+    pub fn new(object_id: u32) -> Self {
+        Self {
+            damaged: Cell::new(false),
+            object_id,
+        }
+    }
 }
 
 impl Buffer for BufferBase {
@@ -51,6 +63,10 @@ impl Buffer for BufferBase {
     #[inline]
     fn dimension(&self) -> Extent<u32, Logical> {
         unimplemented!()
+    }
+    #[inline]
+    fn object_id(&self) -> u32 {
+        self.object_id
     }
 }
 
@@ -98,6 +114,12 @@ impl Buffer for Buffers {
             Self::Shm(buffer) => buffer.dimension(),
         }
     }
+    #[inline]
+    fn object_id(&self) -> u32 {
+        match self {
+            Self::Shm(buffer) => buffer.object_id(),
+        }
+    }
 }
 
 impl<T, Data: Default> From<T> for RendererBuffer<Data>
@@ -130,5 +152,9 @@ impl<Data: 'static> Buffer for RendererBuffer<Data> {
     #[inline]
     fn dimension(&self) -> Extent<u32, Logical> {
         self.buffer.dimension()
+    }
+    #[inline]
+    fn object_id(&self) -> u32 {
+        self.buffer.object_id()
     }
 }

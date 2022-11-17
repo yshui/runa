@@ -301,9 +301,9 @@ fn generate_deserialize_for_type(
     match arg.typ {
         Int | Uint => {
             let v = if arg.typ == Int {
-                quote! { let tmp = deserializer.pop_i32(); }
+                quote! {  deserializer.pop_i32() }
             } else {
-                quote! { let tmp = deserializer.pop_u32(); }
+                quote! { deserializer.pop_u32() }
             };
             let err = if arg.typ == Int {
                 quote! { ::wl_scanner_support::io::de::Error::InvalidIntEnum }
@@ -319,25 +319,29 @@ fn generate_deserialize_for_type(
                 let enum_ty = quote! { super::#enum_ty };
                 if is_bitfield {
                     quote! { {
-                        #v
+                        let tmp = #v;
                         #enum_ty::from_bits(tmp).ok_or_else(|| #err(tmp, std::any::type_name::<#enum_ty>()))?
                     } }
                 } else {
                     quote! { {
-                        #v
+                        let tmp = #v;
                         #enum_ty::try_from(tmp).map_err(|_| #err(tmp, std::any::type_name::<#enum_ty>()))?
                     } }
                 }
             } else {
-                quote! { { #v tmp } }
+                v
             }
         },
         Fixed => quote! { deserializer.pop_i32().into() },
         Object | NewId => quote! { deserializer.pop_u32().into() },
         Fd => quote! { deserializer.pop_fd().into() },
-        String | Array => quote! { {
+        String => quote! { {
             let len = deserializer.pop_u32();
             deserializer.pop_bytes(len as usize).into()
+        } },
+        Array => quote! { {
+            let len = deserializer.pop_u32();
+            deserializer.pop_bytes(len as usize)
         } },
         Destructor => quote! {},
     }
@@ -350,8 +354,6 @@ fn generate_message_variant(
     _parent: &Ident,
     iface_version: &HashMap<&str, u32>,
     enum_info: &EnumInfos,
-    event_or_request: EventOrRequest,
-    parent_is_borrowed: bool,
 ) -> TokenStream {
     let args = &request.args;
     let args = args
@@ -372,17 +374,8 @@ fn generate_message_variant(
     } else {
         false
     };
-    let parent_type_name = match event_or_request {
-        EventOrRequest::Event => format_ident!("Event"),
-        EventOrRequest::Request => format_ident!("Request"),
-    };
     let empty = quote! {};
     let lta = quote!(<'a>);
-    let parent_lifetime = if parent_is_borrowed {
-        &lta
-    } else {
-        &empty
-    };
     let lifetime = if is_borrowed { &lta } else { &empty };
     // Generate experssion for length calculation
     let fixed_len: u32 = request
@@ -400,7 +393,7 @@ fn generate_message_variant(
             | wl_spec::protocol::Type::Destructor=> false,
         })
         .count() as u32 *
-        4;
+        4 + 8; // 8 bytes for header
     let variable_len = request.args.iter().map(|arg| {
         let name = format_ident!("{}", arg.name);
         match &arg.typ {
@@ -476,7 +469,7 @@ fn generate_message_variant(
             }
             #[inline]
             fn len(&self) -> u16 {
-                (#fixed_len #(#variable_len)* + 8) as u16 // 8 is the header
+                (#fixed_len #(#variable_len)*) as u16 // 8 is the header
             }
             #[inline]
             fn nfds(&self) -> u8 {
@@ -491,12 +484,6 @@ fn generate_message_variant(
                 Ok(Self {
                     #(#deserialize),*
                 })
-            }
-        }
-        impl #parent_lifetime Into<super::#parent_type_name #parent_lifetime> for #name #lifetime {
-            #[inline]
-            fn into(self) -> super::#parent_type_name #parent_lifetime {
-                super::#parent_type_name::#name(self)
             }
         }
     };
@@ -598,8 +585,6 @@ fn generate_event_or_request(
                     &mod_name,
                     iface_version,
                     enum_info,
-                    event_or_request,
-                    enum_is_borrowed,
                 )
             });
         let enum_lifetime = if enum_is_borrowed {

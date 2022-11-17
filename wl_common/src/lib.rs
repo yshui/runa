@@ -1,7 +1,5 @@
-use std::{
-    cell::{Cell, RefCell},
-    pin::Pin,
-};
+#![feature(type_alias_impl_trait)]
+use std::pin::Pin;
 
 use futures_lite::Future;
 use hashbrown::{hash_map, HashMap};
@@ -20,60 +18,54 @@ pub mod __private {
 /// Some expiration scheme might be employed by the implementation to free up
 /// old serial numbers.
 pub trait Serial {
-    type Data: Clone;
+    type Data: 'static;
+    type Iter<'a>: Iterator<Item = (u32, &'a Self::Data)> + 'a
+    where
+        Self: 'a;
     /// Get the next serial number in sequence. A piece of data can be attached
     /// to each serial, storing, for example, what this event is about.
-    fn next_serial(&self, data: Self::Data) -> u32;
+    fn next_serial(&mut self, data: Self::Data) -> u32;
     /// Get the data associated with the given serial.
-    fn get(&self, serial: u32) -> Option<Self::Data>;
-    /// Non-cloning version of `get`.
-    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
-    where
-        F: FnOnce(&Self::Data) -> R;
-    fn for_each<F>(&self, f: F)
-    where
-        F: FnMut(u32, &Self::Data);
+    fn get(&self, serial: u32) -> Option<&Self::Data>;
+    fn iter(&self) -> Self::Iter<'_>;
     /// Remove the serial number from the list of allocated serials.
-    fn expire(&self, serial: u32) -> bool;
-    fn find<F>(&self, mut f: F) -> Option<Self::Data>
-    where
-        F: FnMut(&Self::Data) -> bool,
-    {
-        self.find_map(|d| if f(d) { Some(d.clone()) } else { None })
-    }
-    fn find_map<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnMut(&Self::Data) -> Option<R>;
+    fn expire(&mut self, serial: u32) -> bool;
 }
 
-// TODO: impl Debug
+#[derive(Debug)]
 pub struct IdAlloc<D> {
-    next: Cell<u32>,
-    data: RefCell<HashMap<u32, D>>,
+    next: u32,
+    data: HashMap<u32, D>,
 }
 
 impl<D> Default for IdAlloc<D> {
     fn default() -> Self {
         Self {
             // 0 is reserved for the null object
-            next: Cell::new(1),
-            data: RefCell::new(HashMap::new()),
+            next: 1,
+            data: HashMap::new(),
         }
     }
 }
 
-impl<D: Clone> Serial for IdAlloc<D> {
+impl<D: 'static> Serial for IdAlloc<D> {
     type Data = D;
 
-    fn next_serial(&self, data: Self::Data) -> u32 {
+    type Iter<'a> = impl Iterator<Item = (u32, &'a Self::Data)> + 'a where Self: 'a;
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.data.iter().map(|(k, v)| (*k, v))
+    }
+
+    fn next_serial(&mut self, data: Self::Data) -> u32 {
         loop {
             // We could wrap around, so check for used IDs.
             // If the occupation rate is high, this could be slow. But IdAlloc is used for
             // things like allocating client/object IDs, so we expect at most a
             // few thousand IDs used at a time, out of 4 billion available.
-            let id = self.next.get();
-            self.next.set(id + 1);
-            match self.data.borrow_mut().entry(id) {
+            let id = self.next;
+            self.next += 1;
+            match self.data.entry(id) {
                 hash_map::Entry::Vacant(e) => {
                     e.insert(data);
                     break id
@@ -83,33 +75,12 @@ impl<D: Clone> Serial for IdAlloc<D> {
         }
     }
 
-    fn get(&self, serial: u32) -> Option<Self::Data> {
-        self.data.borrow().get(&serial).cloned()
+    fn get(&self, serial: u32) -> Option<&Self::Data> {
+        self.data.get(&serial)
     }
 
-    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
-    where
-        F: FnOnce(&Self::Data) -> R,
-    {
-        self.data.borrow().get(&serial).map(f)
-    }
-
-    fn for_each<F>(&self, mut f: F)
-    where
-        F: FnMut(u32, &Self::Data),
-    {
-        self.data.borrow().iter().for_each(|(a, b)| f(*a, b))
-    }
-
-    fn expire(&self, serial: u32) -> bool {
-        self.data.borrow_mut().remove(&serial).is_some()
-    }
-
-    fn find_map<F, R>(&self, mut f: F) -> Option<R>
-    where
-        F: FnMut(&Self::Data) -> Option<R>,
-    {
-        self.data.borrow().values().find_map(|d| f(d))
+    fn expire(&mut self, serial: u32) -> bool {
+        self.data.remove(&serial).is_some()
     }
 }
 

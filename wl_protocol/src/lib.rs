@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments, clippy::module_inception)]
 include!(concat!(env!("OUT_DIR"), "/wayland_generated.rs"));
 pub mod stable {
     include!(concat!(env!("OUT_DIR"), "/stable_generated.rs"));

@@ -9,14 +9,13 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::Connection,
     error::Error,
-    objects::{interface_message_dispatch, Object, ObjectMeta},
+    objects::{interface_message_dispatch, Object},
 };
 
 use crate::shell::{xdg, HasShell, Shell};
 pub struct WmBase;
 
-impl<Ctx> Object<Ctx> for WmBase {}
-impl ObjectMeta for WmBase {
+impl Object for WmBase {
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
     }
@@ -65,7 +64,7 @@ where
             if entry.is_vacant() {
                 let role = crate::shell::xdg::Surface::default();
                 surface.0.set_role(role, &mut shell);
-                entry.or_insert(Surface(surface.0.clone()));
+                entry.or_insert(Surface::<Ctx>(surface.0.clone()));
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -91,8 +90,7 @@ pub struct Surface<Ctx: Connection>(
 where
     Ctx::Context: HasShell;
 
-impl<Ctx: Connection> Object<Ctx> for Surface<Ctx> where Ctx::Context: HasShell {}
-impl<Ctx: Connection> ObjectMeta for Surface<Ctx>
+impl<Ctx: Connection> Object for Surface<Ctx>
 where
     Ctx::Context: HasShell,
 {
@@ -147,7 +145,7 @@ where
                 );
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 self.0.set_role(role, &mut shell);
-                entry.or_insert(TopLevel(self.0.clone()));
+                entry.or_insert(TopLevel::<Ctx>(self.0.clone()));
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -192,8 +190,7 @@ pub struct TopLevel<Ctx: Connection>(
 where
     Ctx::Context: HasShell;
 
-impl<Ctx: Connection> Object<Ctx> for TopLevel<Ctx> where Ctx::Context: HasShell {}
-impl<Ctx: Connection> ObjectMeta for TopLevel<Ctx>
+impl<Ctx: Connection> Object for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,
 {

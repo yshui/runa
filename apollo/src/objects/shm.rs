@@ -19,11 +19,11 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{Connection, Objects},
     error,
-    objects::{Object, ObjectMeta, DISPLAY_ID},
+    objects::{Object, DISPLAY_ID},
     provide_any::{self, Demand},
 };
 
-use crate::shell::buffers::HasBuffer;
+use crate::shell::buffers::{HasBuffer, BufferBase};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 struct MapRecord {
@@ -117,8 +117,7 @@ impl Shm {
         Shm
     }
 }
-impl<Ctx> Object<Ctx> for Shm {}
-impl ObjectMeta for Shm {
+impl Object for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -292,8 +291,7 @@ impl ShmPool {
     }
 }
 
-impl<Ctx> Object<Ctx> for ShmPool {}
-impl ObjectMeta for ShmPool {
+impl Object for ShmPool {
     fn interface(&self) -> &'static str {
         wl_shm_pool::NAME
     }
@@ -358,13 +356,15 @@ where
     ) -> Self::CreateBufferFut<'a> {
         async move {
             use wl_server::connection::{Entry, Objects};
+
+            use crate::objects::Buffer as BufferObj;
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(id.0);
             if entry.is_vacant() {
-                let buffer = crate::objects::Buffer {
+                let buffer: BufferObj<<Ctx::Context as HasBuffer>::Buffer> = BufferObj {
                     buffer: Rc::new(
                         Buffer {
-                            base: Default::default(),
+                            base: BufferBase::new(id.0),
                             pool: self.inner.clone(),
                             offset,
                             width,
@@ -385,7 +385,7 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
-            ctx.objects().borrow_mut().remove(ctx, object_id).unwrap();
+            ctx.objects().borrow_mut().remove(object_id).unwrap();
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId {
                 id: object_id.into(),
             })
@@ -396,7 +396,7 @@ where
 }
 
 pub struct Buffer {
-    base:   crate::shell::buffers::BufferBase,
+    base:   BufferBase,
     pool:   Rc<RefCell<ShmPoolInner>>,
     offset: i32,
     width:  i32,
@@ -420,6 +420,9 @@ impl crate::shell::buffers::Buffer for Buffer {
 
     fn dimension(&self) -> Extent<u32, Logical> {
         Extent::new(self.width as u32, self.height as u32)
+    }
+    fn object_id(&self) -> u32 {
+        self.base.object_id()
     }
 }
 

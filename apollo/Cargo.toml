@@ -23,3 +23,4 @@ wl_io = { version = "0.1.0", path = "../wl_io" }
 memmap2 = "0.5.7"
 spin = { version = "0.9.4", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
 libc = "0.2.137"
+hashbrown.workspace = true

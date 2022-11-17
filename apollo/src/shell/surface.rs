@@ -1,15 +1,15 @@
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
-    rc::Rc,
+    rc::Rc, collections::VecDeque,
 };
 
 use dyn_clone::DynClone;
 use wl_server::{
-    objects::ObjectMeta,
-    provide_any::{request_mut, request_ref, Demand, Provider}, server::Server,
+    provide_any::{request_mut, request_ref, Demand, Provider},
+    server::Server,
 };
 
-use super::{Shell, HasShell, buffers::HasBuffer};
+use super::{buffers::HasBuffer, HasShell, Shell};
 
 pub fn allocate_antirole_slot() -> u8 {
     use std::sync::atomic::AtomicU8;
@@ -654,12 +654,12 @@ impl<S: Shell> Copy for SurfaceVTable<S> {}
 pub struct SurfaceState<S: Shell> {
     /// A set of flags that can be mutate even when the state is the current
     /// state of a surface.
-    flags:          Cell<SurfaceFlags>,
-    surface:        Rc<Surface<S>>,
-    frame_callback: Vec<u32>,
+    flags:                     Cell<SurfaceFlags>,
+    surface:                   Rc<Surface<S>>,
+    pub(crate) frame_callback: VecDeque<u32>,
     /// A list of antiroles, ordered by their names.
-    antiroles:      Vec<Option<Box<dyn Antirole<S>>>>,
-    buffer:         Option<Rc<S::Buffer>>,
+    antiroles:                 Vec<Option<Box<dyn Antirole<S>>>>,
+    buffer:                    Option<Rc<S::Buffer>>,
 }
 
 impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
@@ -680,7 +680,7 @@ impl<S: Shell> SurfaceState<S> {
         Self {
             flags: Cell::new(SurfaceFlags { destroyed: false }),
             surface,
-            frame_callback: Vec::new(),
+            frame_callback: VecDeque::new(),
             antiroles: Vec::new(),
             buffer: None,
         }
@@ -817,12 +817,13 @@ impl<S: Shell> SurfaceState<S> {
     pub fn set_buffer(&mut self, buffer: Option<Rc<S::Buffer>>) {
         self.buffer = buffer;
     }
+
     pub fn buffer(&self) -> Option<&Rc<S::Buffer>> {
         self.buffer.as_ref()
     }
 
     pub fn add_frame_callback(&mut self, callback: u32) {
-        self.frame_callback.push(callback);
+        self.frame_callback.push_back(callback);
     }
 }
 

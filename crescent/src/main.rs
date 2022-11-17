@@ -2,46 +2,47 @@
 use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc};
 
 use anyhow::Result;
-use apollo::shell::{DefaultShell, HasShell, buffers::{HasBuffer, RendererBuffer}};
-use futures_util::TryStreamExt;
+use apollo::shell::{
+    buffers::{HasBuffer, RendererBuffer},
+    DefaultShell, HasShell,
+};
+use futures_util::{FutureExt, TryStreamExt};
 use log::debug;
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     connection::{self, Connection as _, Objects, Store},
-    renderer_capability::RendererCapability,
+    events::EventMux,
+    renderer_capability::RendererCapability, __private::AsyncBufReadWithFdExt,
 };
 mod render;
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals:   wl_server::server::GlobalStore<Crescent>,
-    listeners: wl_server::server::Listeners,
-    shell:     Rc<RefCell<<Crescent as HasShell>::Shell>>,
+    globals: RefCell<wl_server::server::GlobalStore<CrescentClient>>,
+    shell:   Rc<RefCell<<Crescent as HasShell>::Shell>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Crescent(Rc<CrescentState>);
 
-impl Crescent {
-    wl_server::message_switch! {
-        ctx: CrescentClient,
-        error: wl_server::error::Error,
-        globals: [
-            wl_server::globals::Display,
-            wl_server::globals::Registry,
-            apollo::globals::Compositor,
-            apollo::globals::Subcompositor,
-            apollo::globals::Shm,
-            apollo::globals::xdg_shell::WmBase,
-        ],
-    }
+wl_server::message_switch! {
+    ctx: CrescentClient,
+    error: wl_server::error::Error,
+    globals: [
+        wl_server::globals::Display,
+        wl_server::globals::Registry,
+        apollo::globals::Compositor,
+        apollo::globals::Subcompositor,
+        apollo::globals::Shm,
+        apollo::globals::xdg_shell::WmBase,
+    ],
 }
 
 impl wl_server::server::Server for Crescent {
     type Connection = CrescentClient;
-    type Globals = wl_server::server::GlobalStore<Self>;
+    type Globals = wl_server::server::GlobalStore<Self::Connection>;
 
-    fn globals(&self) -> &Self::Globals {
+    fn globals(&self) -> &RefCell<Self::Globals> {
         &self.0.globals
     }
 }
@@ -51,22 +52,9 @@ impl HasBuffer for Crescent {
 
 impl HasShell for Crescent {
     type Shell = DefaultShell<<Self as HasBuffer>::Buffer>;
+
     fn shell(&self) -> &RefCell<Self::Shell> {
         &self.0.shell
-    }
-}
-
-impl wl_server::server::EventSource for Crescent {
-    fn add_listener(&self, handle: wl_server::events::EventHandle) {
-        self.0.listeners.add_listener(handle);
-    }
-
-    fn remove_listener(&self, handle: wl_server::events::EventHandle) -> bool {
-        self.0.listeners.remove_listener(handle)
-    }
-
-    fn notify(&self, slot: u8) {
-        self.0.listeners.notify(slot);
     }
 }
 
@@ -79,33 +67,52 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:        RefCell<connection::Store<Self>>,
-    serial:       connection::EventSerial<()>,
-    event_flags:  wl_server::events::EventFlags,
-    event_states: wl_server::connection::SlottedStates,
-    state:        Crescent,
-    tx:           Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
+    store:       RefCell<connection::Store>,
+    per_client:  wl_server::utils::UnboundedAggregate,
+    event_flags: wl_server::events::EventFlags,
+    state:       Crescent,
+    tx:          Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
 }
 
-impl wl_server::connection::Evented<CrescentClient> for CrescentClient {
-    type States = wl_server::connection::SlottedStates;
+impl Drop for CrescentClient {
+    fn drop(&mut self) {
+        let empty_store = Default::default();
+        let mut store = self.store.replace(empty_store);
+        store.clear_for_disconnect(self)
+    }
+}
 
+impl<T: std::any::Any> connection::State<T> for CrescentClient {
+    fn state(&self) -> Option<&T> {
+        self.per_client.get::<T>()
+    }
+
+    fn state_mut(&mut self) -> Option<&mut T> {
+        self.per_client.get_mut::<T>()
+    }
+
+    fn set_state(&mut self, state: T) {
+        self.per_client.set::<T>(state)
+    }
+}
+
+wl_server::event_multiplexer! {
+    ctx: CrescentClient,
+    error: wl_server::error::Error,
+    receivers: [
+        wl_server::globals::Registry,
+        apollo::globals::Compositor,
+    ],
+}
+impl EventMux for CrescentClient {
     fn event_handle(&self) -> wl_server::events::EventHandle {
         self.event_flags.as_handle()
-    }
-
-    fn reset_events(&self) -> wl_server::events::Flags {
-        self.event_flags.reset()
-    }
-
-    fn event_states(&self) -> &Self::States {
-        &self.event_states
     }
 }
 
 impl connection::Connection for CrescentClient {
     type Context = Crescent;
-    type Objects = Store<Self>;
+    type Objects = Store;
 
     type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
     type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where M: 'a;
@@ -135,50 +142,6 @@ impl connection::Connection for CrescentClient {
     }
 }
 
-// TODO: remove?
-impl wl_common::Serial for CrescentClient {
-    type Data = ();
-
-    fn next_serial(&self, data: Self::Data) -> u32 {
-        self.serial.next_serial(data)
-    }
-
-    fn get(&self, serial: u32) -> Option<Self::Data> {
-        self.serial.get(serial)
-    }
-
-    fn expire(&self, serial: u32) -> bool {
-        self.serial.expire(serial)
-    }
-
-    fn with<F, R>(&self, serial: u32, f: F) -> Option<R>
-    where
-        F: FnOnce(&Self::Data) -> R,
-    {
-        self.serial.with(serial, f)
-    }
-
-    fn for_each<F>(&self, f: F)
-    where
-        F: FnMut(u32, &Self::Data),
-    {
-        self.serial.for_each(f)
-    }
-
-    fn find_map<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnMut(&Self::Data) -> Option<R>,
-    {
-        self.serial.find_map(f)
-    }
-}
-
-impl Drop for CrescentClient {
-    fn drop(&mut self) {
-        self.store.borrow_mut().clear(self);
-    }
-}
-
 impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
     type Error = ::wl_server::error::Error;
 
@@ -186,16 +149,14 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
 
     fn new_connection(&mut self, conn: UnixStream) -> Self::Task {
         debug!("New connection");
-        use wl_server::connection::EventSerial;
         let state = self.clone();
         Box::pin(async move {
             let (rx, tx) = ::wl_io::split_unixstream(conn)?;
             let mut client_ctx = CrescentClient {
-                store: RefCell::new(Store::new()),
-                serial: EventSerial::new(std::time::Duration::from_secs(2)),
+                store: RefCell::new(Store::default()),
+                per_client: Default::default(),
                 event_flags: Default::default(),
                 state,
-                event_states: Default::default(),
                 tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
             };
             client_ctx
@@ -205,9 +166,21 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
                 .unwrap();
             let mut read = BufReaderWithFd::new(rx);
             let _span = tracing::debug_span!("main loop").entered();
-            while !Crescent::dispatch(&mut client_ctx, Pin::new(&mut read)).await {
-                Crescent::handle_events(&mut client_ctx).await?;
+            loop {
+                // Flush output before we start waiting.
                 client_ctx.flush().await?;
+                futures_util::select! {
+                    _ = Pin::new(&mut read).next_message().fuse() => {
+                        if client_ctx.dispatch(Pin::new(&mut read)).await {
+                            break;
+                        }
+                    },
+                    _ = client_ctx.event_flags.listen().fuse() => {
+                        tracing::trace!("got events");
+                        let flags = client_ctx.event_flags.reset();
+                        client_ctx.dispatch_events(flags).await?;
+                    }
+                }
             }
             client_ctx.flush().await?;
             Ok(())
@@ -242,9 +215,8 @@ fn main() -> Result<()> {
     let (listener, _guard) = wl_server::wayland_listener_auto()?;
     let listener = smol::Async::new(listener)?;
     let server = Crescent(Rc::new(CrescentState {
-        globals:   Crescent::globals().collect(),
-        listeners: Default::default(),
-        shell:     Default::default(),
+        globals: RefCell::new(CrescentClient::globals().collect()),
+        shell:   Default::default(),
     }));
     let shell2 = server.0.shell.clone();
     let executor = smol::LocalExecutor::new();

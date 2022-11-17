@@ -14,10 +14,12 @@ pub mod objects;
 pub mod provide_any;
 pub mod renderer_capability;
 pub mod server;
+pub mod utils;
 
 #[doc(hidden)]
 pub mod __private {
     // Re-exports used by macros
+    pub use static_assertions::assert_impl_all;
     pub use wl_common::InterfaceMessageDispatch;
     pub use wl_io::{
         de::Deserializer as DeserializerImpl,
@@ -101,7 +103,7 @@ pub fn wayland_listener(
     let lock_path = xdg_dirs.place_runtime_file(format!("{}.lock", display))?;
     let lock = rustix::fs::openat(
         rustix::fs::cwd(),
-        &lock_path,
+        lock_path,
         rustix::fs::OFlags::CREATE,
         rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
     )?;
@@ -183,7 +185,7 @@ where
 
 /// A server implements AsyncContext by calling wl_base::MessageDispatch
 pub struct AsyncDispatchServer<Ctx> {
-    ctx: Ctx,
+    _ctx: Ctx,
 }
 
 #[derive(Error, Debug)]
@@ -206,18 +208,6 @@ where
     fn new_connection(&mut self, _conn: Conn) -> Self::Task {
         unimplemented!();
     }
-}
-
-/// Implemented by the compositor to expose extra states from server or client
-/// contexts
-// TODO: maybe delete?
-pub trait Extra<T> {
-    /// Get the extra state
-    fn extra<'a>(&'a self) -> &'a T;
-}
-
-pub trait ExtraMut<T>: Extra<T> {
-    fn extra_mut<'a>(&'a mut self) -> &'a mut T;
 }
 
 /// Generate message dispatch and event handling functions, given a list of
@@ -258,103 +248,92 @@ pub trait ExtraMut<T>: Extra<T> {
 #[macro_export]
 macro_rules! message_switch {
     (ctx: $ctx:ty, error: $error:ty, globals: [$($global:ty),+$(,)?],$(,)?) => {
-        async fn dispatch<'a, 'b: 'a, R>(
-            ctx: &'a mut $ctx,
-            mut reader: Pin<&mut R>) -> bool
-        where
-            R: $crate::__private::AsyncBufReadWithFd + 'b
-        {
-            use $crate::__private::AsyncBufReadWithFdExt;
-            use $crate::{
-                __private::{
-                    wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
-                },
-                objects::DISPLAY_ID
-            };
-            let (object_id, len, buf, fd) =
-                match R::next_message(reader.as_mut()).await {
-                    Ok(v) => v,
-                    // I/O error, no point sending the error to the client
-                    Err(e) => return true,
-                };
-            let mut de = DeserializerImpl::new(buf, fd);
-            let (mut fatal, error) = 'dispatch: {
-                let obj = ctx.objects().borrow().get(object_id).map(Rc::clone);
-                if let Some(obj) = obj {
-                    $({
-                        let tmp = <$global as $crate::globals::Global<_>>::
-                            dispatch(obj.as_ref(), ctx, object_id, de.borrow_mut()).await;
-                        match tmp {
-                            Ok(true) => {
-                                tracing::trace!("Dispatched {} to {}", obj.interface(), std::any::type_name::<$global>());
-                                break 'dispatch (false, None)
-                            },
-                            Err(e) => break 'dispatch (
-                                e.fatal(),
-                                e.wayland_error()
-                                .map(|(object_id, error_code)|
-                                    (
-                                        object_id,
-                                        error_code,
-                                        std::ffi::CString::new(e.to_string()).unwrap()
-                                    )
-                                )
-                            ),
-                            Ok(false) => {
-                                // not dispatched
-                                assert_eq!(de.consumed(), (0, 0));
-                            }
-                        }
-                    })+
-                    panic!("Unhandled interface {}", obj.interface());
-                } else {
-                    (
-                        true,
-                        Some((
-                            DISPLAY_ID,
-                            wl_display::enums::Error::InvalidObject as u32,
-                            std::ffi::CString::new(format!("Invalid object id {}", object_id)).unwrap()
-                        ))
-                    )
-                }
-            };
-            if let Some((object_id, error_code, msg)) = error {
-                // We are going to disconnect the client so we don't care about the
-                // error.
-                fatal |= ctx.send(DISPLAY_ID, wl_display::events::Error {
-                    object_id: wl_types::Object(object_id),
-                    code: error_code,
-                    message: wl_types::Str(msg.as_c_str()),
-                }).await.is_err();
-            }
-            if !fatal {
-                let (bytes_read, fds_read) = de.consumed();
-                assert_eq!(bytes_read, len as usize, "unparsed bytes in buffer {object_id}");
-                reader.consume(bytes_read, fds_read);
-            }
-            fatal
-        }
-        async fn handle_events(ctx: &mut $ctx) -> Result<(), $error> {
-            use $crate::{connection::Evented, server::{EventSource, Server}};
-            let events = ctx.reset_events();
-            for i in events.iter_ones() {$(
-                if let Some(task) =
-                    <$global as $crate::globals::Global<_>>::handle_events(ctx, i)
+        const _: () = {
+            impl $ctx {
+                async fn dispatch<'a, 'b: 'a, R>(
+                    &'a mut self,
+                    mut reader: Pin<&mut R>) -> bool
+                where
+                    R: $crate::__private::AsyncBufReadWithFd + 'b
                 {
-                    task.await?;
+                    use $crate::__private::AsyncBufReadWithFdExt;
+                    use $crate::{
+                        __private::{
+                            wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
+                        },
+                        objects::DISPLAY_ID
+                    };
+                    let (object_id, len, buf, fd) =
+                        match R::next_message(reader.as_mut()).await {
+                            Ok(v) => v,
+                            // I/O error, no point sending the error to the client
+                            Err(e) => return true,
+                        };
+                    let mut de = DeserializerImpl::new(buf, fd);
+                    let (mut fatal, error) = 'dispatch: {
+                        let obj = self.objects().borrow().get(object_id).map(Rc::clone);
+                        if let Some(obj) = obj {
+                            $({
+                                let tmp = <$global as $crate::globals::GlobalDispatch<_>>::
+                                    dispatch(obj.as_ref(), self, object_id, de.borrow_mut()).await;
+                                match tmp {
+                                    Ok(true) => {
+                                        tracing::trace!("Dispatched {} to {}", obj.interface(),
+                                                        std::any::type_name::<$global>());
+                                        break 'dispatch (false, None)
+                                    },
+                                    Err(e) => break 'dispatch (
+                                        e.fatal(),
+                                        e.wayland_error()
+                                        .map(|(object_id, error_code)|
+                                            (
+                                                object_id,
+                                                error_code,
+                                                std::ffi::CString::new(e.to_string()).unwrap()
+                                            )
+                                        )
+                                    ),
+                                    Ok(false) => {
+                                        // not dispatched
+                                        assert_eq!(de.consumed(), (0, 0));
+                                    }
+                                }
+                            })+
+                            panic!("Unhandled interface {}", obj.interface());
+                        } else {
+                            (
+                                true,
+                                Some((
+                                    DISPLAY_ID,
+                                    wl_display::enums::Error::InvalidObject as u32,
+                                    std::ffi::CString::new(format!("Invalid object id {}", object_id)).unwrap()
+                                ))
+                            )
+                        }
+                    };
+                    if let Some((object_id, error_code, msg)) = error {
+                        // We are going to disconnect the client so we don't care about the
+                        // error.
+                        fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
+                            object_id: wl_types::Object(object_id),
+                            code: error_code,
+                            message: wl_types::Str(msg.as_c_str()),
+                        }).await.is_err();
+                    }
+                    if !fatal {
+                        let (bytes_read, fds_read) = de.consumed();
+                        assert_eq!(bytes_read, len as usize, "unparsed bytes in buffer {object_id}");
+                        reader.consume(bytes_read, fds_read);
+                    }
+                    fatal
                 }
-            )+}
-            Ok(())
-        }
-        fn globals() -> impl Iterator<
-            Item = Box<dyn $crate::globals::GlobalMeta<
-                <$ctx as $crate::connection::Connection>::Context
-            >>
-        >
-        {
-            [$(Box::new(<$global as $crate::globals::Global<$ctx>>::INIT) as _),+].into_iter()
-        }
+                fn globals() -> impl Iterator<Item = Box<dyn $crate::globals::Global<$ctx>>> {
+                    [$(Box::new(<$global as $crate::globals::GlobalDispatch<$ctx>>::INIT) as _),+].into_iter()
+                }
+            }
+        };
     };
+
     (ctx: $ctx:ty, globals: [$($global:ty),+$(,)?], error: $error:ty $(,)?) => {
         $crate::message_switch! {
             ctx: $ctx,

@@ -207,12 +207,13 @@ impl<'a> Demand<'a> {
 
     /// Provide a mutable references. But first check if `T` will be accepted.
     ///
-    /// This is because `provide_mut` takes a `&'a mut T`, which means once you called that, you
-    /// won't be able to provide anything else. Because it's not possible to have multiple mutable
-    /// references.
+    /// This is because `provide_mut` takes a `&'a mut T`, which means once you
+    /// called that, you won't be able to provide anything else. Because
+    /// it's not possible to have multiple mutable references.
     ///
-    /// This method breaks up the process into two steps, first you check if `T` will be accepted,
-    /// and you only pass the `&'a mut T` only if it will be accepted.
+    /// This method breaks up the process into two steps, first you check if `T`
+    /// will be accepted, and you only pass the `&'a mut T` only if it will
+    /// be accepted.
     pub fn maybe_provide_mut<T: ?Sized + 'static>(
         &mut self,
     ) -> Option<Receiver<'a, '_, tags::RefMut<tags::MaybeSizedValue<T>>>> {
@@ -255,6 +256,11 @@ impl<'a> std::fmt::Debug for Demand<'a> {
 /// Represents a type-erased but identifiable object.
 ///
 /// This trait is exclusively implemented by the `TaggedOption` type.
+///
+/// # Safety
+///
+/// If this trait is not implemented correctly, downcast_mut will cast to the
+/// wrong type and cause undefined behavior.
 unsafe trait Erased<'a>: 'a {
     /// The `TypeId` of the erased type.
     fn tag_id(&self) -> TypeId;

@@ -12,6 +12,7 @@ use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt};
 use winit::{dpi::PhysicalSize, event::Event};
+use wl_common::utils::geometry::Scale;
 use wl_protocol::wayland::wl_shm::v1 as wl_shm;
 
 #[derive(Debug, Default)]
@@ -33,6 +34,7 @@ pub struct Renderer {
     sampler:        wgpu::Sampler,
     shell:          Rc<RefCell<DefaultShell<RendererBuffer<BufferData>>>>,
     format:         wgpu::TextureFormat,
+    frame_count:    usize,
 }
 
 fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
@@ -40,6 +42,13 @@ fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
     match format {
         Argb8888 | Xrgb8888 => wgpu::TextureFormat::Bgra8UnormSrgb,
         _ => unimplemented!("{:?}", format),
+    }
+}
+
+fn get_buffer_format<Data>(buffer: &RendererBuffer<Data>) -> wgpu::TextureFormat {
+    use apollo::shell::buffers::Buffers;
+    match &buffer.buffer {
+        Buffers::Shm(buffer) => shm_format_to_wgpu(buffer.format()),
     }
 }
 
@@ -232,6 +241,7 @@ impl Renderer {
             vertices: Vec::new(),
             index_buffer,
             format,
+            frame_count: 0,
         }
     }
 
@@ -240,39 +250,59 @@ impl Renderer {
         let shell = self.shell.borrow();
         self.vertices.clear();
         self.textures.clear();
-        for surface in shell.stack() {
-            for (subsurface, offset) in subsurface_iter(*surface, &*shell) {
+        for window in shell.stack() {
+            tracing::trace!(?window, "rendering window");
+            for (subsurface, offset) in subsurface_iter(window.surface_state, &*shell) {
                 let state = shell.get(subsurface).unwrap();
                 let Some(buffer) = state.buffer() else { continue };
                 let dimensions = buffer.dimension();
+                tracing::trace!(?offset, ?dimensions, "rendering subsurface {:p}", buffer);
                 let current_index = self.vertices.len() as u16;
+                let offset = offset.to_physical(Scale::new(1, 1)) + window.position;
                 let mut texture = buffer.data.texture.borrow_mut();
-                if buffer.get_damage() || texture.is_none() {
+                let texture = texture.get_or_insert_with(|| {
+                    self.device.create_texture(&wgpu::TextureDescriptor {
+                        label:           None,
+                        dimension:       wgpu::TextureDimension::D2,
+                        format:          get_buffer_format(buffer),
+                        mip_level_count: 1,
+                        sample_count:    1,
+                        size:            wgpu::Extent3d {
+                            width:                 dimensions.w,
+                            height:                dimensions.h,
+                            depth_or_array_layers: 1,
+                        },
+                        usage:           wgpu::TextureUsages::TEXTURE_BINDING |
+                            wgpu::TextureUsages::COPY_DST,
+                    })
+                });
+                if buffer.get_damage() {
                     // Upload the texture
                     buffer.clear_damage();
-                    let texture = texture.get_or_insert_with(|| match &buffer.buffer {
-                        apollo::shell::buffers::Buffers::Shm(shm_buffer) =>
-                            self.device.create_texture(&wgpu::TextureDescriptor {
-                                label:           None,
-                                dimension:       wgpu::TextureDimension::D2,
-                                format:          shm_format_to_wgpu(shm_buffer.format()),
-                                mip_level_count: 1,
-                                sample_count:    1,
-                                size:            wgpu::Extent3d {
-                                    width:                 dimensions.w,
-                                    height:                dimensions.h,
-                                    depth_or_array_layers: 1,
-                                },
-                                usage:           wgpu::TextureUsages::TEXTURE_BINDING |
-                                    wgpu::TextureUsages::COPY_DST,
-                            }),
-                    });
                     match &buffer.buffer {
                         apollo::shell::buffers::Buffers::Shm(shm_buffer) => {
-                            tracing::debug!(
-                                "buffer size: {}",
-                                unsafe { shm_buffer.pool().map() }.len()
-                            );
+                            let pool = shm_buffer.pool();
+                            let data = unsafe { pool.map() };
+                            let offset = shm_buffer.offset() as usize;
+                            let size = shm_buffer.stride() as usize * dimensions.h as usize;
+                            #[cfg(feature = "dump_texture")]
+                            {
+                                use std::{fs::File, io::BufWriter};
+                                let dump_path = std::path::Path::new(&format!(
+                                    "apollo-dump-{}-{:p}.png",
+                                    self.frame_count, buffer
+                                ))
+                                .to_owned();
+                                let ref mut file = BufWriter::new(File::create(dump_path).unwrap());
+                                let mut encoder =
+                                    png::Encoder::new(file, dimensions.w, dimensions.h);
+                                encoder.set_color(png::ColorType::Rgba);
+                                encoder.set_depth(png::BitDepth::Eight);
+                                let mut writer = encoder.write_header().unwrap();
+                                writer
+                                    .write_image_data(&data[offset..offset + size])
+                                    .unwrap();
+                            }
                             self.queue.write_texture(
                                 wgpu::ImageCopyTexture {
                                     texture,
@@ -280,9 +310,9 @@ impl Renderer {
                                     origin: wgpu::Origin3d::ZERO,
                                     aspect: wgpu::TextureAspect::All,
                                 },
-                                &unsafe { shm_buffer.pool().map() },
+                                &data[offset..offset + size],
                                 wgpu::ImageDataLayout {
-                                    offset:         shm_buffer.offset() as u64,
+                                    offset:         0,
                                     // TODO: reject 0 stride
                                     bytes_per_row:  Some(
                                         NonZeroU32::new(shm_buffer.stride() as u32).unwrap(),
@@ -309,10 +339,7 @@ impl Renderer {
                             wgpu::BindGroupEntry {
                                 binding:  0,
                                 resource: wgpu::BindingResource::TextureView(
-                                    &texture
-                                        .as_ref()
-                                        .unwrap()
-                                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                                    &texture.create_view(&wgpu::TextureViewDescriptor::default()),
                                 ),
                             },
                             wgpu::BindGroupEntry {
@@ -390,6 +417,7 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         output.present();
+        self.frame_count += 1;
     }
 
     pub async fn render_loop(mut self, event_rx: Receiver<Event<'static, ()>>) -> ! {
@@ -427,6 +455,7 @@ impl Renderer {
                         }
                     } else {
                         self.render(output);
+                        self.shell.borrow().notify_render();
                     }
                     tx.try_send(surface).unwrap();
                 }

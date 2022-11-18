@@ -175,9 +175,8 @@ impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
                             break;
                         }
                     },
-                    _ = client_ctx.event_flags.listen().fuse() => {
+                    flags = client_ctx.event_flags.listen().fuse() => {
                         tracing::trace!("got events");
-                        let flags = client_ctx.event_flags.reset();
                         client_ctx.dispatch_events(flags).await?;
                     }
                 }

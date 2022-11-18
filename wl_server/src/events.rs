@@ -2,11 +2,13 @@ use std::{
     cell::{Cell, RefCell},
     future::Future,
     hash::Hash,
+    pin::Pin,
     rc::{Rc, Weak},
 };
 
 use ahash::AHashSet as HashSet;
 use event_listener::EventListener;
+use futures_lite::ready;
 
 pub type Flags = bitvec::array::BitArray<[u64; 1], bitvec::order::LocalBits>;
 
@@ -21,14 +23,16 @@ struct EventFlagsState {
 /// it is still alive. This is useful because the holder of the EventFlags could
 /// simply terminate without needing to deregister from event sources.
 ///
-/// However, if the event you listen to happens infrequently, it is recommended to explicitly
-/// remove the listener from the event source. Otherwise the source can accumulate a lot of dead
-/// listeners, which might cause stutter when the event is eventually triggered.
+/// However, if the event you listen to happens infrequently, it is recommended
+/// to explicitly remove the listener from the event source. Otherwise the
+/// source can accumulate a lot of dead listeners, which might cause stutter
+/// when the event is eventually triggered.
 #[derive(Clone, Debug)]
 pub struct EventHandle(Weak<EventFlagsState>);
 
 impl EventHandle {
-    /// Set a event flag and notify listeners. Returns if the event handle is still alive.
+    /// Set a event flag and notify listeners. Returns if the event handle is
+    /// still alive.
     pub fn set(&self, slot: usize) -> bool {
         if let Some(state) = self.0.upgrade() {
             EventFlags(state).set(slot);
@@ -65,8 +69,27 @@ impl EventFlags {
         self.0.flags.replace(bitvec::array::BitArray::ZERO)
     }
 
-    pub fn listen(&self) -> EventListener {
-        self.0.event.listen()
+    pub fn listen(&self) -> impl Future<Output = Flags> + '_ {
+        struct ListenHandle(EventListener, Rc<EventFlagsState>);
+        impl Future for ListenHandle {
+            type Output = Flags;
+
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Self::Output> {
+                let this = self.get_mut();
+                loop {
+                    if this.1.flags.get().any() {
+                        return std::task::Poll::Ready(
+                            this.1.flags.replace(bitvec::array::BitArray::ZERO),
+                        )
+                    }
+                    ready!(Pin::new(&mut this.0).poll(cx));
+                }
+            }
+        }
+        ListenHandle(self.0.event.listen(), self.0.clone())
     }
 
     pub fn as_handle(&self) -> EventHandle {
@@ -139,8 +162,9 @@ pub trait EventHandler<Mux: EventMux + DispatchTo<Self>>: Sized {
 /// returned by `DispatchTo::<Handler>::slot`, it should call
 /// `<Handler as HasEvent>::invoke`.
 ///
-/// You can use the [`event_multiplexer`] macro to generate a `dispatch_events` function along with
-/// DispatchTo impls that does the calling of `invoke` for you.
+/// You can use the [`event_multiplexer`] macro to generate a `dispatch_events`
+/// function along with DispatchTo impls that does the calling of `invoke` for
+/// you.
 pub trait DispatchTo<Handler: EventHandler<Self>>: EventMux + Sized {
     /// The slot number type `T` should use when adding listeners to an
     /// [`EventSource`].

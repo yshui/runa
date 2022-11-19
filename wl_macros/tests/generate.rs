@@ -44,7 +44,7 @@ fn test_roundtrip() {
         let (object_id, len, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
         assert_eq!(object_id, 0);
         let mut de = wl_io::de::Deserializer::new(bytes, fds);
-        let item = Event::deserialize(&mut de).unwrap();
+        let item = Event::deserialize(de.borrow_mut()).unwrap();
         let (bytes_read, fds_read) = de.consumed();
         // Drop the deserialize first to catch potential UB, i.e. the item doesnt borrow
         // from the deserializer
@@ -90,10 +90,10 @@ fn test_roundtrip_with_fd() {
             .map(|fd| fd.into_raw_fd())
             .collect::<Vec<_>>();
         let mut rx = ReadPool::new(buf, fds);
-        let (object_id, len, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
+        let (object_id, _, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
         assert_eq!(object_id, 0);
         let mut de = wl_io::de::Deserializer::new(bytes, fds);
-        let item = Request::deserialize(&mut de).unwrap();
+        let item = Request::deserialize(de.borrow_mut()).unwrap();
         let (bytes_read, fds_read) = de.consumed();
         drop(de);
         eprintln!("{:#?}", item);

@@ -102,6 +102,7 @@ wl_server::event_multiplexer! {
     receivers: [
         wl_server::globals::Registry,
         apollo::globals::Compositor,
+        apollo::globals::xdg_shell::WmBase,
     ],
 }
 impl EventMux for CrescentClient {

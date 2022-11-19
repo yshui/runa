@@ -3,7 +3,6 @@ use std::{
     future::Future,
     os::{fd::AsRawFd, unix::io::OwnedFd},
     rc::Rc,
-    sync::atomic::AtomicUsize,
 };
 
 use dlv_list::{Index, VecList};
@@ -13,14 +12,13 @@ use wl_common::{
     utils::geometry::{Extent, Logical},
 };
 use wl_protocol::wayland::{
-    wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_shm::v1 as wl_shm,
+    wl_display::v1 as wl_display, wl_shm::v1 as wl_shm,
     wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
     connection::{Connection, Objects},
     error,
     objects::{Object, DISPLAY_ID},
-    provide_any::{self, Demand},
 };
 
 use crate::shell::buffers::{HasBuffer, BufferBase};

@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use wl_common::utils::geometry::{Extent, Logical};
-use wl_protocol::wayland::wl_buffer::v1 as wl_buffer;
 
 /// The base buffer trait.
 ///

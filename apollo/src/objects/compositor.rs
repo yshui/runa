@@ -46,6 +46,7 @@ where
     fn interface(&self) -> &'static str {
         wl_surface::NAME
     }
+
     fn on_disconnect(&mut self, ctx: &mut dyn std::any::Any) {
         let ctx: &mut Ctx = ctx.downcast_mut().unwrap();
         let mut shell = ctx.server_context().shell().borrow_mut();
@@ -211,12 +212,16 @@ where
             use crate::shell::buffers::Buffer;
             let mut shell = ctx.server_context().shell().borrow_mut();
             let old_buffer = self.0.current(&shell).buffer().cloned();
-            self.0.commit(&mut shell);
+            self.0
+                .commit(&mut shell)
+                .map_err(|msg| wl_server::error::Error::UnknownFatalError(msg))?;
             let new_buffer = self.0.current(&shell).buffer().cloned();
             if let Some(old_buffer) = old_buffer {
-                let changed = new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer));
+                let changed =
+                    new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer));
                 if changed {
-                    ctx.send(old_buffer.object_id(), wl_buffer::events::Release {}).await?
+                    ctx.send(old_buffer.object_id(), wl_buffer::events::Release {})
+                        .await?
                 }
             }
             Ok(())

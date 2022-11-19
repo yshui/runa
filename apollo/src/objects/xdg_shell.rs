@@ -1,4 +1,4 @@
-use std::{any::Any, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
+use std::{any::Any, future::Future, num::NonZeroU32, rc::Rc};
 
 use derivative::Derivative;
 use wl_common::utils::geometry::{Extent, Point, Rectangle};
@@ -7,12 +7,16 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::Connection,
+    connection::{Connection, State},
     error::Error,
+    events::DispatchTo,
     objects::{interface_message_dispatch, Object},
 };
 
-use crate::shell::{xdg, HasShell, Shell};
+use crate::{
+    globals::xdg_shell::WmBaseState,
+    shell::{xdg, HasShell},
+};
 pub struct WmBase;
 
 impl Object for WmBase {
@@ -25,6 +29,8 @@ impl Object for WmBase {
 impl<Ctx: Connection> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
     Ctx::Context: HasShell,
+    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    Ctx: DispatchTo<crate::globals::xdg_shell::WmBase> + State<WmBaseState>,
 {
     type Error = Error;
 
@@ -62,7 +68,11 @@ where
                 .downcast_ref()
                 .ok_or_else(|| Error::UnknownObject(surface_id))?;
             if entry.is_vacant() {
-                let role = crate::shell::xdg::Surface::default();
+                let role = crate::shell::xdg::Surface::new(
+                    id.0,
+                    (ctx.event_handle(), Ctx::SLOT),
+                    &ctx.state().unwrap().pending_configure,
+                );
                 surface.0.set_role(role, &mut shell);
                 entry.or_insert(Surface::<Ctx>(surface.0.clone()));
                 Ok(())
@@ -85,7 +95,7 @@ where
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Ctx: Connection>(
-    Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
+    pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
 )
 where
     Ctx::Context: HasShell;
@@ -103,6 +113,7 @@ where
 impl<Ctx: Connection> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
 where
     Ctx::Context: HasShell,
+    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
 
@@ -138,11 +149,8 @@ where
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(id.0);
             if entry.is_vacant() {
-                let role = crate::shell::xdg::TopLevel::default();
-                assert!(
-                    self.0.role::<xdg::Surface>().is_some(),
-                    "xdg_surface object pointing to a surface without the xdg_surface role"
-                );
+                let base_role = self.0.role::<xdg::Surface>().unwrap().clone();
+                let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 self.0.set_role(role, &mut shell);
                 entry.or_insert(TopLevel::<Ctx>(self.0.clone()));
@@ -159,7 +167,19 @@ where
         object_id: u32,
         serial: u32,
     ) -> Self::AckConfigureFut<'a> {
-        async move { unimplemented!() }
+        async move {
+            let mut role = self.0.role_mut::<xdg::Surface>().unwrap();
+            while let Some(front) = role.pending_serial.front() {
+                if front.get() > serial {
+                    break
+                }
+                role.pending_serial.pop_front();
+            }
+            role.last_ack = Some(NonZeroU32::new(serial).ok_or(
+                wl_server::error::Error::UnknownFatalError("ack_configure: serial is 0"),
+            )?);
+            Ok(())
+        }
     }
 
     fn set_window_geometry<'a>(
@@ -185,7 +205,7 @@ where
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct TopLevel<Ctx: Connection>(
-    Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
+    pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
 )
 where
     Ctx::Context: HasShell;
@@ -203,6 +223,7 @@ where
 impl<Ctx: Connection> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,
+    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
 

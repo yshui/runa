@@ -1,15 +1,16 @@
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
-    rc::Rc, collections::VecDeque,
+    collections::VecDeque,
+    rc::Rc,
 };
 
 use dyn_clone::DynClone;
 use wl_server::{
+    connection::Connection,
     provide_any::{request_mut, request_ref, Demand, Provider},
-    server::Server,
 };
 
-use super::{buffers::HasBuffer, HasShell, Shell};
+use super::Shell;
 
 pub fn allocate_antirole_slot() -> u8 {
     use std::sync::atomic::AtomicU8;
@@ -29,7 +30,7 @@ pub trait Role<S: Shell>: 'static {
     /// Deactivate the role.
     fn deactivate(&mut self, shell: &mut S);
     /// Override how the surface the role is attached to is committed.
-    fn commit_fn(&self) -> Option<fn(&mut S, &Surface<S>)> {
+    fn commit_fn(&self) -> Option<fn(&mut S, &Rc<Surface<S>>) -> Result<(), &'static str>> {
         None
     }
     fn provide<'a>(&'a self, _demand: &mut Demand<'a>) {}
@@ -261,11 +262,16 @@ pub mod roles {
             demand.provide_mut(self);
         }
 
-        fn commit_fn(&self) -> Option<fn(&mut S, &super::Surface<S>)> {
+        fn commit_fn(
+            &self,
+        ) -> Option<fn(&mut S, &Rc<super::Surface<S>>) -> Result<(), &'static str>> {
             Some(subsurface_commit::<S>)
         }
     }
-    pub fn subsurface_commit<S: Shell>(s: &mut S, surface: &super::Surface<S>) {
+    pub fn subsurface_commit<S: Shell>(
+        s: &mut S,
+        surface: &Rc<super::Surface<S>>,
+    ) -> Result<(), &'static str> {
         let new = surface.pending.get();
         let old = surface.current.get();
         let (stack_index, stashed_state, parent) = {
@@ -303,6 +309,7 @@ pub mod roles {
             .antirole_mut::<SubsurfaceParent<S>>(*SUBSURFACE_PARENT_SLOT)
             .unwrap();
         parent_antirole.children.get_mut(stack_index).unwrap().key = new;
+        Ok(())
     }
     impl<S: Shell> Clone for Subsurface<S> {
         fn clone(&self) -> Self {
@@ -627,7 +634,7 @@ pub struct SurfaceFlags {
 }
 
 pub struct SurfaceVTable<S: Shell> {
-    commit: Option<fn(&mut S, &Surface<S>)>,
+    commit: Option<fn(&mut S, &Rc<Surface<S>>) -> Result<(), &'static str>>,
 }
 
 impl<S: Shell> std::fmt::Debug for SurfaceVTable<S> {
@@ -851,19 +858,6 @@ pub struct Surface<S: super::Shell> {
     role_info: RefCell<Option<RoleInfo<S>>>,
 }
 
-impl<S: Shell> Default for Surface<S>
-where
-    S::Key: Default,
-{
-    fn default() -> Self {
-        Self {
-            current:   Default::default(),
-            pending:   Default::default(),
-            role_info: Default::default(),
-        }
-    }
-}
-
 impl<S: Shell> std::fmt::Debug for Surface<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Surface")
@@ -885,27 +879,35 @@ impl<S: Shell> Drop for Surface<S> {
     }
 }
 
-impl<S: Shell> Surface<S> {
+impl<S: Shell> Default for Surface<S> {
     #[must_use]
-    pub fn new(current: S::Key, pending: S::Key) -> Self {
+    fn default() -> Self {
         Self {
-            current:   Cell::new(current),
-            pending:   Cell::new(pending),
+            current:   Cell::new(Default::default()),
+            pending:   Cell::new(Default::default()),
             role_info: Default::default(),
         }
     }
+}
 
-    pub fn commit(&self, shell: &mut S) {
+impl<S: Shell> Surface<S> {
+    /// Commit the pending state to the current state.
+    ///
+    /// Returns if the commit is successful.
+    pub fn commit(self: &Rc<Self>, shell: &mut S) -> Result<(), &'static str> {
+        tracing::debug!("generic surface commit");
         let pending = self.pending.get();
         let current = self.current.get();
-        let commit = self
-            .role_info
-            .borrow()
-            .as_ref()
-            .and_then(|r| r.vtable.commit);
+        let commit = self.role_info.borrow().as_ref().and_then(|r| {
+            if r.role.is_active() {
+                r.vtable.commit
+            } else {
+                None
+            }
+        });
         if let Some(commit) = commit {
             // commit operation is overridden
-            (commit)(shell, self);
+            (commit)(shell, self)?;
         } else {
             {
                 shell.commit(Some(current), pending);
@@ -913,6 +915,7 @@ impl<S: Shell> Surface<S> {
             }
             self.swap_states();
         }
+        Ok(())
     }
 
     pub fn swap_states(&self) {
@@ -925,6 +928,14 @@ impl<S: Shell> Surface<S> {
 
     pub fn set_pending(&self, key: S::Key) {
         self.pending.set(key);
+    }
+
+    pub fn pending_key(&self) -> S::Key {
+        self.pending.get()
+    }
+
+    pub fn current_key(&self) -> S::Key {
+        self.current.get()
     }
 
     pub fn pending_mut<'a>(&self, shell: &'a mut S) -> &'a mut SurfaceState<S> {

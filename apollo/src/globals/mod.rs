@@ -1,10 +1,8 @@
-use std::{cell::RefCell, future::Future, marker::PhantomData, pin::Pin, rc::Rc};
+use std::{future::Future, pin::Pin, rc::Rc};
 
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use futures_util::future::Pending;
-use wl_common::Infallible;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
@@ -16,7 +14,6 @@ use wl_server::{
     globals::{Global, GlobalDispatch, GlobalMeta},
     objects::Object,
     renderer_capability::RendererCapability,
-    server::Server,
 };
 
 use crate::shell::{buffers::HasBuffer, HasShell, Shell};

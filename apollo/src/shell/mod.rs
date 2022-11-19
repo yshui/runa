@@ -5,13 +5,18 @@ use std::cell::RefCell;
 
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
+use hashbrown::HashSet;
 use slotmap::{DefaultKey, SlotMap};
-use wl_common::utils::geometry::{Point, Physical};
+use wl_common::utils::geometry::{Physical, Point};
+use crate::utils::RcPtr;
 
 pub trait Shell: Sized + 'static {
     /// The key to surfaces. Default value of `Key` must be an invalid key.
     /// Using the default key should always result in an error, or getting None.
     type Key: std::fmt::Debug + Copy + PartialEq + Eq + Default;
+    /// A buffer type. We allow a user supplied buffer type instead of `dyn
+    /// Buffer` to avoid virutal call overhead, and allow for a more
+    /// flexible Buffer trait.
     type Buffer: buffers::Buffer;
     /// Allocate a SurfaceState and returns a handle to it.
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key;
@@ -22,18 +27,21 @@ pub trait Shell: Sized + 'static {
     /// Panics if the handle is invalid.
     fn deallocate(&mut self, key: Self::Key);
 
+    /// Get a reference to a SurfaceState by key.
+    ///
+    /// Returns None if the key is invalid.
     fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>>;
     /// Get a mutable reference to a SurfaceState.
     fn get_mut(&mut self, key: Self::Key) -> Option<&mut surface::SurfaceState<Self>>;
     /// Called right after `commit`. `from` is the incoming current state, `to`
-    /// is the incoming pending state. This function should call `rotate`
-    /// function on the surface state, which will copy the state from `from`
-    /// to `to`.
+    /// is the incoming pending state & the outgoing current state. This
+    /// function should call `rotate` function on the surface state, which
+    /// will copy the state from `from` to `to`.
     fn rotate(&mut self, to: Self::Key, from: Self::Key);
 
     /// Callback which is called when a role is added to a surface corresponds
     /// to the given surface state. A role can be attached using a committed
-    /// state or a pending state.
+    /// state or a pending state, and they should have the same effects.
     ///
     /// # Panic
     ///
@@ -66,9 +74,9 @@ pub trait HasShell: buffers::HasBuffer {
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct DefaultShell<S: buffers::Buffer> {
-    storage:   SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
-    stack:     VecList<Window>,
-    listeners: wl_server::events::Listeners,
+    storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
+    stack:           VecList<Window>,
+    listeners:       wl_server::events::Listeners,
     #[derivative(Default(value = "Point::new(1000, 1000)"))]
     position_offset: Point<i32, Physical>,
 }
@@ -76,7 +84,7 @@ pub struct DefaultShell<S: buffers::Buffer> {
 #[derive(Debug)]
 pub struct Window {
     pub surface_state: DefaultKey,
-    pub position: Point<i32, Physical>,
+    pub position:      Point<i32, Physical>,
 }
 
 #[derive(Default, Debug)]

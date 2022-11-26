@@ -29,12 +29,20 @@ where
     TopLevel(crate::objects::xdg_shell::TopLevel<Ctx>),
 }
 
-#[derive(Default)]
 pub(crate) struct WmBaseState {
     pub(crate) pending_configure: Rc<RefCell<HashMap<u32, Layout>>>,
     // A buffer we swap with pending_configure when we need to use it, so there is something to
     // hold new surface ids.
     scratch_buffer:               Option<HashMap<u32, Layout>>,
+}
+
+impl Default for WmBaseState {
+    fn default() -> Self {
+        Self {
+            pending_configure: Rc::new(RefCell::new(HashMap::new())),
+            scratch_buffer:    Some(HashMap::new()),
+        }
+    }
 }
 
 impl<Ctx> EventHandler<Ctx> for WmBase
@@ -52,7 +60,7 @@ where
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
         use wl_server::{connection::Objects, objects::Object};
         async move {
-            let state = ctx.state_mut().unwrap();
+            let state = ctx.state_mut();
             let scratch_buffer = state.scratch_buffer.take().unwrap();
             let mut pending_configure = state.pending_configure.replace(scratch_buffer);
             // Avoid holding Ref across await
@@ -94,7 +102,7 @@ where
                 .await?;
             }
             // retain allocated buffer
-            let state = ctx.state_mut().unwrap();
+            let state = ctx.state_mut();
             state.scratch_buffer = Some(pending_configure);
             Ok(())
         }
@@ -126,10 +134,6 @@ where
         client: &'a mut Ctx,
         _object_id: u32,
     ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
-        client.set_state(WmBaseState {
-            pending_configure: Default::default(),
-            scratch_buffer:    Some(Default::default()),
-        });
         Box::pin(futures_util::future::ok(
             WmBaseObject::WmBase(crate::objects::xdg_shell::WmBase).into(),
         ))

@@ -293,8 +293,10 @@ impl<D: 'static> wl_common::Serial for EventSerial<D> {
 /// See [`UnboundedAggregate`] which is a helper type which you can use to
 /// implement this generically for all `T: Any`. You can easily embed it in your
 /// own client context type and forward the methods to it.
-pub trait State<T>: Sized {
+pub trait State<T: Default>: Sized {
+    /// Get a reference to the state of type `T`, if `state_mut` has not been
+    /// called before, this can return `None`.
     fn state(&self) -> Option<&T>;
-    fn state_mut(&mut self) -> Option<&mut T>;
-    fn set_state(&mut self, data: T);
+    /// Get a mutable reference to the state of type `T`.
+    fn state_mut(&mut self) -> &mut T;
 }

@@ -3,7 +3,7 @@
 //! well as a `InterfaceMeta` trait to provide information about the interface,
 //! and allowing them to be cast into trait objects and stored together.
 
-use std::{future::Future, rc::Rc};
+use std::future::Future;
 
 pub use ::wl_common::interface_message_dispatch;
 use ::wl_protocol::wayland::{
@@ -159,14 +159,6 @@ mod private {
     }
 
     impl<G> RegistryState<G> {
-        pub(crate) fn new(registry_object_id: u32) -> Self {
-            Self {
-                registry_objects:     HashSet::new(),
-                new_registry_objects: vec![registry_object_id],
-                known_globals:        HashMap::new(),
-            }
-        }
-
         pub(crate) fn add_registry_object(&mut self, id: u32) {
             self.new_registry_objects.push(id);
         }
@@ -222,11 +214,13 @@ where
             // send, so it doesn't know about the removal yet. Sometimes there can even be
             // global with that ID on the server's global state, which means the ID
             // was reused.
-            let state = ctx.state().expect("RegistryState not set");
+            let state = ctx.state();
+            let empty = Default::default();
+            let known_globals = state.map(|s| &s.known_globals).unwrap_or(&empty);
             if ctx.objects().borrow().get(id.0).is_some() {
                 return Err(crate::error::Error::IdExists(id.0))
             }
-            let global = state.known_globals.get(&name).and_then(|g| g.upgrade());
+            let global = known_globals.get(&name).and_then(|g| g.upgrade());
             if let Some(global) = global {
                 let object = global.bind(ctx, id.0).await?;
                 ctx.objects().borrow_mut().insert(id.0, object).unwrap(); // can't fail

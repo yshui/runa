@@ -280,7 +280,6 @@ where
         async move {
             if ctx
                 .state_mut()
-                .unwrap()
                 .surfaces
                 .remove(&object_id)
                 .is_none()
@@ -351,7 +350,6 @@ where
             if ctx.objects().borrow().get(id.0).is_none() {
                 // Add the id to the list of surfaces
                 ctx.state_mut()
-                    .unwrap()
                     .surfaces
                     .insert(id.0, Default::default());
                 let mut objects = ctx.objects().borrow_mut();

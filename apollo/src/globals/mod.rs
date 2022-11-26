@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, rc::Rc};
+use std::{future::Future, pin::Pin};
 
 pub mod xdg_shell;
 
@@ -49,7 +49,6 @@ where
         client: &'a mut Ctx,
         _object_id: u32,
     ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
-        client.set_state(Default::default());
         client
             .server_context()
             .shell()
@@ -90,13 +89,14 @@ where
             // Use a tmp buffer so we don't need to hold RefMut of `current` acorss await.
             let mut tmp_frame_callback_buffer = ctx
                 .state_mut()
-                .unwrap()
                 .tmp_frame_callback_buffer
                 .take()
                 .unwrap();
-            let state = ctx.state().unwrap();
+            let state = ctx.state();
+            let empty = Default::default();
+            let surfaces = state.map(|s| &s.surfaces).unwrap_or(&empty);
             let time = crate::time::elapsed().as_millis() as u32;
-            for (surface, _) in &state.surfaces {
+            for (surface, _) in surfaces {
                 let surface = ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
                                                                                      // the Ref
                 let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::Context>> =
@@ -118,7 +118,7 @@ where
                 }
             }
 
-            let state = ctx.state_mut().unwrap();
+            let state = ctx.state_mut();
             // Put the buffer back so we can reuse it next time.
             state.tmp_frame_callback_buffer = Some(tmp_frame_callback_buffer);
             //let output_buffer = state.output_buffer.take().unwrap();

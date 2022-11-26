@@ -144,17 +144,13 @@ impl Drop for CrescentClient {
     }
 }
 
-impl<T: std::any::Any> connection::State<T> for CrescentClient {
+impl<T: std::any::Any + Default> connection::State<T> for CrescentClient {
     fn state(&self) -> Option<&T> {
         self.per_client.get::<T>()
     }
 
-    fn state_mut(&mut self) -> Option<&mut T> {
-        self.per_client.get_mut::<T>()
-    }
-
-    fn set_state(&mut self, state: T) {
-        self.per_client.set::<T>(state)
+    fn state_mut(&mut self) -> &mut T {
+        self.per_client.get_or_default::<T>()
     }
 }
 
@@ -261,5 +257,6 @@ fn main() -> Result<()> {
         let mut cm = wl_server::ConnectionManager::new(incoming, server2);
         cm.run().await
     });
-    Ok(smol::block_on(server.0.executor.run(cm_task)).unwrap())
+    let () = smol::block_on(server.0.executor.run(cm_task)).unwrap();
+    Ok(())
 }

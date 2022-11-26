@@ -58,6 +58,7 @@ where
     ) -> Self::GetXdgSurfaceFut<'a> {
         async move {
             use wl_server::connection::{Entry, Objects};
+            let pending_configure = ctx.state_mut().pending_configure.clone();
             let mut objects = ctx.objects().borrow_mut();
             let surface_id = surface.0;
             let surface = objects
@@ -74,7 +75,7 @@ where
                 let role = crate::shell::xdg::Surface::new(
                     id.0,
                     (ctx.event_handle(), Ctx::SLOT),
-                    &ctx.state().unwrap().pending_configure,
+                    &pending_configure,
                 );
                 surface.0.set_role(role, &mut shell);
                 entry.or_insert(WmBaseObject::Surface(Surface(surface.0.clone())).into());

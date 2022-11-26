@@ -116,13 +116,9 @@ where
         // Send the client a registry event if the proxy is inserted, the event handler
         // will send the list of existing globals to the client.
         // Also set up the registry state in the client context.
-        if let Some(state) = client.state_mut() {
-            // Add this object_id to the list of registry objects bound.
-            state.add_registry_object(object_id);
-        } else {
-            tracing::debug!("Creating new registry state");
-            client.set_state(RegistryState::new(object_id));
-        }
+        let state = client.state_mut();
+        // Add this object_id to the list of registry objects bound.
+        state.add_registry_object(object_id);
         let handle = client.event_handle();
         client
             .server_context()
@@ -157,15 +153,17 @@ where
     fn invoke<'a>(ctx: &'a mut Ctx) -> Self::Fut<'a> {
         // Allocation: Global addition and removal should be rare.
         use crate::server::Globals;
-        let state = ctx.state().unwrap();
-        tracing::debug!("{:?}", state);
+        let empty = Default::default();
+        let state = ctx.state();
+        let known_globals = state.map(|s| &s.known_globals).unwrap_or(&empty);
+        tracing::debug!("{:?}", known_globals.keys());
         let added: Vec<_> = ctx
             .server_context()
             .globals()
             .borrow()
             .iter()
             .filter_map(|(id, global)| {
-                if !state.known_globals.contains_key(&id) {
+                if !known_globals.contains_key(&id) {
                     Some((
                         id,
                         std::ffi::CString::new(global.interface()).unwrap(),
@@ -177,7 +175,7 @@ where
                 }
             })
             .collect();
-        let state = ctx.state_mut().unwrap();
+        let state = ctx.state_mut();
         let deleted: Vec<_> = state
             .known_globals
             .drain_filter(|_, v| v.upgrade().is_none())

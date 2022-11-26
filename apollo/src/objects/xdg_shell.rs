@@ -7,28 +7,30 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{Connection, State},
+    connection::{ClientContext, State},
     error::Error,
     events::DispatchTo,
     objects::{interface_message_dispatch, Object},
 };
 
 use crate::{
-    globals::xdg_shell::WmBaseState,
-    shell::{xdg, HasShell},
+    globals::xdg_shell::{WmBaseObject, WmBaseState},
+    shell::{xdg, HasShell, ShellOf},
 };
+#[derive(Debug)]
 pub struct WmBase;
 
-impl Object for WmBase {
+impl<Ctx> Object<Ctx> for WmBase {
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
     }
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> xdg_wm_base::RequestDispatch<Ctx> for WmBase
+impl<Ctx: ClientContext> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
     Ctx::Context: HasShell,
+    Ctx::Object: From<WmBaseObject<Ctx>>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
     Ctx: DispatchTo<crate::globals::xdg_shell::WmBase> + State<WmBaseState>,
 {
@@ -64,8 +66,9 @@ where
                 .clone();
             let entry = objects.entry(id.0);
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let surface: &crate::objects::compositor::Surface<Ctx> = (surface.as_ref() as &dyn Any)
-                .downcast_ref()
+            let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::Context>> = surface
+                .as_ref()
+                .cast()
                 .ok_or_else(|| Error::UnknownObject(surface_id))?;
             if entry.is_vacant() {
                 let role = crate::shell::xdg::Surface::new(
@@ -74,7 +77,7 @@ where
                     &ctx.state().unwrap().pending_configure,
                 );
                 surface.0.set_role(role, &mut shell);
-                entry.or_insert(Surface::<Ctx>(surface.0.clone()));
+                entry.or_insert(WmBaseObject::Surface(Surface(surface.0.clone())).into());
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -94,14 +97,15 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Surface<Ctx: Connection>(
+pub struct Surface<Ctx: ClientContext>(
     pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
 )
 where
     Ctx::Context: HasShell;
 
-impl<Ctx: Connection> Object for Surface<Ctx>
+impl<Ctx> Object<Ctx> for Surface<Ctx>
 where
+    Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
     fn interface(&self) -> &'static str {
@@ -110,9 +114,10 @@ where
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
+impl<Ctx: ClientContext> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
 where
     Ctx::Context: HasShell,
+    Ctx::Object: From<WmBaseObject<Ctx>>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
@@ -153,7 +158,7 @@ where
                 let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 self.0.set_role(role, &mut shell);
-                entry.or_insert(TopLevel::<Ctx>(self.0.clone()));
+                entry.or_insert(WmBaseObject::TopLevel(TopLevel::<Ctx>(self.0.clone())).into());
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -204,15 +209,16 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct TopLevel<Ctx: Connection>(
+pub struct TopLevel<Ctx: ClientContext>(
     pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
 )
 where
     Ctx::Context: HasShell;
 
-impl<Ctx: Connection> Object for TopLevel<Ctx>
+impl<Ctx> Object<Ctx> for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,
+    Ctx: ClientContext,
 {
     fn interface(&self) -> &'static str {
         xdg_toplevel::NAME
@@ -220,7 +226,7 @@ where
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
+impl<Ctx: ClientContext> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,

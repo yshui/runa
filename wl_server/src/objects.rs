@@ -12,9 +12,9 @@ use ::wl_protocol::wayland::{
 use tracing::debug;
 
 use crate::{
-    connection::{Connection, Objects, State},
-    provide_any::{Demand, Provider},
-    server::{self, Globals},
+    connection::{ClientContext, Objects, State},
+    globals::Bind,
+    server::{self, GlobalOf, Globals},
 };
 
 /// This is the bottom type for all per client objects. This trait provides some
@@ -26,30 +26,21 @@ use crate::{
 /// If a object is a proxy of a global, it has to recognize if the global's
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
-pub trait Object: std::any::Any {
+pub trait Object<Ctx> {
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
-    /// A function that will be called when the client disconnects. It should free up allocated
-    /// resources if any. This function should not try to send anything to the client, as it has
-    /// already disconnected.
+    /// A function that will be called when the client disconnects. It should
+    /// free up allocated resources if any. This function should not try to
+    /// send anything to the client, as it has already disconnected.
     ///
-    /// The context object is passed as a `dyn Any` to make this function object safe.
-    fn on_disconnect(&mut self, _ctx: &mut dyn std::any::Any) {}
-    // TODO: maybe delete?
-    fn provide<'a>(&'a self, _demand: &mut Demand<'a>) {}
-}
-
-impl std::fmt::Debug for dyn Object {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Object")
-            .field("interface", &self.interface())
-            .finish()
-    }
-}
-
-impl Provider for dyn Object {
-    fn provide<'a>(&'a self, demand: &mut Demand<'a>) {
-        self.provide(demand)
+    /// The context object is passed as a `dyn Any` to make this function object
+    /// safe.
+    fn on_disconnect(&mut self, _ctx: &mut Ctx) {}
+    fn cast<T: 'static>(&self) -> Option<&T>
+    where
+        Self: 'static + Sized,
+    {
+        (self as &dyn std::any::Any).downcast_ref()
     }
 }
 
@@ -60,10 +51,11 @@ pub const DISPLAY_ID: u32 = 1;
 #[derive(Debug, Clone, Copy)]
 pub struct Display;
 
-#[interface_message_dispatch]
+#[interface_message_dispatch(crate = "crate")]
 impl<Ctx> wl_display::RequestDispatch<Ctx> for Display
 where
-    Ctx: Connection + std::fmt::Debug,
+    Ctx: ClientContext + std::fmt::Debug,
+    crate::globals::Registry: Bind<Ctx>,
 {
     type Error = crate::error::Error;
 
@@ -127,7 +119,7 @@ where
                 let object = global.bind(ctx, registry.0).await?;
                 ctx.objects()
                     .borrow_mut()
-                    .insert_boxed(registry.0, object)
+                    .insert(registry.0, object)
                     .unwrap();
                 Ok(())
             } else {
@@ -137,7 +129,7 @@ where
     }
 }
 
-impl Object for Display {
+impl<Ctx> Object<Ctx> for Display {
     fn interface(&self) -> &'static str {
         wl_display::NAME
     }
@@ -152,22 +144,21 @@ mod private {
     use derivative::Derivative;
     use hashbrown::{HashMap, HashSet};
 
-    use crate::globals::Global;
     /// Set of object_ids that are wl_registry objects, so we know which objects
     /// to send the events from.
     #[derive(Derivative)]
-    #[derivative(Default(bound = ""), Debug(bound = "Ctx: 'static"))]
-    pub struct RegistryState<Ctx> {
+    #[derivative(Default(bound = ""))]
+    pub struct RegistryState<G> {
         /// Known wl_registry objects. We will send delta global events to them.
         pub(crate) registry_objects:     HashSet<u32>,
         /// Newly created wl_registry objects. We will send all the globals to
         /// them then move them to `registry_objects`.
         pub(crate) new_registry_objects: Vec<u32>,
         /// List of globals known to this client context
-        pub(crate) known_globals:        HashMap<u32, Weak<dyn Global<Ctx>>>,
+        pub(crate) known_globals:        HashMap<u32, Weak<G>>,
     }
 
-    impl<Ctx> RegistryState<Ctx> {
+    impl<G> RegistryState<G> {
         pub(crate) fn new(registry_object_id: u32) -> Self {
             Self {
                 registry_objects:     HashSet::new(),
@@ -180,25 +171,43 @@ mod private {
             self.new_registry_objects.push(id);
         }
     }
+    impl<G> std::fmt::Debug for RegistryState<G> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            struct DebugMap<'a, K, V>(&'a HashMap<K, V>);
+            impl<'a, K, V> std::fmt::Debug for DebugMap<'a, K, V>
+            where
+                K: std::fmt::Debug,
+            {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.debug_set().entries(self.0.keys()).finish()
+                }
+            }
+            f.debug_struct("RegistryState")
+                .field("registry_objects", &self.registry_objects)
+                .field("new_registry_objects", &self.new_registry_objects)
+                .field("known_globals", &DebugMap(&self.known_globals))
+                .finish()
+        }
+    }
 }
 
 pub(crate) use private::RegistryState;
 
-#[interface_message_dispatch]
+#[interface_message_dispatch(crate = "crate")]
 impl<Ctx> wl_registry::RequestDispatch<Ctx> for Registry
 where
-    Ctx: Connection + State<RegistryState<Ctx>>,
+    Ctx: ClientContext + State<RegistryState<GlobalOf<Ctx>>>,
 {
     type Error = crate::error::Error;
 
-    type BindFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+    type BindFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn bind<'a>(
         &'a self,
         ctx: &'a mut Ctx,
         _object_id: u32,
         name: u32,
-        _interface: wl_types::Str,
+        _interface: wl_types::Str<'a>,
         _version: u32,
         id: wl_types::NewId,
     ) -> Self::BindFut<'a> {
@@ -220,10 +229,7 @@ where
             let global = state.known_globals.get(&name).and_then(|g| g.upgrade());
             if let Some(global) = global {
                 let object = global.bind(ctx, id.0).await?;
-                ctx.objects()
-                    .borrow_mut()
-                    .insert_boxed(id.0, object)
-                    .unwrap(); // can't fail
+                ctx.objects().borrow_mut().insert(id.0, object).unwrap(); // can't fail
                 Ok(())
             } else {
                 Err(crate::error::Error::UnknownGlobal(name))
@@ -232,7 +238,7 @@ where
     }
 }
 
-impl Object for Registry {
+impl<Ctx> Object<Ctx> for Registry {
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }
@@ -240,14 +246,14 @@ impl Object for Registry {
 
 #[derive(Debug, Default)]
 pub struct Callback;
-impl Object for Callback {
+impl<Ctx> Object<Ctx> for Callback {
     fn interface(&self) -> &'static str {
         wl_protocol::wayland::wl_callback::v1::NAME
     }
 }
 
 impl Callback {
-    pub async fn fire(object_id: u32, data: u32, ctx: &impl Connection) -> std::io::Result<()> {
+    pub async fn fire(object_id: u32, data: u32, ctx: &impl ClientContext) -> std::io::Result<()> {
         ctx.send(
             object_id,
             wl_protocol::wayland::wl_callback::v1::events::Done {
@@ -257,10 +263,27 @@ impl Callback {
         .await?;
         let callback = ctx.objects().borrow().get(object_id).unwrap().clone();
         let interface = callback.interface();
-        let _: Rc<Self> = Rc::downcast(callback).unwrap_or_else(|_| panic!("object is not callback, it's {}", interface));
+        let Some(_): Option<&Self> = callback.cast() else {
+            panic!("object is not callback, it's {}", interface)
+        };
         ctx.objects().borrow_mut().remove(object_id).unwrap();
         ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
             .await?;
         Ok(())
+    }
+}
+
+impl<Ctx> wl_common::InterfaceMessageDispatch<Ctx> for Callback {
+    type Error = crate::error::Error;
+
+    type Fut<'a, D> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a, D: wl_io::traits::de::Deserializer<'a> + 'a, Self: 'a;
+
+    fn dispatch<'a, D: wl_io::traits::de::Deserializer<'a> + 'a>(
+        &'a self,
+        _ctx: &'a mut Ctx,
+        object_id: u32,
+        _reader: D,
+    ) -> Self::Fut<'a, D> {
+        async move { Err(crate::error::Error::InvalidObject(object_id)) }
     }
 }

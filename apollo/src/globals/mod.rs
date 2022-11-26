@@ -3,20 +3,22 @@ use std::{future::Future, pin::Pin, rc::Rc};
 pub mod xdg_shell;
 
 use derivative::Derivative;
+use wl_common::InterfaceMessageDispatch;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
 };
 use wl_server::{
-    connection::{Connection, State},
+    connection::{ClientContext, State},
     events::{DispatchTo, EventHandler},
-    global_dispatch,
-    globals::{Global, GlobalDispatch, GlobalMeta},
-    objects::Object,
+    globals::{Bind, ConstInit},
     renderer_capability::RendererCapability,
 };
 
-use crate::shell::{buffers::HasBuffer, HasShell, Shell};
+use crate::{
+    objects::compositor::CompositorState,
+    shell::{buffers::HasBuffer, HasShell, Shell, ShellOf},
+};
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -24,7 +26,16 @@ type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor;
 
-impl GlobalMeta for Compositor {
+impl ConstInit for Compositor {
+    const INIT: Self = Self;
+}
+impl<Ctx: ClientContext> Bind<Ctx> for Compositor
+where
+    Ctx: State<CompositorState> + DispatchTo<Self>,
+    Ctx::Context: HasShell,
+{
+    type Objects = CompositorObject<Ctx>;
+
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -32,51 +43,39 @@ impl GlobalMeta for Compositor {
     fn version(&self) -> u32 {
         wl_compositor::VERSION
     }
-}
-impl<Ctx: 'static> Global<Ctx> for Compositor
-where
-    Ctx: State<crate::objects::compositor::CompositorState> + DispatchTo<Self> + Connection,
-    Ctx::Context: HasShell,
-{
-    fn bind<'b, 'c>(
-        &self,
-        client: &'b mut Ctx,
+
+    fn bind<'a>(
+        &'a self,
+        client: &'a mut Ctx,
         _object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c,
-    {
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
         client.set_state(Default::default());
         client
             .server_context()
             .shell()
             .borrow()
             .add_render_listener((client.event_handle(), Ctx::SLOT));
-        Box::pin(futures_util::future::ok(
-            Box::new(crate::objects::compositor::Compositor) as _,
-        ))
+        Box::pin(futures_util::future::ok(CompositorObject::Compositor(
+            crate::objects::compositor::Compositor,
+        )))
     }
 }
 
-impl<Ctx> GlobalDispatch<Ctx> for Compositor
+#[derive(InterfaceMessageDispatch, Derivative)]
+#[derivative(Debug(bound = "<Ctx::Context as HasBuffer>::Buffer: std::fmt::Debug"))]
+pub enum CompositorObject<Ctx>
 where
-    Ctx: Connection + State<crate::objects::compositor::CompositorState> + DispatchTo<Self>,
+    Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
-    type Error = wl_server::error::Error;
-
-    const INIT: Self = Self;
-
-    global_dispatch! {
-        "wl_compositor" => crate::objects::compositor::Compositor,
-        "wl_surface" => crate::objects::compositor::Surface<Ctx>,
-        "wl_buffer" => crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>,
-    }
+    Compositor(crate::objects::compositor::Compositor),
+    Surface(crate::objects::compositor::Surface<<Ctx::Context as HasShell>::Shell>),
+    Buffer(crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>),
 }
 
 impl<Ctx> EventHandler<Ctx> for Compositor
 where
-    Ctx: DispatchTo<Self> + State<crate::objects::compositor::CompositorState> + Connection,
+    Ctx: DispatchTo<Self> + State<CompositorState> + ClientContext,
     Ctx::Context: HasShell,
 {
     type Error = std::io::Error;
@@ -86,27 +85,43 @@ where
             Ctx: 'a;
 
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
-        use wl_server::connection::Objects;
+        use wl_server::{connection::Objects, objects::Object};
         async move {
+            // Use a tmp buffer so we don't need to hold RefMut of `current` acorss await.
+            let mut tmp_frame_callback_buffer = ctx
+                .state_mut()
+                .unwrap()
+                .tmp_frame_callback_buffer
+                .take()
+                .unwrap();
             let state = ctx.state().unwrap();
             let time = crate::time::elapsed().as_millis() as u32;
-            for surface in &state.surfaces {
+            for (surface, _) in &state.surfaces {
                 let surface = ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
                                                                                      // the Ref
-                let surface =
-                    Rc::downcast::<crate::objects::compositor::Surface<Ctx>>(surface).unwrap();
-                let mut shell = ctx.server_context().shell().borrow_mut();
-                let current = surface.0.current_mut(&mut shell);
-                let fired = current.frame_callback.len();
-                for frame in current.frame_callback.drain(..) {
+                let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::Context>> =
+                    surface.cast().unwrap();
+                {
+                    let mut shell = ctx.server_context().shell().borrow_mut();
+                    let current = surface.0.current_mut(&mut shell);
+                    std::mem::swap(&mut current.frame_callback, &mut tmp_frame_callback_buffer);
+                }
+                let fired = tmp_frame_callback_buffer.len();
+                for frame in tmp_frame_callback_buffer.drain(..) {
                     wl_server::objects::Callback::fire(frame, time, ctx).await?;
                 }
                 // Remove fired callbacks from pending state
+                let mut shell = ctx.server_context().shell().borrow_mut();
                 let pending = surface.0.pending_mut(&mut shell);
                 for _ in 0..fired {
                     pending.frame_callback.pop_front();
                 }
             }
+
+            let state = ctx.state_mut().unwrap();
+            // Put the buffer back so we can reuse it next time.
+            state.tmp_frame_callback_buffer = Some(tmp_frame_callback_buffer);
+            //let output_buffer = state.output_buffer.take().unwrap();
             Ok(())
         }
     }
@@ -115,22 +130,26 @@ where
 #[derive(Debug)]
 pub struct Subcompositor;
 
-impl<Ctx> GlobalDispatch<Ctx> for Subcompositor
+#[derive(InterfaceMessageDispatch, Derivative)]
+#[derivative(Debug(bound = ""))]
+pub enum SubcompositorObject<Ctx>
 where
-    Ctx: Connection,
+    Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
-    type Error = wl_server::error::Error;
-
-    const INIT: Self = Self;
-
-    global_dispatch! {
-        "wl_subcompositor" => crate::objects::compositor::Subcompositor,
-        "wl_subsurface" => crate::objects::compositor::Subsurface<Ctx>,
-    }
+    Subcompositor(crate::objects::compositor::Subcompositor),
+    Subsurface(crate::objects::compositor::Subsurface<Ctx>),
 }
 
-impl GlobalMeta for Subcompositor {
+impl ConstInit for Subcompositor {
+    const INIT: Self = Self;
+}
+impl<Ctx: ClientContext> Bind<Ctx> for Subcompositor
+where
+    Ctx::Context: HasShell,
+{
+    type Objects = SubcompositorObject<Ctx>;
+
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -138,18 +157,14 @@ impl GlobalMeta for Subcompositor {
     fn version(&self) -> u32 {
         wl_subcompositor::VERSION
     }
-}
-impl<Ctx> Global<Ctx> for Subcompositor {
-    fn bind<'b, 'c>(
-        &self,
-        _client: &'b mut Ctx,
+
+    fn bind<'a>(
+        &'a self,
+        _client: &'a mut Ctx,
         _object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c,
-    {
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
         Box::pin(futures_util::future::ok(
-            Box::new(crate::objects::compositor::Subcompositor) as _,
+            SubcompositorObject::Subcompositor(crate::objects::compositor::Subcompositor),
         ))
     }
 }
@@ -157,23 +172,21 @@ impl<Ctx> Global<Ctx> for Subcompositor {
 #[derive(Default)]
 pub struct Shm;
 
-impl<Ctx> GlobalDispatch<Ctx> for Shm
-where
-    Ctx: Connection,
-    Ctx::Context: HasBuffer,
-    <Ctx::Context as HasBuffer>::Buffer: From<crate::objects::shm::Buffer>,
-{
-    type Error = wl_server::error::Error;
-
-    const INIT: Self = Self;
-
-    global_dispatch! {
-        "wl_shm" => crate::objects::shm::Shm,
-        "wl_shm_pool" => crate::objects::shm::ShmPool,
-    }
+#[derive(InterfaceMessageDispatch, Debug)]
+pub enum ShmObject {
+    Shm(crate::objects::shm::Shm),
+    ShmPool(crate::objects::shm::ShmPool),
 }
 
-impl GlobalMeta for Shm {
+impl ConstInit for Shm {
+    const INIT: Self = Self;
+}
+impl<Ctx: ClientContext> Bind<Ctx> for Shm
+where
+    Ctx::Context: RendererCapability,
+{
+    type Objects = ShmObject;
+
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -181,19 +194,12 @@ impl GlobalMeta for Shm {
     fn version(&self) -> u32 {
         wl_shm::VERSION
     }
-}
-impl<Ctx: Connection> Global<Ctx> for Shm
-where
-    Ctx::Context: RendererCapability,
-{
-    fn bind<'b, 'c>(
-        &self,
-        client: &'b mut Ctx,
+
+    fn bind<'a>(
+        &'a self,
+        client: &'a mut Ctx,
         object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c,
-    {
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
         let formats = client.server_context().formats();
         Box::pin(async move {
             // Send known buffer formats
@@ -205,7 +211,7 @@ where
                     )
                     .await?;
             }
-            Ok(Box::new(crate::objects::shm::Shm::new()) as _)
+            Ok(ShmObject::Shm(crate::objects::shm::Shm::new()))
         })
     }
 }

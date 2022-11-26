@@ -12,16 +12,19 @@ use wl_common::{
     utils::geometry::{Extent, Logical},
 };
 use wl_protocol::wayland::{
-    wl_display::v1 as wl_display, wl_shm::v1 as wl_shm,
-    wl_shm_pool::v1 as wl_shm_pool,
+    wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::{Connection, Objects},
+    connection::{ClientContext, Objects},
     error,
     objects::{Object, DISPLAY_ID},
 };
 
-use crate::shell::buffers::{HasBuffer, BufferBase};
+use crate::{
+    globals::ShmObject,
+    objects::Buffer as BufferObj,
+    shell::buffers::{BufferBase, HasBuffer},
+};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 struct MapRecord {
@@ -109,13 +112,14 @@ pub unsafe fn handle_sigbus(info: &libc::siginfo_t) -> bool {
     }
 }
 
+#[derive(Debug)]
 pub struct Shm;
 impl Shm {
     pub fn new() -> Shm {
         Shm
     }
 }
-impl Object for Shm {
+impl<Ctx> Object<Ctx> for Shm {
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -161,7 +165,8 @@ impl wl_protocol::ProtocolError for ShmError {
 #[interface_message_dispatch]
 impl<Ctx> wl_shm::RequestDispatch<Ctx> for Shm
 where
-    Ctx: Connection,
+    Ctx: ClientContext,
+    Ctx::Object: From<ShmObject>,
 {
     type Error = error::Error;
 
@@ -217,7 +222,12 @@ where
                     }),
                 })),
             };
-            if ctx.objects().borrow_mut().insert(id.0, pool).is_err() {
+            if ctx
+                .objects()
+                .borrow_mut()
+                .insert(id.0, ShmObject::ShmPool(pool))
+                .is_err()
+            {
                 ctx.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_display::enums::Error::InvalidObject as u32,
                     object_id: object_id.into(),
@@ -259,6 +269,7 @@ impl ShmPoolInner {
     }
 }
 
+#[derive(Debug)]
 pub struct ShmPoolInner {
     fd:   OwnedFd,
     addr: *const libc::c_void,
@@ -266,6 +277,7 @@ pub struct ShmPoolInner {
     map:  Index<MapRecord>,
 }
 
+#[derive(Debug)]
 pub struct ShmPool {
     inner: Rc<RefCell<ShmPoolInner>>,
 }
@@ -289,7 +301,7 @@ impl ShmPool {
     }
 }
 
-impl Object for ShmPool {
+impl<Ctx> Object<Ctx> for ShmPool {
     fn interface(&self) -> &'static str {
         wl_shm_pool::NAME
     }
@@ -298,9 +310,10 @@ impl Object for ShmPool {
 #[interface_message_dispatch]
 impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
-    Ctx: Connection,
+    Ctx: ClientContext,
     Ctx::Context: HasBuffer,
     <Ctx::Context as HasBuffer>::Buffer: From<Buffer>,
+    Ctx::Object: From<BufferObj<<Ctx::Context as HasBuffer>::Buffer>>,
 {
     type Error = error::Error;
 
@@ -355,7 +368,6 @@ where
         async move {
             use wl_server::connection::{Entry, Objects};
 
-            use crate::objects::Buffer as BufferObj;
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(id.0);
             if entry.is_vacant() {
@@ -373,7 +385,7 @@ where
                         .into(),
                     ),
                 };
-                entry.or_insert(buffer);
+                entry.or_insert(buffer.into());
                 Ok(())
             } else {
                 Err(wl_server::error::Error::IdExists(id.0))
@@ -393,6 +405,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct Buffer {
     base:   BufferBase,
     pool:   Rc<RefCell<ShmPoolInner>>,
@@ -419,6 +432,7 @@ impl crate::shell::buffers::Buffer for Buffer {
     fn dimension(&self) -> Extent<u32, Logical> {
         Extent::new(self.width as u32, self.height as u32)
     }
+
     fn object_id(&self) -> u32 {
         self.base.object_id()
     }

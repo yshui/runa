@@ -29,6 +29,7 @@ pub trait HasBuffer {
 /// implementation of the wl_buffer interface.
 ///
 /// All buffer implementations in this crate uses this.
+#[derive(Debug)]
 pub struct BufferBase {
     damaged: Cell<bool>,
     object_id: u32,
@@ -70,10 +71,12 @@ impl Buffer for BufferBase {
 }
 
 /// An enum of all buffer types defined in apollo.
+#[derive(Debug)]
 pub enum Buffers {
     Shm(crate::objects::shm::Buffer),
 }
 
+#[derive(Debug)]
 pub struct RendererBuffer<Data> {
     pub buffer: Buffers,
     pub data:   Data,

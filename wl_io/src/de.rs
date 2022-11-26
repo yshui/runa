@@ -1,4 +1,4 @@
-use std::os::fd::RawFd;
+use std::os::unix::io::RawFd;
 
 /// Holds a value that is deserialized from borrowed data from `reader`.
 /// This prevents the reader from being used again while this accessor is alive.

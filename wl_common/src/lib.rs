@@ -18,7 +18,7 @@ pub mod __private {
 /// Some expiration scheme might be employed by the implementation to free up
 /// old serial numbers.
 pub trait Serial {
-    type Data: 'static;
+    type Data;
     type Iter<'a>: Iterator<Item = (u32, &'a Self::Data)> + 'a
     where
         Self: 'a;
@@ -32,7 +32,6 @@ pub trait Serial {
     fn expire(&mut self, serial: u32) -> bool;
 }
 
-#[derive(Debug)]
 pub struct IdAlloc<D> {
     next: u32,
     data: HashMap<u32, D>,
@@ -48,7 +47,22 @@ impl<D> Default for IdAlloc<D> {
     }
 }
 
-impl<D: 'static> Serial for IdAlloc<D> {
+impl<D> std::fmt::Debug for IdAlloc<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct DebugMap<'a, K, V>(&'a HashMap<K, V>);
+        impl<'a, K: std::fmt::Debug, V> std::fmt::Debug for DebugMap<'a, K, V> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_set().entries(self.0.keys()).finish()
+            }
+        }
+        f.debug_struct("IdAlloc")
+            .field("next", &self.next)
+            .field("data", &DebugMap(&self.data))
+            .finish()
+    }
+}
+
+impl<D> Serial for IdAlloc<D> {
     type Data = D;
 
     type Iter<'a> = impl Iterator<Item = (u32, &'a Self::Data)> + 'a where Self: 'a;
@@ -99,20 +113,20 @@ pub trait InterfaceMessageDispatch<Ctx> {
     type Error;
     // TODO: the R parameter might be unnecessary, see:
     //       https://github.com/rust-lang/rust/issues/42940
-    type Fut<'a, 'b, D>: Future<Output = Result<(), Self::Error>> + 'a
+    type Fut<'a, D>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a,
         Ctx: 'a,
-        D: wl_io_traits::de::Deserializer<'b>,
-        'b: 'a;
-    fn dispatch<'a, 'b: 'a, D: wl_io_traits::de::Deserializer<'b>>(
+        D: wl_io_traits::de::Deserializer<'a> + 'a;
+    fn dispatch<'a, D: wl_io_traits::de::Deserializer<'a> + 'a>(
         &'a self,
         ctx: &'a mut Ctx,
         object_id: u32,
         reader: D,
-    ) -> Self::Fut<'a, 'b, D>;
+    ) -> Self::Fut<'a, D>;
 }
 
 pub use std::convert::Infallible;
 
 pub use wl_macros::interface_message_dispatch;
+pub use wl_macros::InterfaceMessageDispatch;

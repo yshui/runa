@@ -5,10 +5,8 @@ use std::{
 };
 
 use dyn_clone::DynClone;
-use wl_server::{
-    connection::Connection,
-    provide_any::{request_mut, request_ref, Demand, Provider},
-};
+use hashbrown::HashSet;
+use wl_server::provide_any::{request_mut, request_ref, Demand, Provider};
 
 use super::Shell;
 
@@ -856,6 +854,7 @@ pub struct Surface<S: super::Shell> {
     /// commit is called
     pending:   Cell<S::Key>,
     role_info: RefCell<Option<RoleInfo<S>>>,
+    outputs:   HashSet<crate::utils::RcPtr<super::output::Output>>,
 }
 
 impl<S: Shell> std::fmt::Debug for Surface<S> {
@@ -886,6 +885,7 @@ impl<S: Shell> Default for Surface<S> {
             current:   Cell::new(Default::default()),
             pending:   Cell::new(Default::default()),
             role_info: Default::default(),
+            outputs:   Default::default(),
         }
     }
 }

@@ -1,19 +1,17 @@
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
-use apollo::{
-    objects::shm,
-    shell::{
-        buffers::{Buffer, RendererBuffer},
-        DefaultShell, Shell,
-    },
+use apollo::shell::{
+    buffers::{Buffer, RendererBuffer},
+    Shell,
 };
-use bytemuck::Zeroable;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt};
 use winit::{dpi::PhysicalSize, event::Event};
 use wl_common::utils::geometry::Scale;
 use wl_protocol::wayland::wl_shm::v1 as wl_shm;
+
+use crate::shell::DefaultShell;
 
 #[derive(Debug, Default)]
 pub struct BufferData {
@@ -402,10 +400,7 @@ impl Renderer {
                     depth_stencil_attachment: None,
                 });
                 pass.set_pipeline(&self.pipeline);
-                pass.set_index_buffer(
-                    self.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint16,
-                );
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 pass.set_vertex_buffer(
                     0,
                     vertex_buffer.slice((i * 4 * std::mem::size_of::<Vertex>()) as u64..),
@@ -421,6 +416,7 @@ impl Renderer {
     }
 
     pub async fn render_loop(mut self, event_rx: Receiver<Event<'static, ()>>) -> ! {
+        tracing::debug!("Start render loop");
         let mut pending_size: Option<PhysicalSize<u32>> = None;
         let (remote_tx, rx) = smol::channel::bounded(1);
         let (tx, remote_rx) = smol::channel::bounded(1);

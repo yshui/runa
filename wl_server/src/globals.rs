@@ -1,81 +1,56 @@
 use std::{future::Future, pin::Pin, rc::Rc};
 
-use wl_io::traits::de::Deserializer;
+use ::wl_common::InterfaceMessageDispatch;
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::{Connection, State},
+    connection::{ClientContext, State},
     events::{DispatchTo, EventHandler, EventMux},
-    global_dispatch,
-    objects::{Object, RegistryState},
-    server::Server,
+    objects::RegistryState,
+    server::{GlobalOf, Server},
 };
 
 type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-pub trait GlobalMeta: std::any::Any {
+pub trait Bind<Ctx> {
+    /// An object that is the union of all objects that can be created from this
+    /// global.
+    type Objects;
+    /// Called when the global is bound to a client, return the client side
+    /// object, and optionally an I/O task to be completed after the object is
+    /// inserted into the client's object store
+    fn bind<'a>(
+        &'a self,
+        client: &'a mut Ctx,
+        object_id: u32,
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>>;
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
 }
 
-impl std::fmt::Debug for dyn GlobalMeta {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GlobalMeta")
-            .field("interface", &self.interface())
-            .field("version", &self.version())
-            .finish()
-    }
-}
-
-pub trait Global<Ctx>: GlobalMeta {
-    /// Called when the global is bound to a client, return the client side
-    /// object, and optionally an I/O task to be completed after the object is
-    /// inserted into the client's object store
-    fn bind<'b, 'c>(
-        &self,
-        client: &'b mut Ctx,
-        object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c;
-}
-
-impl<Ctx: 'static> std::fmt::Debug for dyn Global<Ctx> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Global")
-            .field("interface", &self.interface())
-            .field("version", &self.version())
-            .finish()
-    }
-}
-
-/// Dispatching messages related to a global.
-pub trait GlobalDispatch<Ctx> {
-    type Error;
-    type Fut<'a, D>: Future<Output = Result<bool, Self::Error>> + 'a
-    where
-        Ctx: 'a,
-        D: Deserializer<'a> + 'a;
+/// A value that can be initialized with a constant
+pub trait ConstInit {
     /// A value that can be used to create an instance of `Self`.
     const INIT: Self;
-    /// Dispatch message from `reader` to object `obj`.
-    ///
-    /// Returns a future that resolves to a `Ok(true)` if the message is
-    /// successfully dispatched, `Ok(false)` if the object's interface is not
-    /// recognized by the global, and `Err` if the interface is recognized but
-    /// an error occurs while dispatching it.
-    fn dispatch<'a, D: Deserializer<'a>>(
-        obj: &'a dyn Object,
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        reader: D,
-    ) -> Self::Fut<'a, D>;
 }
+
+pub trait Global<Ctx>: ConstInit + Bind<Ctx> {}
+impl<Ctx, T> Global<Ctx> for T where T: ConstInit + Bind<Ctx> {}
 
 #[derive(Debug, Default)]
 pub struct Display;
 
-impl GlobalMeta for Display {
+impl ConstInit for Display {
+    const INIT: Self = Display;
+}
+
+impl<Ctx> Bind<Ctx> for Display
+where
+    Ctx: ClientContext + std::fmt::Debug,
+    Registry: Bind<Ctx>,
+{
+    type Objects = DisplayObject;
+
     fn interface(&self) -> &'static str {
         wl_display::v1::NAME
     }
@@ -83,32 +58,23 @@ impl GlobalMeta for Display {
     fn version(&self) -> u32 {
         wl_display::v1::VERSION
     }
-}
-impl<Ctx> Global<Ctx> for Display {
-    fn bind<'b, 'c>(
-        &self,
-        _client: &'b mut Ctx,
+
+    fn bind<'a>(
+        &'a self,
+        _client: &'a mut Ctx,
         _object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c,
-    {
-        Box::pin(futures_util::future::ok(
-            Box::new(crate::objects::Display) as _
-        ))
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
+        Box::pin(futures_util::future::ok(DisplayObject::Display(
+            crate::objects::Display,
+        )))
     }
 }
-impl<Ctx> GlobalDispatch<Ctx> for Display
-where
-    Ctx: std::fmt::Debug + Connection,
-{
-    type Error = crate::error::Error;
 
-    const INIT: Self = Display;
-
-    global_dispatch! {
-        "wl_display" => crate::objects::Display,
-    }
+#[derive(InterfaceMessageDispatch, Debug)]
+#[wayland(crate = "crate")]
+pub enum DisplayObject {
+    Display(crate::objects::Display),
+    Callback(crate::objects::Callback),
 }
 
 /// The registry singleton. This is an interface only object. The actual list of
@@ -120,7 +86,16 @@ where
 #[derive(Debug, Default)]
 pub struct Registry;
 
-impl GlobalMeta for Registry {
+impl ConstInit for Registry {
+    const INIT: Self = Registry;
+}
+
+impl<Ctx> Bind<Ctx> for Registry
+where
+    Ctx: DispatchTo<Self> + State<RegistryState<GlobalOf<Ctx>>> + ClientContext,
+{
+    type Objects = RegistryObject;
+
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }
@@ -128,20 +103,12 @@ impl GlobalMeta for Registry {
     fn version(&self) -> u32 {
         wl_registry::VERSION
     }
-}
 
-impl<Ctx> Global<Ctx> for Registry
-where
-    Ctx: DispatchTo<Self> + State<RegistryState<Ctx>> + Connection,
-{
-    fn bind<'b, 'c>(
-        &self,
-        client: &'b mut Ctx,
+    fn bind<'a>(
+        &'a self,
+        client: &'a mut Ctx,
         object_id: u32,
-    ) -> PinnedFuture<'c, std::io::Result<Box<dyn Object>>>
-    where
-        'b: 'c,
-    {
+    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
         use crate::server::Globals;
         // Registry::new would add a listener into the Server EventSource. If you want
         // to implement the Registry global yourself, you need to remember to do
@@ -157,40 +124,37 @@ where
             client.set_state(RegistryState::new(object_id));
         }
         let handle = client.event_handle();
-        client.server_context().globals().borrow().add_update_listener((handle, Ctx::SLOT));
+        client
+            .server_context()
+            .globals()
+            .borrow()
+            .add_update_listener((handle, Ctx::SLOT));
         Box::pin(async move {
             // This should send existing globals. We can't rely on setting the event flags
             // on `client`, because we need to send this _immediately_, whereas
             // the event handling will happen at an arbitrary time in the
             // future.
             Registry::invoke(client).await?;
-            Ok(Box::new(crate::objects::Registry) as _)
+            Ok(RegistryObject::Registry(crate::objects::Registry))
         })
     }
 }
 
-impl<Ctx> GlobalDispatch<Ctx> for Registry
-where
-    Ctx: Connection + State<RegistryState<Ctx>> + DispatchTo<Self>,
-{
-    type Error = crate::error::Error;
-
-    const INIT: Self = Registry;
-
-    global_dispatch! {
-        "wl_registry" => crate::objects::Registry,
-    }
+#[derive(InterfaceMessageDispatch, Debug)]
+#[wayland(crate = "crate")]
+pub enum RegistryObject {
+    Registry(crate::objects::Registry),
 }
 
 impl<Ctx> EventHandler<Ctx> for Registry
 where
-    Ctx: EventMux + State<RegistryState<Ctx>> + DispatchTo<Self> + Connection,
+    Ctx: EventMux + State<RegistryState<GlobalOf<Ctx>>> + DispatchTo<Self> + ClientContext,
 {
     type Error = std::io::Error;
 
-    type Fut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+    type Fut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
+    fn invoke<'a>(ctx: &'a mut Ctx) -> Self::Fut<'a> {
         // Allocation: Global addition and removal should be rare.
         use crate::server::Globals;
         let state = ctx.state().unwrap();
@@ -265,42 +229,4 @@ where
             Ok(())
         }
     }
-}
-
-// TODO: support multiple versions of the same interface
-/// Generate a `fn dispatch` implementation for GlobalDispatch
-#[macro_export]
-macro_rules! global_dispatch {
-    ( $($iface:literal => $obj:ty),*$(,)? ) => {
-        type Fut<'a, D> = impl std::future::Future<Output = Result<bool, Self::Error>> + 'a
-        where
-            Ctx: 'a,
-            D: $crate::__private::Deserializer<'a> + 'a;
-        fn dispatch<'a, D: $crate::__private::Deserializer<'a>>(
-            obj: &'a dyn $crate::objects::Object,
-            ctx: &'a mut Ctx,
-            object_id: u32,
-            reader: D,
-        ) -> Self::Fut<'a, D> {
-            async move {
-                use std::any::Any;
-                match obj.interface() {
-                    $(
-                        $iface => {
-                            let obj: Option<&$obj> = (obj as &dyn Any).downcast_ref();
-                            if let Some(obj) = obj {
-                                $crate::__private::InterfaceMessageDispatch::
-                                    dispatch(obj, ctx, object_id, reader)
-                                    .await
-                                    .map(|()| true)
-                            } else {
-                                Ok(false)
-                            }
-                        }
-                    )*
-                    _ => Ok(false),
-                }
-            }
-        }
-    };
 }

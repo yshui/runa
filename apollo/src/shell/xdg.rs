@@ -8,7 +8,7 @@ use wl_protocol::stable::xdg_shell::{
 };
 use wl_server::{events::EventHandle, provide_any::Demand};
 
-use super::{buffers::Buffer, Shell};
+use super::Shell;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Layout {
@@ -19,12 +19,6 @@ pub struct Layout {
 pub trait XdgShell: Shell {
     fn layout(&self, key: Self::Key) -> Layout {
         Layout::default()
-    }
-}
-
-impl<B: super::buffers::Buffer> XdgShell for super::DefaultShell<B> {
-    fn layout(&self, key: Self::Key) -> Layout {
-        Layout { position: None, extent: Some(Extent::new(1200, 900)) }
     }
 }
 

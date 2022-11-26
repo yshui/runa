@@ -23,6 +23,9 @@ wgpu = "0.14.0"
 winit = { version = "0.27.5", default-features = false, features = ["x11"] }
 bytemuck = { version = "1.12.3", features = ["derive"] }
 png = "0.17.7"
+dlv-list = "0.4.0"
+slotmap = "1.0.6"
+derivative.workspace = true
 
 [features]
 default = []

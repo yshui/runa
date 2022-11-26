@@ -3,7 +3,7 @@ use std::rc::Rc;
 use wl_common::interface_message_dispatch;
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display};
 use wl_server::{
-    connection::Connection,
+    connection::ClientContext,
     objects::{Object, DISPLAY_ID},
 };
 
@@ -13,10 +13,11 @@ pub mod compositor;
 pub mod shm;
 pub mod xdg_shell;
 
+#[derive(Debug)]
 pub struct Buffer<B> {
     pub buffer: Rc<B>,
 }
-impl<B: 'static> Object for Buffer<B> {
+impl<B: 'static, Ctx> Object<Ctx> for Buffer<B> {
     fn interface(&self) -> &'static str {
         wl_buffer::NAME
     }
@@ -25,7 +26,7 @@ impl<B: 'static> Object for Buffer<B> {
 #[interface_message_dispatch]
 impl<Ctx, B: 'static> wl_buffer::RequestDispatch<Ctx> for Buffer<B>
 where
-    Ctx: Connection,
+    Ctx: ClientContext,
     Ctx::Context: HasBuffer<Buffer = B>,
 {
     type Error = wl_server::error::Error;

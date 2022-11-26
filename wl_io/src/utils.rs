@@ -2,8 +2,7 @@
 
 use std::{
     os::{
-        fd::RawFd,
-        unix::io::{BorrowedFd, OwnedFd},
+        unix::io::{BorrowedFd, OwnedFd, RawFd},
     },
     pin::Pin,
     task::Poll,

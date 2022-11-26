@@ -50,7 +50,7 @@ impl EventHandle {
 /// Although the inner mechanism used can handle N-to-N notification, this is
 /// only intended for one-to-one single direction communication, i.e. from
 /// server context to per-client context.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[repr(transparent)]
 pub struct EventFlags(Rc<EventFlagsState>);
 

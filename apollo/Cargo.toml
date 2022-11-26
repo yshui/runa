@@ -11,7 +11,6 @@ dyn-clone = "1.0.9"
 futures-util.workspace = true
 intrusive-collections = "0.9.4"
 lazy_static = "1.4.0"
-slotmap = "1.0.6"
 wl_common = { version = "0.1.0", path = "../wl_common" }
 wl_protocol = { version = "0.1.0", path = "../wl_protocol" }
 wl_server = { version = "0.1.0", path = "../wl_server" }

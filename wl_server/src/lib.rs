@@ -1,10 +1,8 @@
 #![allow(incomplete_features)]
 #![feature(type_alias_impl_trait, trait_upcasting)]
-use std::pin::Pin;
 
-use futures_lite::{stream::StreamExt, Future};
+use futures_lite::stream::StreamExt;
 use thiserror::Error;
-use wl_io::traits::buf::AsyncBufReadWithFd;
 
 pub mod connection;
 pub mod error;
@@ -25,7 +23,7 @@ pub mod __private {
         de::Deserializer as DeserializerImpl,
         traits::{
             buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-            de::Deserializer,
+            de::Deserializer, de::Deserialize,
         },
     };
     pub use wl_protocol::{wayland::wl_display, ProtocolError};
@@ -47,16 +45,10 @@ pub struct ConnectionManager<S, Ctx> {
     ctx:       Ctx,
 }
 
-pub trait Server<Conn> {
-    type Error;
-
-    fn new_connection(&mut self, conn: Conn) -> Result<(), Self::Error>;
-}
-
 impl<S, Ctx, I, E> ConnectionManager<S, Ctx>
 where
     S: futures_lite::stream::Stream<Item = Result<I, E>> + Unpin,
-    Ctx: Server<I>,
+    Ctx: crate::server::Server<Conn = I>,
 {
     pub fn new(listeners: S, ctx: Ctx) -> Self {
         Self { listeners, ctx }
@@ -135,213 +127,180 @@ pub fn wayland_listener_auto(
     last_err.unwrap()
 }
 
-/// A server implementation that spawn a new async task for each new connection.
-/// The task is created by the AsyncContext implementation of `Ctx`.
-/// If E is the LocalExecutor, then the Task created by `Ctx` doesn't need to be
-/// Send + 'static. For now, AsyncServer is only implemented for E =
-/// LocalExecutor.
-pub struct AsyncServer<'exe, Ctx, E> {
-    ctx:      Ctx,
-    executor: &'exe E,
-}
-
-/// A trait implemented by the context used in AsyncServer. `new_connection` is
-/// called for each new connection, and returns an async task that will be
-/// spawned by the AsyncServer.
-///
-/// 'a is the lifetime of futures returned by `new_connection`, and errors
-/// returned by the futures. For using with LocalExecutor, 'a should outlive the
-/// LocalExecutor. For a threaded executor, 'a needs to be 'static.
-pub trait AsyncContext<'a, Conn> {
-    type Error: std::error::Error + 'a;
-    type Task: Future<Output = Result<(), Self::Error>> + Unpin + 'a;
-    fn new_connection(&mut self, conn: Conn) -> Self::Task;
-}
-
-impl<'a, 'b, Ctx> AsyncServer<'a, Ctx, smol::LocalExecutor<'b>> {
-    pub fn new(ctx: Ctx, executor: &'a smol::LocalExecutor<'b>) -> Self {
-        Self { ctx, executor }
-    }
-}
-
-impl<'a, 'b, Conn: 'b, Ctx> Server<Conn> for AsyncServer<'a, Ctx, smol::LocalExecutor<'b>>
-where
-    Ctx: AsyncContext<'b, Conn> + 'b,
-{
-    type Error = Ctx::Error;
-
-    fn new_connection(&mut self, conn: Conn) -> Result<(), Self::Error> {
-        use futures_util::future::TryFutureExt;
-        self.executor
-            .spawn(
-                self.ctx
-                    .new_connection(conn)
-                    .map_err(|e| tracing::error!("Error while handling connection: {}", e)),
-            )
-            .detach();
-        Ok(())
-    }
-}
-
-/// A server implements AsyncContext by calling wl_base::MessageDispatch
-pub struct AsyncDispatchServer<Ctx> {
-    _ctx: Ctx,
-}
-
-#[derive(Error, Debug)]
-pub enum AsyncDispatchServerError<E> {
-    #[error("Dispatch error: {0}")]
-    Dispatch(#[source] E),
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-impl<'a, Conn, Ctx> AsyncContext<'a, Conn> for AsyncDispatchServer<Ctx>
-where
-    Ctx: wl_common::MessageDispatch + Clone + 'a,
-    Ctx::Error: std::error::Error + 'static,
-    Conn: AsyncBufReadWithFd + std::fmt::Debug + Unpin + 'a,
-{
-    type Error = AsyncDispatchServerError<Ctx::Error>;
-    type Task = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + 'a>>;
-
-    fn new_connection(&mut self, _conn: Conn) -> Self::Task {
-        unimplemented!();
-    }
-}
-
-/// Generate message dispatch and event handling functions, given a list of
-/// global objects.
-///
-/// This macro generate these functions:
-///
-/// * Dispatch
-///
-/// ```rust
-/// async fn dispatch<'a, 'b: 'a, R>(ctx: &'a mut Ctx, reader: Pin<&mutR>) -> bool;
-/// ```
-///
-/// This uses the object store in `Ctx` to dispatch a message from `reader`.
-/// Returns whether the client connection needs to be dropped.
-///
-/// * Event handling
-///
-/// ```rust
-/// async handle_events(ctx: &mut Ctx) -> Result<(), Error>;
-/// ```
-///
-/// This handles events set on `Ctx`'s event handle. See
-/// [`crate::connection::Evented`] and [`crate::server::EventSource`] for more
-/// info on the mechanism. See [`crate::server::Globals`] for an example of
-/// `EventSource`.
+/// Generate a corresponding Objects enum from a Globals enum.
 ///
 /// # Example
 ///
 /// ```rust
-/// use wl_server::globals::*;
-/// message_switch! {
-///     error: wl_server::error::Error,
-///     globals: [ Display, Registry ],
-///     ctx: ClientContext,
+/// globals! {
+///    type ClientContext = ClientContext;
+///    #[derive(Debug)]
+///    pub enum Globals {
+///        Display(wl_server::objects::Display),
+///        Registry(wl_server::objects::Registry),
+///     }
+///     #[derive(Debug, InterfaceMessageDispatch)]
+///     #[wayland(context = "ClientContext")]
+///     pub enum Objects {
+///         // Extra objects
+///     }
 /// }
 /// ```
+///
+/// The name `Globals` and `Objects` can be changed.
+///
+/// This will generate a `From<Variant> for Globals` for each of the variants of `Globals`. And for
+/// each global, a `From<Global::Object> for Objects` will be generated.
+///
+/// `Objects` will be filled with variants from `Global::Object` for each of the globals. It can
+/// also contain extra variants, for object types that aren't associated with a particular global.
 #[macro_export]
-macro_rules! message_switch {
-    (ctx: $ctx:ty, error: $error:ty, globals: [$($global:ty),+$(,)?],$(,)?) => {
-        const _: () = {
-            impl $ctx {
-                async fn dispatch<'a, 'b: 'a, R>(
-                    &'a mut self,
-                    mut reader: Pin<&mut R>) -> bool
-                where
-                    R: $crate::__private::AsyncBufReadWithFd + 'b
-                {
-                    use $crate::__private::AsyncBufReadWithFdExt;
-                    use $crate::{
-                        __private::{
-                            wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
-                        },
-                        objects::DISPLAY_ID
-                    };
-                    let (object_id, len, buf, fd) =
-                        match R::next_message(reader.as_mut()).await {
-                            Ok(v) => v,
-                            // I/O error, no point sending the error to the client
-                            Err(e) => return true,
-                        };
-                    let mut de = DeserializerImpl::new(buf, fd);
-                    let (mut fatal, error) = 'dispatch: {
-                        let obj = self.objects().borrow().get(object_id).map(Rc::clone);
-                        if let Some(obj) = obj {
-                            $({
-                                let tmp = <$global as $crate::globals::GlobalDispatch<_>>::
-                                    dispatch(obj.as_ref(), self, object_id, de.borrow_mut()).await;
-                                match tmp {
-                                    Ok(true) => {
-                                        tracing::trace!("Dispatched {} to {}", obj.interface(),
-                                                        std::any::type_name::<$global>());
-                                        break 'dispatch (false, None)
-                                    },
-                                    Err(e) => break 'dispatch (
-                                        e.fatal(),
-                                        e.wayland_error()
-                                        .map(|(object_id, error_code)|
-                                            (
-                                                object_id,
-                                                error_code,
-                                                std::ffi::CString::new(e.to_string()).unwrap()
-                                            )
-                                        )
-                                    ),
-                                    Ok(false) => {
-                                        // not dispatched
-                                        assert_eq!(de.consumed(), (0, 0));
-                                    }
-                                }
-                            })+
-                            panic!("Unhandled interface {}", obj.interface());
-                        } else {
-                            (
-                                true,
-                                Some((
-                                    DISPLAY_ID,
-                                    wl_display::enums::Error::InvalidObject as u32,
-                                    std::ffi::CString::new(format!("Invalid object id {}", object_id)).unwrap()
-                                ))
-                            )
-                        }
-                    };
-                    if let Some((object_id, error_code, msg)) = error {
-                        // We are going to disconnect the client so we don't care about the
-                        // error.
-                        fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
-                            object_id: wl_types::Object(object_id),
-                            code: error_code,
-                            message: wl_types::Str(msg.as_c_str()),
-                        }).await.is_err();
-                    }
-                    if !fatal {
-                        let (bytes_read, fds_read) = de.consumed();
-                        assert_eq!(bytes_read, len as usize, "unparsed bytes in buffer {object_id}");
-                        reader.consume(bytes_read, fds_read);
-                    }
-                    fatal
-                }
-                fn globals() -> impl Iterator<Item = Box<dyn $crate::globals::Global<$ctx>>> {
-                    [$(Box::new(<$global as $crate::globals::GlobalDispatch<$ctx>>::INIT) as _),+].into_iter()
+macro_rules! globals {
+    (
+        __internal, $ctx:ty, $(#[$attr:meta])* ($($vis:tt)?) enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
+        $(#[$attr2:meta])* enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
+    ) => {
+        $(#[$attr])*
+        $($vis)? enum $N {
+            $($var($f)),*
+        }
+        $(
+            impl From<$f> for $N {
+                fn from(f: $f) -> Self {
+                    $N::$var(f)
                 }
             }
-        };
-    };
-
-    (ctx: $ctx:ty, globals: [$($global:ty),+$(,)?], error: $error:ty $(,)?) => {
-        $crate::message_switch! {
-            ctx: $ctx,
-            error: $error,
-            globals: [ $($global),+ ],
+        )*
+        impl $crate::globals::Bind<$ctx> for $N {
+            type Objects = $N2;
+            fn interface(&self) -> &'static str {
+                match self {
+                    $(
+                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::interface(f),
+                    )*
+                }
+            }
+            fn version(&self) -> u32 {
+                match self {
+                    $(
+                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::version(f),
+                    )*
+                }
+            }
+            fn bind<'a>(&'a self, client: &'a mut $ctx, object_id: u32) ->
+                ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ::std::io::Result<Self::Objects>> + 'a>>
+            {
+                Box::pin(async move {
+                Ok(match self {
+                    $(
+                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::bind(f, client, object_id).await?.into(),
+                    )*
+                })})
+            }
+        }
+        impl $N {
+            $($vis)? fn globals() -> impl Iterator<Item = $N> {
+                [$($N::$var(<$f as $crate::globals::ConstInit>::INIT)),*].into_iter()
+            }
+        }
+        impl $ctx {
+            $($vis)? async fn dispatch<R>(
+                &mut self,
+                mut reader: Pin<&mut R>) -> bool
+            where
+                R: $crate::__private::AsyncBufReadWithFd
+            {
+                use $crate::__private::AsyncBufReadWithFdExt;
+                use $crate::{
+                    __private::{
+                        wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
+                    },
+                    objects::DISPLAY_ID
+                };
+                let (object_id, len, buf, fd) =
+                    match R::next_message(reader.as_mut()).await {
+                        Ok(v) => v,
+                        // I/O error, no point sending the error to the client
+                        Err(e) => return true,
+                    };
+                let mut de = DeserializerImpl::new(buf, fd);
+                use $crate::connection::Objects;
+                let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
+                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
+                        object_id: wl_types::Object(object_id),
+                        code: 0,
+                        message: wl_types::str!("Invalid object ID"),
+                    }).await; // don't care about the error.
+                    return true;
+                };
+                let ret = <<Self as $crate::connection::ClientContext>::Object as $crate::__private::InterfaceMessageDispatch<Self>>::dispatch(
+                    obj.as_ref(),
+                    self,
+                    object_id,
+                    de.borrow_mut()
+                ).await;
+                let (mut fatal, error) = match ret {
+                    Ok(()) => (false, None),
+                    Err(e) =>(
+                        e.fatal(),
+                        e.wayland_error()
+                        .map(|(object_id, error_code)|
+                             (
+                                 object_id,
+                                 error_code,
+                                 std::ffi::CString::new(e.to_string()).unwrap()
+                             )
+                        )
+                    )
+                };
+                if let Some((object_id, error_code, msg)) = error {
+                    // We are going to disconnect the client so we don't care about the
+                    // error.
+                    fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
+                        object_id: wl_types::Object(object_id),
+                        code: error_code,
+                        message: wl_types::Str(msg.as_c_str()),
+                    }).await.is_err();
+                }
+                if !fatal {
+                    let (bytes_read, fds_read) = de.consumed();
+                    if bytes_read != len as usize {
+                        tracing::error!("unparsed bytes in buffer {object_id}");
+                        fatal = true;
+                    }
+                    reader.consume(bytes_read, fds_read);
+                }
+                fatal
+            }
+        }
+        $(#[$attr2])*
+        $($vis)? enum $N2 {
+            $($var(<$f as $crate::globals::Bind<$ctx>>::Objects)),*,
+            $($var2($f2)),*
         }
     };
-    ($id:ident: $val:tt, $($id2:ident: $val2:tt),+$(,)?) => {
-        $crate::message_switch! {$($id2: $val2),+, $id: $val }
-    }
+    (
+        type ClientContext = $ctx:ty;
+        $(#[$attr:meta])* pub enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
+        $(#[$attr2:meta])* pub enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
+    ) => {
+        $crate::globals!(
+            __internal,
+            $ctx,
+            $(#[$attr])* $(#[$attr])* (pub) enum $N { $($var($f)),* } $(#[$attr2])*
+            enum $N2 { $($var2($f2)),* }
+        );
+    };
+    (
+        type ClientContext = $ctx:ty;
+        $(#[$attr:meta])* enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
+        $(#[$attr2:meta])* enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
+    ) => {
+        $crate::globals!(
+            __internal,
+            $ctx,
+            $(#[$attr])* $(#[$attr])* () enum $N { $($var($f)),* } $(#[$attr2])*
+            enum $N2 { $($var2($f2)),* }
+        );
+    };
 }

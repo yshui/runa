@@ -2,10 +2,9 @@ use std::{
     ffi::CStr,
     os::{
         fd::IntoRawFd,
-        unix::{io::OwnedFd, prelude::AsRawFd},
+        unix::{prelude::AsRawFd},
     },
     pin::Pin,
-    task::Context,
 };
 
 use futures_lite::io::AsyncWriteExt;
@@ -15,7 +14,7 @@ use wl_macros::generate_protocol;
 use wl_scanner_support::{
     io::{
         buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-        de::{Deserialize, Deserializer},
+        de::{Deserialize},
         ser::Serialize,
     },
     wayland_types::{Fd, NewId, Object, Str},
@@ -25,7 +24,7 @@ generate_protocol!("protocols/wayland.xml");
 #[test]
 fn test_roundtrip() {
     futures_executor::block_on(async {
-        let mut orig_item = Event::Error(events::Error {
+        let orig_item = Event::Error(events::Error {
             object_id: Object(1),
             code:      2,
             message:   Str(CStr::from_bytes_with_nul(b"test\0").unwrap()),
@@ -41,7 +40,7 @@ fn test_roundtrip() {
             .collect::<Vec<_>>();
 
         let mut rx = ReadPool::new(buf, fds);
-        let (object_id, len, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
+        let (object_id, _len, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
         assert_eq!(object_id, 0);
         let mut de = wl_io::de::Deserializer::new(bytes, fds);
         let item = Event::deserialize(de.borrow_mut()).unwrap();
@@ -72,7 +71,7 @@ fn test_roundtrip_with_fd() {
     use wayland::wl_shm::v1::{requests, Request};
     futures_executor::block_on(async {
         let fd = std::fs::File::open("/dev/null").unwrap();
-        let mut orig_item = Request::CreatePool(requests::CreatePool {
+        let orig_item = Request::CreatePool(requests::CreatePool {
             id:   NewId(1),
             fd:   Fd::Owned(fd.into()),
             size: 100,

@@ -1,7 +1,7 @@
 #![feature(type_alias_impl_trait)]
 use std::{
     io::Result,
-    os::fd::{BorrowedFd, RawFd},
+    os::unix::io::{BorrowedFd, RawFd},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -139,7 +139,7 @@ pub mod ser {
 }
 
 pub mod de {
-    use std::os::fd::RawFd;
+    use std::os::unix::io::RawFd;
 
     pub trait Deserializer<'a>: Sized {
         /// Pop `len` bytes from the buffer, returns a slice of length `len`.
@@ -196,7 +196,7 @@ pub mod de {
 }
 
 pub mod buf {
-    use std::{future::Future, io::Result, os::fd::OwnedFd, task::ready};
+    use std::{future::Future, io::Result, os::unix::io::OwnedFd, task::ready};
 
     use super::*;
     /// Buffered I/O object for a stream of bytes with file descriptors.

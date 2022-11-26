@@ -13,7 +13,7 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{any::Any, future::Future, marker::PhantomData, rc::Rc};
+use std::{any::Any, cell::RefCell, future::Future, rc::Rc, collections::VecDeque};
 
 use derivative::Derivative;
 use wl_common::{interface_message_dispatch, utils::geometry::Point};
@@ -23,32 +23,32 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{Connection, State},
+    connection::{ClientContext, State},
     error,
     objects::{Object, DISPLAY_ID},
 };
 
-use crate::shell::{buffers::HasBuffer, surface::roles, HasShell, Shell};
+use crate::{
+    globals::{CompositorObject, SubcompositorObject},
+    shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
+    utils::RcPtr,
+};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Surface<Ctx: Connection>(
-    pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
-    PhantomData<Ctx>,
-)
-where
-    Ctx::Context: HasShell;
+pub struct Surface<Shell: shell::Shell>(pub(crate) Rc<crate::shell::surface::Surface<Shell>>);
 
-impl<Ctx: Connection> Object for Surface<Ctx>
+impl<Ctx, S> Object<Ctx> for Surface<S>
 where
-    Ctx::Context: HasShell,
+    Ctx: ClientContext,
+    Ctx::Context: HasShell<Shell = S>,
+    S: shell::Shell,
 {
     fn interface(&self) -> &'static str {
         wl_surface::NAME
     }
 
-    fn on_disconnect(&mut self, ctx: &mut dyn std::any::Any) {
-        let ctx: &mut Ctx = ctx.downcast_mut().unwrap();
+    fn on_disconnect(&mut self, ctx: &mut Ctx) {
         let mut shell = ctx.server_context().shell().borrow_mut();
         self.0.destroy(&mut shell);
     }
@@ -100,10 +100,11 @@ impl wl_protocol::ProtocolError for SurfaceError {
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> wl_surface::RequestDispatch<Ctx> for Surface<Ctx>
+impl<Ctx: ClientContext, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
-    Ctx::Context: HasShell,
+    Ctx::Context: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
     Ctx: State<CompositorState>,
+    Ctx::Object: From<wl_server::globals::DisplayObject>,
 {
     type Error = error::Error;
 
@@ -125,12 +126,13 @@ where
         _object_id: u32,
         callback: wl_types::NewId,
     ) -> Self::FrameFut<'a> {
+        use wl_server::globals::DisplayObject;
         async move {
             use wl_server::connection::{Entry, Objects};
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(callback.0);
             if entry.is_vacant() {
-                entry.or_insert(wl_server::objects::Callback);
+                entry.or_insert(DisplayObject::Callback(wl_server::objects::Callback).into());
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 let state = self.0.pending_mut(&mut shell);
                 state.add_frame_callback(callback.0);
@@ -165,8 +167,8 @@ where
             }
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = self.0.pending_mut(&mut shell);
-            let buffer = (buffer as Rc<dyn Any>)
-                .downcast::<crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>>()
+            let buffer = buffer
+                .cast::<crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>>()
                 .unwrap();
             state.set_buffer(Some(buffer.buffer.clone()));
             Ok(())
@@ -276,7 +278,13 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
-            if !ctx.state_mut().unwrap().surfaces.remove(&object_id) {
+            if ctx
+                .state_mut()
+                .unwrap()
+                .surfaces
+                .remove(&object_id)
+                .is_none()
+            {
                 panic!(
                     "Incosistent compositor state, surface {} not found",
                     object_id
@@ -296,22 +304,34 @@ where
 #[derivative(Debug(bound = ""))]
 pub struct Compositor;
 
-mod private {
-    use hashbrown::HashSet;
-    #[derive(Debug, Default)]
-    pub struct CompositorState {
-        /// List ids of surface objects
-        pub(crate) surfaces: HashSet<u32>,
+use hashbrown::{HashMap, HashSet};
+#[derive(Debug)]
+pub struct CompositorState {
+    /// Map of surface ids to outputs they are currently on
+    pub(crate) surfaces:                  HashMap<u32, HashSet<RcPtr<Output>>>,
+    pub(crate) output_changed:            Rc<RefCell<HashSet<u32>>>,
+    pub(crate) buffer:                    Option<HashSet<u32>>,
+    pub(crate) tmp_frame_callback_buffer: Option<VecDeque<u32>>,
+}
+
+impl Default for CompositorState {
+    fn default() -> Self {
+        Self {
+            surfaces:                  HashMap::new(),
+            output_changed:            Rc::new(RefCell::new(HashSet::new())),
+            buffer:                    Some(HashSet::new()),
+            tmp_frame_callback_buffer: Some(VecDeque::new()),
+        }
     }
 }
 
-pub(crate) use private::CompositorState;
-
 #[interface_message_dispatch]
-impl<Ctx: Connection> wl_compositor::RequestDispatch<Ctx> for Compositor
+impl<Ctx: ClientContext> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::Context: HasShell,
     Ctx: State<CompositorState>,
+    Ctx::Object: From<CompositorObject<Ctx>>,
+    CompositorObject<Ctx>: std::fmt::Debug,
 {
     type Error = error::Error;
 
@@ -330,7 +350,10 @@ where
         async move {
             if ctx.objects().borrow().get(id.0).is_none() {
                 // Add the id to the list of surfaces
-                ctx.state_mut().unwrap().surfaces.insert(id.0);
+                ctx.state_mut()
+                    .unwrap()
+                    .surfaces
+                    .insert(id.0, Default::default());
                 let mut objects = ctx.objects().borrow_mut();
                 let shell = ctx.server_context().shell();
                 let mut shell = shell.borrow_mut();
@@ -342,7 +365,7 @@ where
                 shell.commit(None, current);
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 objects
-                    .insert(id.0, Surface(surface, PhantomData::<Ctx>))
+                    .insert(id.0, CompositorObject::Surface(Surface(surface)))
                     .unwrap();
                 Ok(())
             } else {
@@ -361,20 +384,23 @@ where
     }
 }
 
-impl Object for Compositor {
+impl<Ctx> Object<Ctx> for Compositor {
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
 }
 
-pub struct Subsurface<Ctx: Connection>(
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""))]
+pub struct Subsurface<Ctx: ClientContext>(
     Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
 )
 where
     Ctx::Context: HasShell;
 
-impl<Ctx: Connection> Object for Subsurface<Ctx>
+impl<Ctx> Object<Ctx> for Subsurface<Ctx>
 where
+    Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
     fn interface(&self) -> &'static str {
@@ -383,7 +409,7 @@ where
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> wl_subsurface::RequestDispatch<Ctx> for Subsurface<Ctx>
+impl<Ctx: ClientContext> wl_subsurface::RequestDispatch<Ctx> for Subsurface<Ctx>
 where
     Ctx::Context: HasShell,
 {
@@ -455,9 +481,10 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct Subcompositor;
 
-impl Object for Subcompositor {
+impl<Ctx> Object<Ctx> for Subcompositor {
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -499,9 +526,10 @@ impl wl_protocol::ProtocolError for Error {
 }
 
 #[interface_message_dispatch]
-impl<Ctx: Connection> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
+impl<Ctx: ClientContext> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
 where
     Ctx::Context: HasShell,
+    Ctx::Object: From<SubcompositorObject<Ctx>>,
 {
     type Error = wl_server::error::Error;
 
@@ -534,8 +562,8 @@ where
             let surface_id = surface.0;
             let surface = objects
                 .get(surface.0)
-                .and_then(|r| (r.as_ref() as &dyn Any).downcast_ref())
-                .map(|sur: &Surface<Ctx>| sur.0.clone())
+                .and_then(|r| r.as_ref().cast())
+                .map(|sur: &Surface<ShellOf<Ctx::Context>>| sur.0.clone())
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       surface.0,
@@ -544,8 +572,8 @@ where
                 })?;
             let parent = objects
                 .get(parent.0)
-                .and_then(|r| (r.as_ref() as &dyn Any).downcast_ref())
-                .map(|sur: &Surface<Ctx>| sur.0.clone())
+                .and_then(|r| r.as_ref().cast())
+                .map(|sur: &Surface<ShellOf<Ctx::Context>>| sur.0.clone())
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       parent.0,
@@ -564,7 +592,9 @@ where
                         subsurface_object: object_id,
                     }))
                 } else {
-                    entry.or_insert(Subsurface::<Ctx>(surface));
+                    entry.or_insert(
+                        SubcompositorObject::Subsurface(Subsurface::<Ctx>(surface)).into(),
+                    );
                     Ok(())
                 }
             } else {

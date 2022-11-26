@@ -1,8 +1,7 @@
 use std::{
     io::Result,
     os::{
-        fd::RawFd,
-        unix::io::{BorrowedFd, OwnedFd},
+        unix::io::{RawFd, BorrowedFd, OwnedFd},
     },
     pin::Pin,
     task::{ready, Context, Poll},

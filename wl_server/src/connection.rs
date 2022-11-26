@@ -5,27 +5,27 @@
 
 use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::ready};
 
+use derivative::Derivative;
 use hashbrown::{hash_map, HashMap};
+use wl_common::InterfaceMessageDispatch;
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
 use crate::objects::Object;
 
 /// Per client mapping from object ID to objects. This is the reference
 /// implementation of [`Objects`].
-#[derive(Debug, Default)]
-pub struct Store {
-    map: HashMap<u32, Rc<dyn Object>>,
+#[derive(Debug, Derivative)]
+#[derivative(Default(bound = ""))]
+pub struct Store<Object> {
+    map: HashMap<u32, Rc<Object>>,
 }
 
-pub trait Entry<'a>: Sized {
+pub trait Entry<'a, Object>: Sized {
     fn is_vacant(&self) -> bool;
-    fn or_insert_boxed(self, v: Box<dyn Object>) -> &'a mut dyn Object;
-    fn or_insert<T: Object>(self, v: T) -> &'a mut dyn Object {
-        self.or_insert_boxed(Box::new(v))
-    }
+    fn or_insert(self, v: Object) -> &'a mut Object;
 }
 
-impl<'a> Entry<'a> for StoreEntry<'a> {
+impl<'a, Object> Entry<'a, Object> for StoreEntry<'a, Object> {
     fn is_vacant(&self) -> bool {
         match self {
             hash_map::Entry::Vacant(_) => true,
@@ -33,13 +33,7 @@ impl<'a> Entry<'a> for StoreEntry<'a> {
         }
     }
 
-    fn or_insert_boxed(self, v: Box<dyn Object>) -> &'a mut dyn Object {
-        let r = hash_map::Entry::or_insert(self, v.into());
-        // Safety: we just created the Rc, so it must have only one reference
-        unsafe { Rc::get_mut(r).unwrap_unchecked() }
-    }
-
-    fn or_insert<T: Object>(self, v: T) -> &'a mut dyn Object {
+    fn or_insert(self, v: Object) -> &'a mut Object {
         let r = hash_map::Entry::or_insert(self, Rc::new(v));
         // Safety: we just created the Rc, so it must have only one reference
         unsafe { Rc::get_mut(r).unwrap_unchecked() }
@@ -49,80 +43,61 @@ impl<'a> Entry<'a> for StoreEntry<'a> {
 /// A bundle of objects.
 ///
 /// Usually this is the set of objects a client has bound to.
-pub trait Objects {
-    type Entry<'a>: Entry<'a>
+pub trait Objects<O> {
+    type Entry<'a>: Entry<'a, O>
     where
-        Self: 'a;
+        Self: 'a,
+        O: 'a;
     /// Insert object into the store with the given ID. Returns Ok(()) if
     /// successful, Err(T) if the ID is already in use.
-    fn insert<T: Object>(&mut self, id: u32, object: T) -> Result<(), T>;
-    fn insert_boxed(
-        &mut self,
-        object_id: u32,
-        object: Box<dyn Object>,
-    ) -> Result<(), Box<dyn Object>>;
-    fn remove(&mut self, id: u32) -> Option<Rc<dyn Object>>;
+    fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+    fn remove(&mut self, id: u32) -> Option<Rc<O>>;
     /// Get an object from the store.
     ///
     /// Why does this return a `Rc`? Because we need mutable access to the
     /// client context while holding a reference to the object, which would
     /// in turn borrow the client context if it's not a Rc.
-    fn get(&self, id: u32) -> Option<&Rc<dyn Object>>;
+    fn get(&self, id: u32) -> Option<&Rc<O>>;
     fn entry(&mut self, id: u32) -> Self::Entry<'_>;
 }
-impl Store {
+impl<O> Store<O> {
     /// Remove all objects from the store. MUST be called before the store is
     /// dropped, to ensure on_disconnect is called for all objects.
-    pub fn clear_for_disconnect<Ctx: std::any::Any>(&mut self, ctx: &mut Ctx) {
+    pub fn clear_for_disconnect<Ctx>(&mut self, ctx: &mut Ctx)
+    where
+        O: Object<Ctx>,
+    {
         for (_, ref mut obj) in self.map.drain() {
             Rc::get_mut(obj).unwrap().on_disconnect(ctx);
         }
     }
 }
-impl Drop for Store {
+impl<Object> Drop for Store<Object> {
     fn drop(&mut self) {
         assert!(self.map.is_empty(), "Store not cleared before drop");
     }
 }
 
-pub type StoreEntry<'a> = hash_map::Entry<'a, u32, Rc<dyn Object>, hash_map::DefaultHashBuilder>;
-impl Objects for Store {
-    type Entry<'a> = StoreEntry<'a>;
+pub type StoreEntry<'a, O> = hash_map::Entry<'a, u32, Rc<O>, hash_map::DefaultHashBuilder>;
+impl<O> Objects<O> for Store<O> {
+    type Entry<'a> = StoreEntry<'a, O> where O: 'a;
 
     #[inline]
-    fn insert<T: Object>(&mut self, object_id: u32, object: T) -> Result<(), T> {
+    fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
         match self.map.entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
-                v.insert(Rc::new(object));
+                v.insert(Rc::new(object.into()));
                 Ok(())
             },
         }
     }
 
-    fn insert_boxed(
-        &mut self,
-        object_id: u32,
-        object: Box<dyn Object>,
-    ) -> Result<(), Box<dyn Object>> {
-        match self.map.entry(object_id) {
-            hash_map::Entry::Occupied(_) => Err(object),
-            hash_map::Entry::Vacant(v) => {
-                v.insert(object.into());
-                Ok(())
-            },
-        }
+    fn remove(&mut self, object_id: u32) -> Option<Rc<O>> {
+        self.map.remove(&object_id)
     }
 
-    fn remove(&mut self, object_id: u32) -> Option<Rc<dyn Object>> {
-        if let Some(obj) = self.map.remove(&object_id) {
-            Some(obj)
-        } else {
-            None
-        }
-    }
-
-    fn get(&self, object_id: u32) -> Option<&Rc<dyn Object>> {
+    fn get(&self, object_id: u32) -> Option<&Rc<O>> {
         self.map.get(&object_id)
     }
 
@@ -132,16 +107,17 @@ impl Objects for Store {
 }
 
 /// A client connection
-pub trait Connection: Sized + crate::events::EventMux + 'static {
-    type Context: crate::server::Server<Connection = Self> + 'static;
+pub trait ClientContext: Sized + crate::events::EventMux + 'static {
+    type Context: crate::server::Server<ClientContext = Self> + 'static;
     type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a,
-        M: 'a;
+        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
     type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a;
-    type Objects: Objects;
+    type Objects: Objects<Self::Object>;
+    type Object: InterfaceMessageDispatch<Self> + Object<Self> + std::fmt::Debug;
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::Context;
 
@@ -158,6 +134,10 @@ pub trait Connection: Sized + crate::events::EventMux + 'static {
     /// Flush connection
     fn flush(&self) -> Self::Flush<'_>;
     fn objects(&self) -> &RefCell<Self::Objects>;
+    /// Spawn a client dependent task from the context. When the client is
+    /// disconnected, the task should be cancelled, otherwise the task
+    /// should keep running.
+    fn spawn(&self, fut: impl Future<Output = ()> + 'static);
 }
 
 /// Implementation helper for Connection::send. This assumes you stored the

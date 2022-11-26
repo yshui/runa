@@ -4,46 +4,107 @@ use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc
 use anyhow::Result;
 use apollo::shell::{
     buffers::{HasBuffer, RendererBuffer},
-    DefaultShell, HasShell,
+    HasShell,
 };
 use futures_util::{FutureExt, TryStreamExt};
 use log::debug;
+use smol::{LocalExecutor, Task};
+use wl_common::InterfaceMessageDispatch;
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
-    connection::{self, Connection as _, Objects, Store},
+    __private::AsyncBufReadWithFdExt,
+    connection::{self, ClientContext as _, Store},
     events::EventMux,
-    renderer_capability::RendererCapability, __private::AsyncBufReadWithFdExt,
+    renderer_capability::RendererCapability,
 };
 mod render;
+mod shell;
+use shell::DefaultShell;
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals: RefCell<wl_server::server::GlobalStore<CrescentClient>>,
-    shell:   Rc<RefCell<<Crescent as HasShell>::Shell>>,
+    globals:  RefCell<wl_server::server::GlobalStore<CrescentClient>>,
+    shell:    Rc<RefCell<<Crescent as HasShell>::Shell>>,
+    executor: LocalExecutor<'static>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Crescent(Rc<CrescentState>);
 
-wl_server::message_switch! {
-    ctx: CrescentClient,
-    error: wl_server::error::Error,
-    globals: [
-        wl_server::globals::Display,
-        wl_server::globals::Registry,
-        apollo::globals::Compositor,
-        apollo::globals::Subcompositor,
-        apollo::globals::Shm,
-        apollo::globals::xdg_shell::WmBase,
-    ],
+wl_server::globals! {
+    type ClientContext = CrescentClient;
+    pub enum Globals {
+        Display(wl_server::globals::Display),
+        Registry(wl_server::globals::Registry),
+        Compositor(apollo::globals::Compositor),
+        Subcompositor(apollo::globals::Subcompositor),
+        Shm(apollo::globals::Shm),
+        WmBase(apollo::globals::xdg_shell::WmBase),
+    }
+    #[derive(InterfaceMessageDispatch, Debug)]
+    #[wayland(context = "CrescentClient")]
+    pub enum Objects {
+        Buffer(apollo::objects::Buffer<RendererBuffer<render::BufferData>>),
+    }
 }
 
 impl wl_server::server::Server for Crescent {
-    type Connection = CrescentClient;
-    type Globals = wl_server::server::GlobalStore<Self::Connection>;
+    type ClientContext = CrescentClient;
+    type Conn = UnixStream;
+    type Error = ();
+    type Global = Globals;
+    type Globals = wl_server::server::GlobalStore<Self::ClientContext>;
 
     fn globals(&self) -> &RefCell<Self::Globals> {
         &self.0.globals
+    }
+
+    fn new_connection(&self, conn: UnixStream) -> Result<(), Self::Error> {
+        debug!("New connection");
+        let state = self.clone();
+        self.0
+            .executor
+            .spawn(async move {
+                use wl_server::connection::Objects as _;
+                let (rx, tx) = ::wl_io::split_unixstream(conn)?;
+                let mut client_ctx = CrescentClient {
+                    store: RefCell::new(Store::default()),
+                    per_client: Default::default(),
+                    event_flags: Default::default(),
+                    state,
+                    tasks: Default::default(),
+                    tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
+                };
+                client_ctx
+                    .objects()
+                    .borrow_mut()
+                    .insert(
+                        1,
+                        wl_server::globals::DisplayObject::Display(wl_server::objects::Display),
+                    )
+                    .unwrap();
+                let mut read = BufReaderWithFd::new(rx);
+                let _span = tracing::debug_span!("main loop").entered();
+                loop {
+                    // Flush output before we start waiting.
+                    client_ctx.flush().await?;
+                    futures_util::select! {
+                        _ = Pin::new(&mut read).next_message().fuse() => {
+                            if client_ctx.dispatch(Pin::new(&mut read)).await {
+                                break;
+                            }
+                        },
+                        flags = client_ctx.event_flags.listen().fuse() => {
+                            tracing::trace!("got events");
+                            client_ctx.dispatch_events(flags).await?;
+                        }
+                    }
+                }
+                client_ctx.flush().await?;
+                Ok::<(), wl_server::error::Error>(())
+            })
+            .detach();
+        Ok(())
     }
 }
 impl HasBuffer for Crescent {
@@ -67,10 +128,11 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:       RefCell<connection::Store>,
+    store:       RefCell<connection::Store<Objects>>,
     per_client:  wl_server::utils::UnboundedAggregate,
     event_flags: wl_server::events::EventFlags,
     state:       Crescent,
+    tasks:       RefCell<Vec<Task<()>>>,
     tx:          Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
 }
 
@@ -111,12 +173,15 @@ impl EventMux for CrescentClient {
     }
 }
 
-impl connection::Connection for CrescentClient {
+impl connection::ClientContext for CrescentClient {
     type Context = Crescent;
-    type Objects = Store;
+    type Object = Objects;
+    type Objects = Store<Self::Object>;
 
     type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
-    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where M: 'a;
+    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a
+    where
+        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
 
     fn server_context(&self) -> &Self::Context {
         &self.state
@@ -141,50 +206,10 @@ impl connection::Connection for CrescentClient {
     fn objects(&self) -> &RefCell<Self::Objects> {
         &self.store
     }
-}
 
-impl<'a> wl_server::AsyncContext<'a, UnixStream> for Crescent {
-    type Error = ::wl_server::error::Error;
-
-    type Task = impl std::future::Future<Output = Result<(), Self::Error>> + 'a;
-
-    fn new_connection(&mut self, conn: UnixStream) -> Self::Task {
-        debug!("New connection");
-        let state = self.clone();
-        Box::pin(async move {
-            let (rx, tx) = ::wl_io::split_unixstream(conn)?;
-            let mut client_ctx = CrescentClient {
-                store: RefCell::new(Store::default()),
-                per_client: Default::default(),
-                event_flags: Default::default(),
-                state,
-                tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
-            };
-            client_ctx
-                .objects()
-                .borrow_mut()
-                .insert(1, wl_server::objects::Display)
-                .unwrap();
-            let mut read = BufReaderWithFd::new(rx);
-            let _span = tracing::debug_span!("main loop").entered();
-            loop {
-                // Flush output before we start waiting.
-                client_ctx.flush().await?;
-                futures_util::select! {
-                    _ = Pin::new(&mut read).next_message().fuse() => {
-                        if client_ctx.dispatch(Pin::new(&mut read)).await {
-                            break;
-                        }
-                    },
-                    flags = client_ctx.event_flags.listen().fuse() => {
-                        tracing::trace!("got events");
-                        client_ctx.dispatch_events(flags).await?;
-                    }
-                }
-            }
-            client_ctx.flush().await?;
-            Ok(())
-        })
+    fn spawn(&self, fut: impl Future<Output = ()> + 'static) {
+        let task = self.state.0.executor.spawn(fut);
+        self.tasks.borrow_mut().push(task);
     }
 }
 
@@ -212,26 +237,29 @@ fn main() -> Result<()> {
         })
     });
     let window = rx.recv().unwrap();
-    let (listener, _guard) = wl_server::wayland_listener_auto()?;
-    let listener = smol::Async::new(listener)?;
     let server = Crescent(Rc::new(CrescentState {
-        globals: RefCell::new(CrescentClient::globals().collect()),
-        shell:   Default::default(),
+        globals:  RefCell::new(Globals::globals().collect()),
+        shell:    Default::default(),
+        executor: LocalExecutor::new(),
     }));
     let shell2 = server.0.shell.clone();
-    let executor = smol::LocalExecutor::new();
-    let server = wl_server::AsyncServer::new(server, &executor);
-    let incoming = Box::pin(
-        listener
-            .incoming()
-            .and_then(|conn| future::ready(conn.into_inner())),
-    );
     tracing::debug!("Size: {:?}", window.inner_size());
-    let renderer = smol::block_on(render::Renderer::new(&window, window.inner_size(), shell2));
-    let mut cm = wl_server::ConnectionManager::new(incoming, server);
-    let _render = executor.spawn(async move {
+    let _render = server.0.executor.spawn(async move {
+        let renderer = render::Renderer::new(&window, window.inner_size(), shell2).await;
         renderer.render_loop(event_rx).await;
     });
 
-    Ok(smol::block_on(executor.run(cm.run()))?)
+    let (listener, _guard) = wl_server::wayland_listener_auto()?;
+    let server2 = server.clone();
+    let cm_task = server.0.executor.spawn(async move {
+        let listener = smol::Async::new(listener)?;
+        let incoming = Box::pin(
+            listener
+                .incoming()
+                .and_then(|conn| future::ready(conn.into_inner())),
+        );
+        let mut cm = wl_server::ConnectionManager::new(incoming, server2);
+        cm.run().await
+    });
+    Ok(smol::block_on(server.0.executor.run(cm_task)).unwrap())
 }

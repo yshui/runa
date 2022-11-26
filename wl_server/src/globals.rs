@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, rc::Rc};
+use std::{future::Future, rc::Rc};
 
 use ::wl_common::InterfaceMessageDispatch;
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
@@ -10,20 +10,18 @@ use crate::{
     server::{GlobalOf, Server},
 };
 
-type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-
 pub trait Bind<Ctx> {
     /// An object that is the union of all objects that can be created from this
     /// global.
     type Objects;
+    type BindFut<'a>: Future<Output = std::io::Result<Self::Objects>> + 'a
+    where
+        Ctx: 'a,
+        Self: 'a;
     /// Called when the global is bound to a client, return the client side
     /// object, and optionally an I/O task to be completed after the object is
     /// inserted into the client's object store
-    fn bind<'a>(
-        &'a self,
-        client: &'a mut Ctx,
-        object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>>;
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a>;
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
 }
@@ -51,6 +49,8 @@ where
 {
     type Objects = DisplayObject;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         wl_display::v1::NAME
     }
@@ -59,14 +59,8 @@ where
         wl_display::v1::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        _client: &'a mut Ctx,
-        _object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
-        Box::pin(futures_util::future::ok(DisplayObject::Display(
-            crate::objects::Display,
-        )))
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
+        futures_util::future::ok(DisplayObject::Display(crate::objects::Display))
     }
 }
 
@@ -96,6 +90,8 @@ where
 {
     type Objects = RegistryObject;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }
@@ -104,11 +100,7 @@ where
         wl_registry::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        client: &'a mut Ctx,
-        object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         use crate::server::Globals;
         // Registry::new would add a listener into the Server EventSource. If you want
         // to implement the Registry global yourself, you need to remember to do
@@ -125,14 +117,14 @@ where
             .globals()
             .borrow()
             .add_update_listener((handle, Ctx::SLOT));
-        Box::pin(async move {
+        async move {
             // This should send existing globals. We can't rely on setting the event flags
             // on `client`, because we need to send this _immediately_, whereas
             // the event handling will happen at an arbitrary time in the
             // future.
             Registry::invoke(client).await?;
             Ok(RegistryObject::Registry(crate::objects::Registry))
-        })
+        }
     }
 }
 

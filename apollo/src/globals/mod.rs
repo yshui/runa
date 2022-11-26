@@ -20,8 +20,6 @@ use crate::{
     shell::{buffers::HasBuffer, HasShell, Shell, ShellOf},
 };
 
-type PinnedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor;
@@ -36,6 +34,8 @@ where
 {
     type Objects = CompositorObject<Ctx>;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -44,19 +44,15 @@ where
         wl_compositor::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        client: &'a mut Ctx,
-        _object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
+    fn bind<'a>(&'a self, client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
         client
             .server_context()
             .shell()
             .borrow()
             .add_render_listener((client.event_handle(), Ctx::SLOT));
-        Box::pin(futures_util::future::ok(CompositorObject::Compositor(
+        futures_util::future::ok(CompositorObject::Compositor(
             crate::objects::compositor::Compositor,
-        )))
+        ))
     }
 }
 
@@ -87,11 +83,8 @@ where
         use wl_server::{connection::Objects, objects::Object};
         async move {
             // Use a tmp buffer so we don't need to hold RefMut of `current` acorss await.
-            let mut tmp_frame_callback_buffer = ctx
-                .state_mut()
-                .tmp_frame_callback_buffer
-                .take()
-                .unwrap();
+            let mut tmp_frame_callback_buffer =
+                ctx.state_mut().tmp_frame_callback_buffer.take().unwrap();
             let state = ctx.state();
             let empty = Default::default();
             let surfaces = state.map(|s| &s.surfaces).unwrap_or(&empty);
@@ -150,6 +143,8 @@ where
 {
     type Objects = SubcompositorObject<Ctx>;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }
@@ -158,13 +153,9 @@ where
         wl_subcompositor::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        _client: &'a mut Ctx,
-        _object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
-        Box::pin(futures_util::future::ok(
-            SubcompositorObject::Subcompositor(crate::objects::compositor::Subcompositor),
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
+        futures_util::future::ok(SubcompositorObject::Subcompositor(
+            crate::objects::compositor::Subcompositor,
         ))
     }
 }
@@ -187,6 +178,8 @@ where
 {
     type Objects = ShmObject;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -195,13 +188,9 @@ where
         wl_shm::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        client: &'a mut Ctx,
-        object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         let formats = client.server_context().formats();
-        Box::pin(async move {
+        async move {
             // Send known buffer formats
             for format in formats {
                 client
@@ -212,6 +201,6 @@ where
                     .await?;
             }
             Ok(ShmObject::Shm(crate::objects::shm::Shm::new()))
-        })
+        }
     }
 }

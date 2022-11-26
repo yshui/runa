@@ -13,6 +13,7 @@ members = [
   "wl_io_traits",
   "wl_protocol",
   "crescent",
+  "scanner_bench",
 ]
 exclude = [
   "testbench"

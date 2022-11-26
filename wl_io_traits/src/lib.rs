@@ -139,34 +139,13 @@ pub mod ser {
 }
 
 pub mod de {
-    use std::os::unix::io::RawFd;
-
-    pub trait Deserializer<'a>: Sized {
-        /// Pop `len` bytes from the buffer, returns a slice of length `len`.
-        /// The numnber of consumed bytes should be `len` aligned up to
-        /// 4 bytes boundaries. This only affects the number of bytes
-        /// consumed, the returned slice is not always `len` bytes long.
-        fn pop_bytes(&mut self, len: usize) -> &'a [u8];
-        fn pop_fd(&mut self) -> RawFd;
-        #[inline]
-        fn pop_i32(&mut self) -> i32 {
-            let slice = self.pop_bytes(4);
-            // Safety: slice is guaranteed to be 4 bytes long
-            i32::from_ne_bytes(slice.try_into().unwrap())
-        }
-
-        #[inline]
-        fn pop_u32(&mut self) -> u32 {
-            let slice = self.pop_bytes(4);
-            // Safety: slice is guaranteed to be 4 bytes long
-            u32::from_ne_bytes(slice.try_into().unwrap())
-        }
-    }
+    use std::{convert::Infallible, os::unix::io::RawFd};
 
     pub enum Error {
         InvalidIntEnum(i32, &'static str),
         InvalidUintEnum(u32, &'static str),
         UnknownOpcode(u32, &'static str),
+        TrailingData(u32, u32),
     }
 
     impl std::fmt::Debug for Error {
@@ -178,6 +157,10 @@ pub mod de {
                     write!(f, "uint {} is not a valid value for {}", v, name),
                 Error::UnknownOpcode(v, name) =>
                     write!(f, "opcode {} is not valid for {}", v, name),
+                Error::TrailingData(expected, got) => write!(
+                    f,
+                    "message trailing bytes, expected {expected} bytes, got {got} bytes"
+                ),
             }
         }
     }
@@ -191,7 +174,14 @@ pub mod de {
     impl std::error::Error for Error {}
 
     pub trait Deserialize<'a>: Sized {
-        fn deserialize<D: Deserializer<'a>>(deserializer: D) -> Result<Self, Error>;
+        /// Deserialize from the given buffer. Returns deserialized message, and number of bytes
+        /// and file descriptors consumed, respectively.
+        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<(Self, usize, usize), Error>;
+    }
+    impl<'a> Deserialize<'a> for Infallible {
+        fn deserialize(_: &'a [u8], _: &'a [RawFd]) -> Result<(Self, usize, usize), Error> {
+            Err(Error::UnknownOpcode(0, "unexpected message for object"))
+        }
     }
 }
 
@@ -332,9 +322,10 @@ pub mod buf {
 
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
 
-        /// Write data into the buffer. This function should just do memory copy and cannot fail.
-        /// If the buffer is not big enough, this means the caller has not called poll_reserve
-        /// properly, and this function should panic.
+        /// Write data into the buffer. This function should just do memory copy
+        /// and cannot fail. If the buffer is not big enough, this means
+        /// the caller has not called poll_reserve properly, and this
+        /// function should panic.
         ///
         /// # Panic
         ///

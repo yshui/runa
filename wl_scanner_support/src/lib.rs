@@ -7,8 +7,52 @@ pub enum Error {
 }
 
 pub mod io {
+    use std::os::unix::io::RawFd;
+
     pub use futures_lite::AsyncBufRead;
     pub use wl_io_traits::*;
+    #[inline]
+    pub fn pop_fd(fds: &mut &[RawFd]) -> RawFd {
+        assert!(!fds.is_empty(), "Not enough fds in buffer");
+        // Safety: we checked that the slice is long enough
+        let ret = unsafe { *fds.get_unchecked(0) };
+        *fds = &fds[1..];
+        ret
+    }
+
+    #[inline]
+    /// Pop `len` bytes from the buffer and returns it. Advances the buffer by `len` aligned up to
+    /// 4 bytes.
+    pub fn pop_bytes<'a>(bytes: &mut &'a [u8], len: usize) -> &'a [u8] {
+        use std::slice::from_raw_parts;
+        let blen = bytes.len();
+        let len_aligned = (len + 3) & !3;
+        assert!(
+            blen >= len_aligned,
+            "Not enough bytes in buffer, has {}, asking for {}",
+            blen,
+            len_aligned
+        );
+        let ptr = bytes.as_ptr();
+        // Safety: we checked that the slice is long enough
+        let (ret, rest) = unsafe { (from_raw_parts(ptr, len), from_raw_parts(ptr.add(len_aligned), blen - len_aligned)) };
+        *bytes = rest;
+        ret
+    }
+
+    #[inline]
+    pub fn pop_i32(bytes: &mut &[u8]) -> i32 {
+        let slice = pop_bytes(bytes, 4);
+        // Safety: slice is guaranteed to be 4 bytes long
+        i32::from_ne_bytes(unsafe { *(slice.as_ptr() as *const [u8; 4]) })
+    }
+
+    #[inline]
+    pub fn pop_u32(bytes: &mut &[u8]) -> u32 {
+        let slice = pop_bytes(bytes, 4);
+        // Safety: slice is guaranteed to be 4 bytes long
+        u32::from_ne_bytes(unsafe { *(slice.as_ptr() as *const [u8; 4]) })
+    }
 }
 
 pub trait ProtocolError: std::error::Error + Send + Sync + 'static {

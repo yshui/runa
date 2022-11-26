@@ -20,10 +20,9 @@ pub mod __private {
     pub use static_assertions::assert_impl_all;
     pub use wl_common::InterfaceMessageDispatch;
     pub use wl_io::{
-        de::Deserializer as DeserializerImpl,
         traits::{
             buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-            de::Deserializer, de::Deserialize,
+            de::Deserialize,
         },
     };
     pub use wl_protocol::{wayland::wl_display, ProtocolError};
@@ -173,6 +172,9 @@ macro_rules! globals {
         )*
         impl $crate::globals::Bind<$ctx> for $N {
             type Objects = $N2;
+            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<Self::Objects>> + 'a
+            where
+                Self: 'a;
             fn interface(&self) -> &'static str {
                 match self {
                     $(
@@ -187,15 +189,12 @@ macro_rules! globals {
                     )*
                 }
             }
-            fn bind<'a>(&'a self, client: &'a mut $ctx, object_id: u32) ->
-                ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ::std::io::Result<Self::Objects>> + 'a>>
-            {
-                Box::pin(async move {
-                Ok(match self {
-                    $(
+            fn bind<'a>(&'a self, client: &'a mut $ctx, object_id: u32) -> Self::BindFut<'a> {
+                async move {
+                    Ok(match self {$(
                         $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::bind(f, client, object_id).await?.into(),
-                    )*
-                })})
+                    )*})
+                }
             }
         }
         impl $N {
@@ -213,7 +212,7 @@ macro_rules! globals {
                 use $crate::__private::AsyncBufReadWithFdExt;
                 use $crate::{
                     __private::{
-                        wl_types, wl_display::v1 as wl_display, ProtocolError, DeserializerImpl,
+                        wl_types, wl_display::v1 as wl_display, ProtocolError,
                     },
                     objects::DISPLAY_ID
                 };
@@ -223,7 +222,6 @@ macro_rules! globals {
                         // I/O error, no point sending the error to the client
                         Err(e) => return true,
                     };
-                let mut de = DeserializerImpl::new(buf, fd);
                 use $crate::connection::Objects;
                 let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
                     let _ = self.send(DISPLAY_ID, wl_display::events::Error {
@@ -233,14 +231,14 @@ macro_rules! globals {
                     }).await; // don't care about the error.
                     return true;
                 };
-                let ret = <<Self as $crate::connection::ClientContext>::Object as $crate::__private::InterfaceMessageDispatch<Self>>::dispatch(
+                let (ret, bytes_read, fds_read) = <<Self as $crate::connection::ClientContext>::Object as $crate::__private::InterfaceMessageDispatch<Self>>::dispatch(
                     obj.as_ref(),
                     self,
                     object_id,
-                    de.borrow_mut()
+                    (buf, fd),
                 ).await;
                 let (mut fatal, error) = match ret {
-                    Ok(()) => (false, None),
+                    Ok(_) => (false, None),
                     Err(e) =>(
                         e.fatal(),
                         e.wayland_error()
@@ -263,9 +261,12 @@ macro_rules! globals {
                     }).await.is_err();
                 }
                 if !fatal {
-                    let (bytes_read, fds_read) = de.consumed();
+                    use $crate::objects::Object;
                     if bytes_read != len as usize {
-                        tracing::error!("unparsed bytes in buffer {object_id}");
+                        let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
+                        let opcode = len_opcode & 0xffff;
+                        tracing::error!("unparsed bytes in buffer, {bytes_read} != {len}. object_id: {}@{object_id}, opcode: {opcode}",
+                                        obj.interface());
                         fatal = true;
                     }
                     reader.consume(bytes_read, fds_read);

@@ -21,6 +21,7 @@ use crate::{
 pub struct WmBase;
 
 impl<Ctx> Object<Ctx> for WmBase {
+    type Request<'a> = xdg_wm_base::Request;
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
     }
@@ -109,6 +110,7 @@ where
     Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
+    type Request<'a> = xdg_surface::Request;
     fn interface(&self) -> &'static str {
         xdg_surface::NAME
     }
@@ -221,6 +223,7 @@ where
     Ctx::Context: HasShell,
     Ctx: ClientContext,
 {
+    type Request<'a> = xdg_toplevel::Request<'a>;
     fn interface(&self) -> &'static str {
         xdg_toplevel::NAME
     }

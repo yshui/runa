@@ -11,7 +11,6 @@ use std::{
 };
 
 pub mod buf;
-pub mod de;
 pub mod utils;
 
 pub use buf::*;

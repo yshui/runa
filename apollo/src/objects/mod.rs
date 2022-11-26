@@ -18,6 +18,7 @@ pub struct Buffer<B> {
     pub buffer: Rc<B>,
 }
 impl<B: 'static, Ctx> Object<Ctx> for Buffer<B> {
+    type Request<'a> = wl_buffer::Request;
     fn interface(&self) -> &'static str {
         wl_buffer::NAME
     }

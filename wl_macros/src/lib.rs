@@ -279,7 +279,7 @@ pub fn interface_message_dispatch(
         });
         quote! {
             #message_ty::#var(msg) => {
-                #trait_::#ident(self, ctx, object_id, #(msg.#args),*).await
+                (#trait_::#ident(self, ctx, object_id, #(msg.#args),*).await, bytes_read, fds_read)
             }
         }
     });
@@ -319,34 +319,36 @@ pub fn interface_message_dispatch(
             //}
             impl #generics #our_trait for #self_ty #where_clause {
                 type Error = #error;
-                type Fut<'a, D> = impl ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
+                type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
                 where
                     Self: 'a,
-                    Ctx: 'a,
-                    D: #crate_::__private::Deserializer<'a> + 'a;
-                fn dispatch<'a, D: #crate_::__private::Deserializer<'a> + 'a>(
+                    Ctx: 'a;
+                fn dispatch<'a>(
                     &'a self,
                     ctx: &'a mut Ctx,
                     object_id: u32,
-                    reader: D,
-                ) -> Self::Fut<'a, D>
+                    reader: (&'a [u8], &'a [::std::os::unix::io::RawFd]),
+                ) -> Self::Fut<'a>
                 {
-                    let msg: ::std::result::Result<#message_ty, _> =
-                        #crate_::__private::Deserialize::deserialize(reader);
+                    let res: Result<(_, _, _), _> =
+                        <#message_ty as #crate_::__private::Deserialize>::deserialize(reader.0, reader.1);
                     async move {
-                        let msg = msg?;
-                        match msg {
-                            #(#match_items),*
+                        match res {
+                            Ok((msg, bytes_read, fds_read)) => {
+                                match msg {
+                                    #(#match_items),*
+                                }
+                            },
+                            Err(e) => (Err(e.into()), 0, 0),
                         }
                     }
                 }
             }
         };
-    }
-    .into()
+    }.into()
 }
 
-/// Generate `wl_common::InterfaceMessageDispatch` for an enum type.
+/// Generate `InterfaceMessageDispatch` and `Object` impls for an enum type.
 ///
 /// Generates a InterfaceMessageDispatch that dispatches to the
 /// InterfaceMessageDispatch implemented by the enum variants.
@@ -524,23 +526,22 @@ pub fn interface_message_dispatch_for_enum(
     let ctx_lifetime_bound = if context.is_some() {
         quote! {}
     } else {
-        quote! { Ctx: 'a, }
+        quote! { Ctx: 'a }
     };
     quote! {
         impl #impl_generics #crate_::__private::InterfaceMessageDispatch<#context_param> for #ident #ty_generics
         #where_clause {
             type Error = <#first_var as #crate_::__private::InterfaceMessageDispatch<#context_param>>::Error;
-            type Fut<'a, D> = impl ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
+            type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
             where
                 Self: 'a,
-                #ctx_lifetime_bound
-                D: #crate_::__private::Deserializer<'a> + 'a;
-            fn dispatch<'a, D: #crate_::__private::Deserializer<'a> + 'a>(
+                #ctx_lifetime_bound;
+            fn dispatch<'a>(
                 &'a self,
                 ctx: &'a mut #context_param,
                 object_id: u32,
-                reader: D,
-            ) -> Self::Fut<'a, D>
+                reader: (&'a [u8], &'a [::std::os::unix::io::RawFd]),
+            ) -> Self::Fut<'a>
             {
                 async move {
                     match self {
@@ -550,6 +551,7 @@ pub fn interface_message_dispatch_for_enum(
             }
         }
         impl #impl_generics #crate_::objects::Object<#context_param> for #ident #ty_generics #where_clause {
+            type Request<'a> = ::std::convert::Infallible;
             #[inline]
             fn interface(&self) -> &'static str {
                 match self {

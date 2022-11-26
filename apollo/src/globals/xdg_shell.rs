@@ -109,7 +109,6 @@ where
     }
 }
 
-type PinnedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 impl ConstInit for WmBase {
     const INIT: Self = Self;
 }
@@ -121,6 +120,8 @@ where
 {
     type Objects = WmBaseObject<Ctx>;
 
+    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
     }
@@ -129,13 +130,7 @@ where
         xdg_wm_base::VERSION
     }
 
-    fn bind<'a>(
-        &'a self,
-        client: &'a mut Ctx,
-        _object_id: u32,
-    ) -> PinnedFuture<'a, std::io::Result<Self::Objects>> {
-        Box::pin(futures_util::future::ok(
-            WmBaseObject::WmBase(crate::objects::xdg_shell::WmBase).into(),
-        ))
+    fn bind<'a>(&'a self, client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
+        futures_util::future::ok(WmBaseObject::WmBase(crate::objects::xdg_shell::WmBase))
     }
 }

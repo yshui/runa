@@ -120,6 +120,7 @@ impl Shm {
     }
 }
 impl<Ctx> Object<Ctx> for Shm {
+    type Request<'a> = wl_shm::Request;
     fn interface(&self) -> &'static str {
         wl_shm::NAME
     }
@@ -302,6 +303,7 @@ impl ShmPool {
 }
 
 impl<Ctx> Object<Ctx> for ShmPool {
+    type Request<'a> = wl_shm::Request;
     fn interface(&self) -> &'static str {
         wl_shm_pool::NAME
     }

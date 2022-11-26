@@ -1,5 +1,5 @@
 #![feature(type_alias_impl_trait)]
-use std::pin::Pin;
+use std::os::fd::RawFd;
 
 use futures_lite::Future;
 use hashbrown::{hash_map, HashMap};
@@ -98,32 +98,25 @@ impl<D> Serial for IdAlloc<D> {
     }
 }
 
-/// The entry point of a wayland application, either a client or a server.
-pub trait MessageDispatch {
-    type Error;
-    type Fut<'a>: Future<Output = Result<(), Self::Error>> + 'a;
-    fn dispatch<'a, R>(&self, reader: Pin<&mut R>) -> Self::Fut<'a>
-    where
-        R: wl_io_traits::buf::AsyncBufReadWithFd + 'a;
-}
-
 /// The entry point of an interface implementation, called when message of a
 /// certain interface is received
 pub trait InterfaceMessageDispatch<Ctx> {
     type Error;
     // TODO: the R parameter might be unnecessary, see:
     //       https://github.com/rust-lang/rust/issues/42940
-    type Fut<'a, D>: Future<Output = Result<(), Self::Error>> + 'a
+    type Fut<'a>: Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
     where
         Self: 'a,
-        Ctx: 'a,
-        D: wl_io_traits::de::Deserializer<'a> + 'a;
-    fn dispatch<'a, D: wl_io_traits::de::Deserializer<'a> + 'a>(
+        Ctx: 'a;
+    // Dispatch a message to the interface implementation. Returns a future that resolves to
+    // `(Result<()>, usize, usize)`, which are the result of handling the request, number of bytes
+    // and file descriptors read from the message, respectively.
+    fn dispatch<'a>(
         &'a self,
         ctx: &'a mut Ctx,
         object_id: u32,
-        reader: D,
-    ) -> Self::Fut<'a, D>;
+        reader: (&'a [u8], &'a [RawFd]),
+    ) -> Self::Fut<'a>;
 }
 
 pub use std::convert::Infallible;

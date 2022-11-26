@@ -44,6 +44,7 @@ where
     Ctx::Context: HasShell<Shell = S>,
     S: shell::Shell,
 {
+    type Request<'a> = wl_surface::Request;
     fn interface(&self) -> &'static str {
         wl_surface::NAME
     }
@@ -383,6 +384,7 @@ where
 }
 
 impl<Ctx> Object<Ctx> for Compositor {
+    type Request<'a> = wl_compositor::Request;
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
     }
@@ -401,6 +403,7 @@ where
     Ctx: ClientContext,
     Ctx::Context: HasShell,
 {
+    type Request<'a> = wl_subsurface::Request;
     fn interface(&self) -> &'static str {
         wl_subsurface::NAME
     }
@@ -483,6 +486,7 @@ where
 pub struct Subcompositor;
 
 impl<Ctx> Object<Ctx> for Subcompositor {
+    type Request<'a> = wl_subcompositor::Request;
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
     }

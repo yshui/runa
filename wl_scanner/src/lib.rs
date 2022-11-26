@@ -301,9 +301,9 @@ fn generate_deserialize_for_type(
     match arg.typ {
         Int | Uint => {
             let v = if arg.typ == Int {
-                quote! {  deserializer.pop_i32() }
+                quote! {  pop_i32(&mut data) }
             } else {
-                quote! { deserializer.pop_u32() }
+                quote! { pop_u32(&mut data) }
             };
             let err = if arg.typ == Int {
                 quote! { ::wl_scanner_support::io::de::Error::InvalidIntEnum }
@@ -332,16 +332,16 @@ fn generate_deserialize_for_type(
                 v
             }
         },
-        Fixed => quote! { deserializer.pop_i32().into() },
-        Object | NewId => quote! { deserializer.pop_u32().into() },
-        Fd => quote! { deserializer.pop_fd().into() },
+        Fixed => quote! { pop_i32(&mut data).into() },
+        Object | NewId => quote! { pop_u32(&mut data).into() },
+        Fd => quote! { pop_fd(&mut fds).into() },
         String => quote! { {
-            let len = deserializer.pop_u32();
-            deserializer.pop_bytes(len as usize).into()
+            let len = pop_u32(&mut data);
+            pop_bytes(&mut data, len as usize).into()
         } },
         Array => quote! { {
-            let len = deserializer.pop_u32();
-            deserializer.pop_bytes(len as usize)
+            let len = pop_u32(&mut data);
+            pop_bytes(&mut data, len as usize)
         } },
         Destructor => quote! {},
     }
@@ -360,7 +360,7 @@ fn generate_message_variant(
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
-            let ty = generate_arg_type(&arg, is_owned, iface_version);
+            let ty = generate_arg_type(arg, is_owned, iface_version);
             let doc_comment = generate_doc_comment(&arg.description);
             quote! {
                 #doc_comment
@@ -417,7 +417,7 @@ fn generate_message_variant(
         .iter()
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
-            generate_serialize_for_type(iface_name, &name, &arg, enum_info)
+            generate_serialize_for_type(iface_name, &name, arg, enum_info)
         });
     let deserialize = request
         .args
@@ -425,16 +425,11 @@ fn generate_message_variant(
         .map(|arg| {
             let name = format_ident!("{}", arg.name);
             let deserialize =
-                generate_deserialize_for_type(iface_name, &arg, enum_info, iface_version);
+                generate_deserialize_for_type(iface_name, arg, enum_info, iface_version);
             quote! {
                 #name: #deserialize
             }
         });
-    let deserializer_var = if request.args.is_empty() {
-        quote! { _deserializer }
-    } else {
-        quote! { mut deserializer }
-    };
     let doc_comment = generate_doc_comment(&request.description);
     let nfds: u8 = request
         .args
@@ -478,12 +473,14 @@ fn generate_message_variant(
         }
         impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #name #lifetime {
             #[inline]
-            fn deserialize<D: ::wl_scanner_support::io::de::Deserializer<'a>>(
-                #deserializer_var: D
-            ) -> Result<Self, ::wl_scanner_support::io::de::Error> {
-                Ok(Self {
+            fn deserialize(
+                mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd] 
+            ) -> Result<(Self, usize, usize), ::wl_scanner_support::io::de::Error> {
+                use ::wl_scanner_support::io::{pop_fd, pop_bytes, pop_i32, pop_u32};
+                let (data_len, fds_len) = (data.len(), fds.len());
+                Ok((Self {
                     #(#deserialize),*
-                })
+                }, data_len - data.len(), fds_len - fds.len()))
             }
         }
     };
@@ -514,7 +511,7 @@ fn generate_dispatch_trait(
                 .iter()
                 .map(|arg| {
                     let name = format_ident!("{}", arg.name);
-                    let typ = generate_arg_type(&arg, false, iface_version);
+                    let typ = generate_arg_type(arg, false, iface_version);
                     quote! {
                         #name: #typ
                     }
@@ -618,7 +615,11 @@ fn generate_event_or_request(
                 let name = format_ident!("{}", v.name.to_pascal_case());
                 let opcode = opcode as u32;
                 quote! {
-                    #opcode => Ok(Self::#name(<#mod_name::#name>::deserialize(deserializer)?)),
+                    #opcode => {
+                        let (msg, bytes_read, fds_read) = <#mod_name::#name>::deserialize(data, fds)?;
+                        // add 8 bytes for header
+                        Ok((Self::#name(msg), bytes_read + 8, fds_read))
+                    },
                 }
             });
         let enum_len_cases = messages.iter().map(|v| {
@@ -636,9 +637,7 @@ fn generate_event_or_request(
         let dispatch = generate_dispatch_trait(messages, event_or_request, iface_version);
         let public = quote! {
             pub mod #mod_name {
-                #[allow(unused_imports)]
                 use super::enums;
-                #[allow(unused_imports)]
                 use super::__generated_root;
                 #(#public)*
             }
@@ -672,11 +671,12 @@ fn generate_event_or_request(
                 }
             }
             impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #type_name #enum_lifetime {
-                fn deserialize<D: ::wl_scanner_support::io::de::Deserializer<'a>>(
-                    mut deserializer: D
-                ) -> ::std::result::Result<Self, ::wl_scanner_support::io::de::Error> {
-                    let _object_id = deserializer.pop_u32();
-                    let header = deserializer.pop_u32();
+                fn deserialize(
+                    mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd]
+                ) -> ::std::result::Result<(Self, usize, usize), ::wl_scanner_support::io::de::Error> {
+                    use ::wl_scanner_support::io::pop_u32;
+                    let _object_id = pop_u32(&mut data);
+                    let header = pop_u32(&mut data);
                     let opcode = header & 0xFFFF;
                     match opcode {
                         #(#enum_deserialize_cases)*
@@ -698,9 +698,9 @@ fn wrap_links(line: &str) -> String {
         if link.start() > curr_pos {
             result.push_str(&line[curr_pos..link.start()]);
         }
-        result.push_str("<");
+        result.push('<');
         result.push_str(link.as_str());
-        result.push_str(">");
+        result.push('>');
         curr_pos = link.end();
     }
     result.push_str(&line[curr_pos..]);
@@ -789,12 +789,10 @@ fn generate_enums(enums: &[Enum], current_iface_name: &str, enum_info: &EnumInfo
         let members = e.entries.iter().map(|e| {
             let name = if e.name.chars().all(|x| x.is_ascii_digit()) {
                 format_ident!("_{}", e.name)
+            } else if is_bitfield {
+                format_ident!("{}", e.name.TO_SHOUTY_SNEK_CASE())
             } else {
-                if is_bitfield {
-                    format_ident!("{}", e.name.TO_SHOUTY_SNEK_CASE())
-                } else {
-                    format_ident!("{}", e.name.to_pascal_case())
-                }
+                format_ident!("{}", e.name.to_pascal_case())
             };
             let value = if info.is_int.unwrap_or(false) {
                 let value = e.value as i32;
@@ -877,8 +875,8 @@ fn generate_interface(
     quote! {
         #doc_comment
         pub mod #name {
+            #![allow(unused_imports, unused_mut, unused_variables)]
             pub mod #version {
-                #[allow(unused_imports)]
                 use super::super::__generated_root;
                 /// Name of the interface
                 pub const NAME: &str = #iface_name;
@@ -896,7 +894,7 @@ fn scan_enum(proto: &Protocol, enum_info: &mut EnumInfos) -> Result<()> {
         for req in iface.requests.iter().chain(iface.events.iter()) {
             for arg in req.args.iter() {
                 if let Some(ref enum_) = arg.enum_ {
-                    let info = enum_info.get_mut(&iface.name, &enum_)?;
+                    let info = enum_info.get_mut(&iface.name, enum_)?;
                     let is_int = arg.typ == wl_spec::protocol::Type::Int;
 
                     eprintln!("{}::{}: is_int={}", iface.name, enum_, is_int);

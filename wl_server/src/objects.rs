@@ -10,6 +10,7 @@ use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
 use tracing::debug;
+use wl_common::Infallible;
 
 use crate::{
     connection::{ClientContext, Objects, State},
@@ -27,6 +28,7 @@ use crate::{
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
 pub trait Object<Ctx> {
+    type Request<'a>: wl_io::traits::de::Deserialize<'a>;
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
     /// A function that will be called when the client disconnects. It should
@@ -130,6 +132,8 @@ where
 }
 
 impl<Ctx> Object<Ctx> for Display {
+    type Request<'a> = wl_display::Request;
+
     fn interface(&self) -> &'static str {
         wl_display::NAME
     }
@@ -233,6 +237,8 @@ where
 }
 
 impl<Ctx> Object<Ctx> for Registry {
+    type Request<'a> = wl_registry::Request<'a>;
+
     fn interface(&self) -> &'static str {
         wl_registry::NAME
     }
@@ -241,6 +247,8 @@ impl<Ctx> Object<Ctx> for Registry {
 #[derive(Debug, Default)]
 pub struct Callback;
 impl<Ctx> Object<Ctx> for Callback {
+    type Request<'a> = Infallible;
+
     fn interface(&self) -> &'static str {
         wl_protocol::wayland::wl_callback::v1::NAME
     }
@@ -270,14 +278,14 @@ impl Callback {
 impl<Ctx> wl_common::InterfaceMessageDispatch<Ctx> for Callback {
     type Error = crate::error::Error;
 
-    type Fut<'a, D> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a, D: wl_io::traits::de::Deserializer<'a> + 'a, Self: 'a;
+    type Fut<'a> = impl Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a where Ctx: 'a, Self: 'a;
 
-    fn dispatch<'a, D: wl_io::traits::de::Deserializer<'a> + 'a>(
+    fn dispatch<'a>(
         &'a self,
         _ctx: &'a mut Ctx,
         object_id: u32,
-        _reader: D,
-    ) -> Self::Fut<'a, D> {
-        async move { Err(crate::error::Error::InvalidObject(object_id)) }
+        _reader: (&'a [u8], &'a [std::os::unix::io::RawFd]),
+    ) -> Self::Fut<'a> {
+        async move { (Err(crate::error::Error::InvalidObject(object_id)), 0, 0) }
     }
 }

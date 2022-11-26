@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use wl_common::interface_message_dispatch;
+use wl_common::wayland_object;
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display};
 use wl_server::{
     connection::ClientContext,
@@ -17,14 +17,8 @@ pub mod xdg_shell;
 pub struct Buffer<B> {
     pub buffer: Rc<B>,
 }
-impl<B: 'static, Ctx> Object<Ctx> for Buffer<B> {
-    type Request<'a> = wl_buffer::Request;
-    fn interface(&self) -> &'static str {
-        wl_buffer::NAME
-    }
-}
 
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx, B: 'static> wl_buffer::RequestDispatch<Ctx> for Buffer<B>
 where
     Ctx: ClientContext,

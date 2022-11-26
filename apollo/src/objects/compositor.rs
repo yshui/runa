@@ -13,10 +13,10 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{any::Any, cell::RefCell, future::Future, rc::Rc, collections::VecDeque};
+use std::{any::Any, cell::RefCell, collections::VecDeque, future::Future, rc::Rc};
 
 use derivative::Derivative;
-use wl_common::{interface_message_dispatch, utils::geometry::Point};
+use wl_common::{wayland_object, utils::geometry::Point};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
     wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
@@ -38,21 +38,14 @@ use crate::{
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Shell: shell::Shell>(pub(crate) Rc<crate::shell::surface::Surface<Shell>>);
 
-impl<Ctx, S> Object<Ctx> for Surface<S>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell<Shell = S>,
-    S: shell::Shell,
+fn deallocate_surface<Ctx: ClientContext>(
+    this: &mut Surface<<Ctx::Context as HasShell>::Shell>,
+    ctx: &mut Ctx,
+) where
+    Ctx::Context: HasShell,
 {
-    type Request<'a> = wl_surface::Request;
-    fn interface(&self) -> &'static str {
-        wl_surface::NAME
-    }
-
-    fn on_disconnect(&mut self, ctx: &mut Ctx) {
-        let mut shell = ctx.server_context().shell().borrow_mut();
-        self.0.destroy(&mut shell);
-    }
+    let mut shell = ctx.server_context().shell().borrow_mut();
+    this.0.destroy(&mut shell);
 }
 
 #[derive(Debug)]
@@ -100,7 +93,10 @@ impl wl_protocol::ProtocolError for SurfaceError {
     }
 }
 
-#[interface_message_dispatch]
+#[wayland_object(
+    on_disconnect = "deallocate_surface",
+    bounds = "Ctx: ClientContext, Ctx::Context: HasShell<Shell = S>"
+)]
 impl<Ctx: ClientContext, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::Context: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
@@ -279,12 +275,7 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
-            if ctx
-                .state_mut()
-                .surfaces
-                .remove(&object_id)
-                .is_none()
-            {
+            if ctx.state_mut().surfaces.remove(&object_id).is_none() {
                 panic!(
                     "Incosistent compositor state, surface {} not found",
                     object_id
@@ -325,7 +316,7 @@ impl Default for CompositorState {
     }
 }
 
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx: ClientContext> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::Context: HasShell,
@@ -350,9 +341,7 @@ where
         async move {
             if ctx.objects().borrow().get(id.0).is_none() {
                 // Add the id to the list of surfaces
-                ctx.state_mut()
-                    .surfaces
-                    .insert(id.0, Default::default());
+                ctx.state_mut().surfaces.insert(id.0, Default::default());
                 let mut objects = ctx.objects().borrow_mut();
                 let shell = ctx.server_context().shell();
                 let mut shell = shell.borrow_mut();
@@ -383,13 +372,6 @@ where
     }
 }
 
-impl<Ctx> Object<Ctx> for Compositor {
-    type Request<'a> = wl_compositor::Request;
-    fn interface(&self) -> &'static str {
-        wl_compositor::NAME
-    }
-}
-
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Subsurface<Ctx: ClientContext>(
@@ -398,18 +380,7 @@ pub struct Subsurface<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-impl<Ctx> Object<Ctx> for Subsurface<Ctx>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell,
-{
-    type Request<'a> = wl_subsurface::Request;
-    fn interface(&self) -> &'static str {
-        wl_subsurface::NAME
-    }
-}
-
-#[interface_message_dispatch]
+#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
 impl<Ctx: ClientContext> wl_subsurface::RequestDispatch<Ctx> for Subsurface<Ctx>
 where
     Ctx::Context: HasShell,
@@ -485,12 +456,6 @@ where
 #[derive(Debug)]
 pub struct Subcompositor;
 
-impl<Ctx> Object<Ctx> for Subcompositor {
-    type Request<'a> = wl_subcompositor::Request;
-    fn interface(&self) -> &'static str {
-        wl_subcompositor::NAME
-    }
-}
 #[derive(Debug)]
 pub enum Error {
     BadSurface {
@@ -527,7 +492,7 @@ impl wl_protocol::ProtocolError for Error {
     }
 }
 
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx: ClientContext> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
 where
     Ctx::Context: HasShell,

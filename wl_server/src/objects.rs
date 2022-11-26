@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-pub use ::wl_common::interface_message_dispatch;
+pub use ::wl_common::wayland_object;
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
@@ -53,7 +53,7 @@ pub const DISPLAY_ID: u32 = 1;
 #[derive(Debug, Clone, Copy)]
 pub struct Display;
 
-#[interface_message_dispatch(crate = "crate")]
+#[wayland_object(crate = "crate")]
 impl<Ctx> wl_display::RequestDispatch<Ctx> for Display
 where
     Ctx: ClientContext + std::fmt::Debug,
@@ -131,14 +131,6 @@ where
     }
 }
 
-impl<Ctx> Object<Ctx> for Display {
-    type Request<'a> = wl_display::Request;
-
-    fn interface(&self) -> &'static str {
-        wl_display::NAME
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Registry;
 
@@ -189,7 +181,7 @@ mod private {
 
 pub(crate) use private::RegistryState;
 
-#[interface_message_dispatch(crate = "crate")]
+#[wayland_object(crate = "crate")]
 impl<Ctx> wl_registry::RequestDispatch<Ctx> for Registry
 where
     Ctx: ClientContext + State<RegistryState<GlobalOf<Ctx>>>,
@@ -233,14 +225,6 @@ where
                 Err(crate::error::Error::UnknownGlobal(name))
             }
         }
-    }
-}
-
-impl<Ctx> Object<Ctx> for Registry {
-    type Request<'a> = wl_registry::Request<'a>;
-
-    fn interface(&self) -> &'static str {
-        wl_registry::NAME
     }
 }
 

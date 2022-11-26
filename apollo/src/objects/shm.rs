@@ -8,7 +8,7 @@ use std::{
 use dlv_list::{Index, VecList};
 use spin::mutex::Mutex;
 use wl_common::{
-    interface_message_dispatch,
+    wayland_object,
     utils::geometry::{Extent, Logical},
 };
 use wl_protocol::wayland::{
@@ -119,12 +119,6 @@ impl Shm {
         Shm
     }
 }
-impl<Ctx> Object<Ctx> for Shm {
-    type Request<'a> = wl_shm::Request;
-    fn interface(&self) -> &'static str {
-        wl_shm::NAME
-    }
-}
 
 pub enum ShmError {
     Mapping(u32, i32),
@@ -163,7 +157,7 @@ impl wl_protocol::ProtocolError for ShmError {
 
 // TODO: Add a trait for ShmPool and make Shm generic over the pool type.
 
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx> wl_shm::RequestDispatch<Ctx> for Shm
 where
     Ctx: ClientContext,
@@ -302,14 +296,7 @@ impl ShmPool {
     }
 }
 
-impl<Ctx> Object<Ctx> for ShmPool {
-    type Request<'a> = wl_shm::Request;
-    fn interface(&self) -> &'static str {
-        wl_shm_pool::NAME
-    }
-}
-
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
     Ctx: ClientContext,

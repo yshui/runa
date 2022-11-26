@@ -10,7 +10,7 @@ use wl_server::{
     connection::{ClientContext, State},
     error::Error,
     events::DispatchTo,
-    objects::{interface_message_dispatch, Object},
+    objects::{wayland_object, Object},
 };
 
 use crate::{
@@ -20,14 +20,7 @@ use crate::{
 #[derive(Debug)]
 pub struct WmBase;
 
-impl<Ctx> Object<Ctx> for WmBase {
-    type Request<'a> = xdg_wm_base::Request;
-    fn interface(&self) -> &'static str {
-        xdg_wm_base::NAME
-    }
-}
-
-#[interface_message_dispatch]
+#[wayland_object]
 impl<Ctx: ClientContext> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
     Ctx::Context: HasShell,
@@ -105,18 +98,7 @@ pub struct Surface<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-impl<Ctx> Object<Ctx> for Surface<Ctx>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell,
-{
-    type Request<'a> = xdg_surface::Request;
-    fn interface(&self) -> &'static str {
-        xdg_surface::NAME
-    }
-}
-
-#[interface_message_dispatch]
+#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
 impl<Ctx: ClientContext> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
 where
     Ctx::Context: HasShell,
@@ -218,18 +200,7 @@ pub struct TopLevel<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-impl<Ctx> Object<Ctx> for TopLevel<Ctx>
-where
-    Ctx::Context: HasShell,
-    Ctx: ClientContext,
-{
-    type Request<'a> = xdg_toplevel::Request<'a>;
-    fn interface(&self) -> &'static str {
-        xdg_toplevel::NAME
-    }
-}
-
-#[interface_message_dispatch]
+#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
 impl<Ctx: ClientContext> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,

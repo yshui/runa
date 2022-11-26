@@ -121,5 +121,5 @@ pub trait InterfaceMessageDispatch<Ctx> {
 
 pub use std::convert::Infallible;
 
-pub use wl_macros::interface_message_dispatch;
+pub use wl_macros::wayland_object;
 pub use wl_macros::InterfaceMessageDispatch;

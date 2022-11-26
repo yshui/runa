@@ -54,11 +54,12 @@ struct DispatchItem {
 }
 
 struct DispatchImpl {
-    generics: syn::Generics,
-    trait_:   syn::Path,
-    self_ty:  syn::Type,
-    items:    Vec<DispatchItem>,
-    error:    syn::Type,
+    generics:     syn::Generics,
+    trait_:       syn::Path,
+    self_ty:      syn::Type,
+    items:        Vec<DispatchItem>,
+    error:        syn::Type,
+    has_lifetime: bool,
 }
 
 impl Parse for DispatchImpl {
@@ -90,6 +91,7 @@ impl Parse for DispatchImpl {
 
         let mut error = None;
         let mut items = Vec::new();
+        let mut has_lifetime = false;
         for item in &input.items {
             match item {
                 syn::ImplItem::Method(method) => {
@@ -97,15 +99,30 @@ impl Parse for DispatchImpl {
                     for arg in method.sig.inputs.iter().skip(3) {
                         // Ignore the first 3 arguments: self, ctx, object_id
                         match arg {
-                            syn::FnArg::Receiver(_) => (),
-                            syn::FnArg::Typed(patty) =>
+                            syn::FnArg::Receiver(_) => die!(&arg => "multiple receivers"),
+                            syn::FnArg::Typed(patty) => {
                                 if let syn::Pat::Ident(pat) = &*patty.pat {
                                     args.push(pat.ident.clone());
                                 } else {
                                     die!(&patty.pat =>
                                         "Argument must be a simple identifier"
                                     );
-                                },
+                                }
+                                let type_ = &patty.ty;
+                                match &**type_ {
+                                    syn::Type::Path(type_path) => {
+                                        if let Some(segment) = type_path.path.segments.last() {
+                                            if segment.ident == "Str" {
+                                                has_lifetime = true;
+                                            }
+                                        }
+                                    },
+                                    syn::Type::Reference(_) => {
+                                        has_lifetime = true;
+                                    },
+                                    _ => die!(type_ => "Unexpected argument type"),
+                                }
+                            },
                         }
                     }
                     items.push(DispatchItem {
@@ -139,6 +156,7 @@ impl Parse for DispatchImpl {
             self_ty: *input.self_ty,
             items,
             error,
+            has_lifetime,
         })
     }
 }
@@ -163,8 +181,9 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
     path
 }
 
-/// Generate `wl_common::InterfaceMessageDispatch` for types that implement
-/// `RequestDispatch` for a certain interface.
+/// Generate `InterfaceMessageDispatch` and `Object` impls for types that implement
+/// `RequestDispatch` for a certain interface. Should be attached to `RequestDispatch`
+/// impls.
 ///
 /// It deserialize a message from a deserializer, and calls appropriate function
 /// in the `RequestDispatch` based on the message content. Your impl of
@@ -177,9 +196,16 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
 ///   "Dispatch" suffix from the trait name. i.e.
 ///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1::Request`.
 ///   Only valid as a impl block attribute.
+/// * `interface` - The interface name. By default, this attribute finds the parent of
+///   the `RequestDispatch` trait, i.e. `wl_buffer::v1::RequestDispatch` will become
+///   `wl_buffer::v1`; then attach `::NAME` to it as the interface.
+/// * `on_disconnect` - The function to call when the client disconnects. Used for
+///    the [`wl_server::objects::Object::on_disconnect`] impl.
+/// * `bounds` - Extra bounds for the `Object` impl. Otherwise the `Object` impl will have no bounds.
+///   the `InterfaceMessageDispatch` impl will copy all the bounds from the `RequestDispatch` impl.
 /// * `crate` - The path to the `wl_server` crate. "wl_server" by default.
 #[proc_macro_attribute]
-pub fn interface_message_dispatch(
+pub fn wayland_object(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -191,25 +217,37 @@ pub fn interface_message_dispatch(
         message: Option<syn::Path>,
         #[darling(default, rename = "crate")]
         crate_:  Option<syn::LitStr>,
+        #[darling(default)]
+        interface: Option<syn::LitStr>,
+        #[darling(default)]
+        on_disconnect: Option<syn::LitStr>,
+        #[darling(default)]
+        bounds: Option<syn::LitStr>,
     }
     let stream = item.clone();
     let orig_item = syn::parse_macro_input!(item as syn::ItemImpl);
     let item: DispatchImpl = syn::parse_macro_input!(stream);
     let attr: syn::AttributeArgs = syn::parse_macro_input!(attr);
     let attr = Attributes::from_list(&attr).unwrap();
+    // The mod path
+    let mod_ = {
+        let mut trait_ = item.trait_.clone();
+        trait_.segments.pop();
+        trait_
+    };
 
     let message_ty = unwrap!(attr.message.map_or_else(
         || {
-            let mut trait_ = item.trait_.clone();
-            let last_seg = trait_.segments.last_mut().ok_or_else(|| {
+            let mut mod_ = mod_.clone();
+            let last_seg = item.trait_.segments.last().ok_or_else(|| {
                 syn::Error::new_spanned(&item.trait_, "Trait path must not be empty")
             })?;
 
             let last_ident = last_seg.ident.to_string();
             if last_ident.ends_with("Dispatch") {
-                last_seg.ident = syn::parse_str(last_ident.trim_end_matches("Dispatch"))?;
-                last_seg.arguments = syn::PathArguments::None;
-                Ok(trait_)
+                let message_ty_last = quote::format_ident!("{}", last_ident.trim_end_matches("Dispatch"));
+                mod_.segments.push(syn::PathSegment::from(message_ty_last));
+                Ok(mod_)
             } else {
                 Err(syn::Error::new_spanned(
                     &item.trait_,
@@ -232,6 +270,7 @@ pub fn interface_message_dispatch(
         self_ty,
         items,
         error,
+        has_lifetime,
     } = item;
 
     let mut last_seg = unwrap!(trait_
@@ -283,40 +322,44 @@ pub fn interface_message_dispatch(
             }
         }
     });
-
-    //let combined_future_var = items.iter().map(|item| {
-    //    format_ident!("{}Fut", item.ident.to_string().to_pascal_case())
-    //});
-    //let combined_future_var2 = combined_future_var.clone();
+    let message_lifetime = if has_lifetime { quote! { <'a> } } else { quote! {} };
+    let interface_tokens = if let Some(interface) = attr.interface {
+        let interface = interface.value();
+        quote! {
+            #interface
+        }
+    } else {
+        quote! {
+            #mod_ NAME
+        }
+    };
+    let on_disconnect = if let Some(on_disconnect) = attr.on_disconnect {
+        let on_disconnect = syn::Ident::new(&on_disconnect.value(), on_disconnect.span());
+        quote! {
+            fn on_disconnect(&mut self, ctx: &mut Ctx) {
+                #on_disconnect(self, ctx)
+            }
+        }
+    } else {
+        quote! {
+        }
+    };
+    let bounds = if let Some(bounds) = attr.bounds {
+        let Ok(bounds)  = syn::parse_str::<proc_macro2::TokenStream>(&bounds.value()) else {
+            return syn::Error::new_spanned(bounds, "Invalid bounds for on_disconnect").into_compile_error().into();
+        };
+        quote! {
+            where
+                #bounds
+        }
+    } else {
+        quote! {
+        }
+    };
 
     quote! {
         #orig_item
         const _: () = {
-            // TODO: generate this is combined future is too complicated, especially because the
-            //       ctx parameter: it can be concrete, it can have where clauses, etc. so we patch
-            //       things together with TAIT for now. hopefully that will be stabilized and we
-            //       don't ever need to look at this again.
-            //pub enum CombinedFut<'a, #ctx_param> {
-            //    #(#combined_future_var(<#self_ty as #trait_>::#combined_future_var<'a>)),*
-            //}
-            //impl<'a> ::std::future::Future for CombinedFut<'a> {
-            //    type Output = Result<(), #error>;
-            //    fn poll(
-            //        self: ::std::pin::Pin<&mut Self>,
-            //        cx: &mut ::std::task::Context<'_>
-            //    ) -> ::std::task::Poll<Self::Output> {
-            //        // We use some unsafe code to get Pin<&mut> of inner futures.
-            //        // Safety: self is pinned, so the variants are pinned to, and we are not going
-            //        // to move them with the &mut we get here.
-            //        unsafe {
-            //            match self.get_unchecked_mut() {
-            //                #(Self::#combined_future_var2(ref mut fut) => {
-            //                    ::std::pin::Pin::new_unchecked(fut).poll(cx)
-            //                }),*
-            //            }
-            //        }
-            //    }
-            //}
             impl #generics #our_trait for #self_ty #where_clause {
                 type Error = #error;
                 type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
@@ -343,6 +386,13 @@ pub fn interface_message_dispatch(
                         }
                     }
                 }
+            }
+            impl #generics #crate_::objects::Object<Ctx> for #self_ty #bounds {
+                type Request<'a> = #message_ty #message_lifetime;
+                fn interface(&self) -> &'static str {
+                    #interface_tokens
+                }
+                #on_disconnect
             }
         };
     }.into()

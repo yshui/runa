@@ -229,8 +229,8 @@ impl<N: Ord + Copy, Kind: CoordinateSpace> Point<N, Kind> {
     #[inline]
     pub fn clamp(self, rect: Rectangle<N, Kind>) -> Point<N, Kind> {
         Point::new(
-            self.x.max(rect.loc.x).min(rect.size.w),
-            self.y.max(rect.loc.y).min(rect.size.h),
+            self.x.clamp(rect.loc.x, rect.size.w),
+            self.y.clamp(rect.loc.y, rect.size.h),
         )
     }
 }
@@ -369,7 +369,7 @@ impl<N: Ord + Sign, Kind: CoordinateSpace> Extent<N, Kind> {
     /// Restrict this [`Extent`] to be within another [`Extent`] in the same
     /// coordinate system
     pub fn clamp(self, min: Extent<N, Kind>, max: Extent<N, Kind>) -> Extent<N, Kind> {
-        Extent::new(self.w.max(min.w).min(max.w), self.h.max(min.h).min(max.h))
+        Extent::new(self.w.clamp(min.w, max.w), self.h.clamp(min.h, max.h))
     }
 }
 
@@ -773,7 +773,6 @@ impl<N: Mul<Output = N> + Sign + Copy> Rectangle<N, Logical> {
     /// given scale factor
     #[inline]
     pub fn to_physical(self, scale: Scale<N>) -> Rectangle<N, Physical> {
-        let scale = scale.into();
         Rectangle {
             loc:  self.loc.to_physical(scale),
             size: self.size.to_physical(scale),
@@ -791,7 +790,6 @@ impl<N: Div<Output = N> + Sign + Copy> Rectangle<N, Physical> {
     /// given scale factor
     #[inline]
     pub fn to_logical(self, scale: Scale<N>) -> Rectangle<N, Logical> {
-        let scale = scale.into();
         Rectangle {
             loc:  self.loc.to_logical(scale),
             size: self.size.to_logical(scale),
@@ -968,7 +966,7 @@ impl std::ops::Mul for Transform {
             self.degrees()
         };
         let degrees = (self_degrees + other.degrees()) % 360;
-        ((flipped, degrees)).try_into().unwrap()
+        (flipped, degrees).try_into().unwrap()
     }
 }
 

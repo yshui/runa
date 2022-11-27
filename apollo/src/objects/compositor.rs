@@ -205,19 +205,26 @@ where
     fn commit<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::CommitFut<'a> {
         async move {
             use crate::shell::buffers::Buffer;
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let old_buffer = self.0.current(&shell).buffer().cloned();
-            self.0
-                .commit(&mut shell)
-                .map_err(|msg| wl_server::error::Error::UnknownFatalError(msg))?;
-            let new_buffer = self.0.current(&shell).buffer().cloned();
-            if let Some(old_buffer) = old_buffer {
-                let changed =
-                    new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer));
-                if changed {
-                    ctx.send(old_buffer.object_id(), wl_buffer::events::Release {})
-                        .await?
+            let released_buffer = {
+                let mut shell = ctx.server_context().shell().borrow_mut();
+                let old_buffer = self.0.current(&shell).buffer().cloned();
+                self.0
+                    .commit(&mut shell)
+                    .map_err(wl_server::error::Error::UnknownFatalError)?;
+                let new_buffer = self.0.current(&shell).buffer().cloned();
+                if let Some(old_buffer) = old_buffer {
+                    if new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer)) {
+                        Some(old_buffer.object_id())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 }
+            };
+            if let Some(released_buffer) = released_buffer {
+                ctx.send(released_buffer, wl_buffer::events::Release {})
+                    .await?;
             }
             Ok(())
         }

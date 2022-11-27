@@ -200,7 +200,7 @@ where
                     )
                     .await?;
             }
-            Ok(ShmObject::Shm(crate::objects::shm::Shm::new()))
+            Ok(ShmObject::Shm(crate::objects::shm::Shm))
         }
     }
 }

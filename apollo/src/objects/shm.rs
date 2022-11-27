@@ -88,6 +88,10 @@ unsafe fn map_zeroed(addr: *const libc::c_void, len: usize) -> Result<(), libc::
 ///
 /// Returns `true` if the signal was handled, `false` otherwise. Usually you
 /// should reraise the signal if this function returns `false`.
+///
+/// # Safety
+///
+/// Must be called from a SIGBUS handler, with `info` provided to the signal handler.
 pub unsafe fn handle_sigbus(info: &libc::siginfo_t) -> bool {
     let faulty_ptr = unsafe { info.si_addr() } as *const libc::c_void;
     // # Regarding deadlocks
@@ -99,23 +103,14 @@ pub unsafe fn handle_sigbus(info: &libc::siginfo_t) -> bool {
     let records = MAP_RECORDS.lock();
     if let Some(record) = records.iter().find(|r| r.contains(faulty_ptr)) {
         SIGBUS_COUNT.with(|c| c.set(c.get() + 1));
-        if unsafe { map_zeroed(record.start, record.len) }.is_ok() {
-            true
-        } else {
-            false
-        }
+        unsafe { map_zeroed(record.start, record.len) }.is_ok()
     } else {
         false
     }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Shm;
-impl Shm {
-    pub fn new() -> Shm {
-        Shm
-    }
-}
 
 pub enum ShmError {
     Mapping(u32, i32),
@@ -243,7 +238,7 @@ impl ShmPoolInner {
     // are met.
     unsafe fn as_ref(&self) -> &[u8] {
         tracing::debug!("mapping shm_pool {:p}, size {}", self, self.len);
-        assert!(self.addr != std::ptr::null());
+        assert!(!self.addr.is_null());
         unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.len) }
     }
 
@@ -383,7 +378,7 @@ where
         async move {
             ctx.objects().borrow_mut().remove(object_id).unwrap();
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId {
-                id: object_id.into(),
+                id: object_id,
             })
             .await?;
             Ok(())

@@ -17,7 +17,7 @@ pub fn allocate_antirole_slot() -> u8 {
     assert!(ret < 255);
     ret
 }
-
+pub type CommitFn<S> = fn(&mut S, &Rc<Surface<S>>) -> Result<(), &'static str>;
 pub trait Role<S: Shell>: 'static {
     fn name(&self) -> &'static str;
     // As specified by the wayland protocol, a surface can be assigned a role, then
@@ -28,7 +28,7 @@ pub trait Role<S: Shell>: 'static {
     /// Deactivate the role.
     fn deactivate(&mut self, shell: &mut S);
     /// Override how the surface the role is attached to is committed.
-    fn commit_fn(&self) -> Option<fn(&mut S, &Rc<Surface<S>>) -> Result<(), &'static str>> {
+    fn commit_fn(&self) -> Option<CommitFn<S>> {
         None
     }
     fn provide<'a>(&'a self, _demand: &mut Demand<'a>) {}
@@ -84,12 +84,14 @@ pub mod roles {
 
     use derivative::Derivative;
     use dlv_list::{Index, VecList};
-    use crate::utils::geometry::{Logical, Point};
     use wl_protocol::wayland::wl_subsurface;
     use wl_server::provide_any::{self, request_ref};
 
     use super::Antirole;
-    use crate::shell::Shell;
+    use crate::{
+        shell::Shell,
+        utils::geometry::{Logical, Point},
+    };
 
     /// The wl_subsurface role.
     ///
@@ -315,9 +317,9 @@ pub mod roles {
                 sync:           self.sync,
                 inherited_sync: self.inherited_sync,
                 parent:         self.parent.clone(),
-                active:         self.active.clone(),
+                active:         self.active,
                 stack_index:    self.stack_index,
-                stashed_state:  self.stashed_state.clone(),
+                stashed_state:  self.stashed_state,
             }
         }
     }
@@ -369,20 +371,16 @@ pub mod roles {
         #[inline]
         pub fn back(&self) -> Option<SubsurfaceChild<S>> {
             let back_index = self.children.indices().next_back();
-            back_index.and_then(|index| {
-                // Safety: back_index returned by the indices iterator is a valid index
-                Some(*unsafe { self.children.get_unchecked(index) })
-            })
+            // Safety: back_index returned by the indices iterator is a valid index
+            back_index.map(|index| *unsafe { self.children.get_unchecked(index) })
         }
 
         /// Get the last child of this surface
         #[inline]
         pub fn front(&self) -> Option<SubsurfaceChild<S>> {
             let front_index = self.children.indices().next();
-            front_index.and_then(|index| {
-                // Safety: back_index returned by the indices iterator is a valid index
-                Some(*unsafe { self.children.get_unchecked(index) })
-            })
+            // Safety: back_index returned by the indices iterator is a valid index
+            front_index.map(|index| *unsafe { self.children.get_unchecked(index) })
         }
     }
     impl<S: Shell> Clone for SubsurfaceParent<S> {
@@ -458,6 +456,7 @@ pub mod roles {
     /// won't cause any memory unsafety, but it could cause non-sensical
     /// results, panics, or infinite loops. Since commit calls
     /// [`Shell::commit`], you could check for this case there.
+    #[allow(clippy::needless_lifetimes)]
     pub fn subsurface_iter<'a, S: Shell>(
         root: S::Key,
         s: &'a S,
@@ -602,15 +601,15 @@ pub mod roles {
             }
             (curr, offset)
         }
-        let ret = SubsurfaceIter {
+
+        SubsurfaceIter {
             shell:    s,
             head:     [
                 find_end(root, s, Direction::Forward),
                 find_end(root, s, Direction::Backward),
             ],
             is_empty: false,
-        };
-        ret
+        }
     }
 }
 
@@ -632,7 +631,7 @@ pub struct SurfaceFlags {
 }
 
 pub struct SurfaceVTable<S: Shell> {
-    commit: Option<fn(&mut S, &Rc<Surface<S>>) -> Result<(), &'static str>>,
+    commit: Option<CommitFn<S>>,
 }
 
 impl<S: Shell> std::fmt::Debug for SurfaceVTable<S> {
@@ -756,12 +755,9 @@ impl<S: Shell> SurfaceState<S> {
     /// `&mut self` would borrow `&mut S`, which we also need.
     #[inline]
     fn clear_antiroles(self_: S::Key, shell: &mut S) {
-        let mut antiroles =
-            std::mem::replace(&mut shell.get_mut(self_).unwrap().antiroles, Vec::new());
-        for entry in antiroles.drain(..) {
-            if let Some(mut antirole) = entry {
-                antirole.destroy(shell)
-            }
+        let mut antiroles = std::mem::take(&mut shell.get_mut(self_).unwrap().antiroles);
+        for mut antirole in antiroles.drain(..).flatten() {
+            antirole.destroy(shell)
         }
         // Swap the vec back so we can reuse the allocated memory.
         let _ = std::mem::replace(&mut shell.get_mut(self_).unwrap().antiroles, antiroles);
@@ -801,10 +797,8 @@ impl<S: Shell> SurfaceState<S> {
                 } else {
                     *a = None;
                 }
-            } else {
-                if let Some(b) = b {
-                    *a = Some(dyn_clone::clone_box(b.as_ref()));
-                }
+            } else if let Some(b) = b {
+                *a = Some(dyn_clone::clone_box(b.as_ref()));
             }
         }
     }
@@ -999,10 +993,9 @@ impl<S: Shell> Surface<S> {
     }
 
     pub fn deactivate_role(&self, shell: &mut S) {
-        self.role_info
-            .borrow_mut()
-            .as_mut()
-            .map(|r| r.role.deactivate(shell));
+        if let Some(r) = self.role_info.borrow_mut().as_mut() {
+            r.role.deactivate(shell)
+        };
     }
 
     pub fn clear_damage(&self) {

@@ -7,7 +7,6 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::ready};
 
 use derivative::Derivative;
 use hashbrown::{hash_map, HashMap};
-use wl_common::InterfaceMessageDispatch;
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
 use crate::objects::Object;

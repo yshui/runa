@@ -1,9 +1,6 @@
 use std::{
     ffi::CStr,
-    os::{
-        fd::IntoRawFd,
-        unix::{prelude::AsRawFd},
-    },
+    os::{fd::IntoRawFd, unix::prelude::AsRawFd},
     pin::Pin,
 };
 
@@ -14,7 +11,7 @@ use wl_macros::generate_protocol;
 use wl_scanner_support::{
     io::{
         buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-        de::{Deserialize},
+        de::Deserialize,
         ser::Serialize,
     },
     wayland_types::{Fd, NewId, Object, Str},

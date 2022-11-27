@@ -181,8 +181,8 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
     path
 }
 
-/// Generate `Object` impls for types that implement `RequestDispatch` for a certain interface.
-/// Should be attached to `RequestDispatch` impls.
+/// Generate `Object` impls for types that implement `RequestDispatch` for a
+/// certain interface. Should be attached to `RequestDispatch` impls.
 ///
 /// It deserialize a message from a deserializer, and calls appropriate function
 /// in the `RequestDispatch` based on the message content. Your impl of
@@ -195,11 +195,12 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
 ///   "Dispatch" suffix from the trait name. i.e.
 ///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1::Request`.
 ///   Only valid as a impl block attribute.
-/// * `interface` - The interface name. By default, this attribute finds the parent of
-///   the `RequestDispatch` trait, i.e. `wl_buffer::v1::RequestDispatch` will become
-///   `wl_buffer::v1`; then attach `::NAME` to it as the interface.
-/// * `on_disconnect` - The function to call when the client disconnects. Used for
-///    the [`wl_server::objects::Object::on_disconnect`] impl.
+/// * `interface` - The interface name. By default, this attribute finds the
+///   parent of the `RequestDispatch` trait, i.e.
+///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1`; then attach
+///   `::NAME` to it as the interface.
+/// * `on_disconnect` - The function to call when the client disconnects. Used
+///   for the [`wl_server::objects::Object::on_disconnect`] impl.
 /// * `crate` - The path to the `wl_server` crate. "wl_server" by default.
 #[proc_macro_attribute]
 pub fn wayland_object(
@@ -211,11 +212,11 @@ pub fn wayland_object(
     #[derive(FromMeta)]
     struct Attributes {
         #[darling(default)]
-        message: Option<syn::Path>,
+        message:       Option<syn::Path>,
         #[darling(default, rename = "crate")]
-        crate_:  Option<syn::LitStr>,
+        crate_:        Option<syn::LitStr>,
         #[darling(default)]
-        interface: Option<syn::LitStr>,
+        interface:     Option<syn::LitStr>,
         #[darling(default)]
         on_disconnect: Option<syn::LitStr>,
     }
@@ -240,7 +241,8 @@ pub fn wayland_object(
 
             let last_ident = last_seg.ident.to_string();
             if last_ident.ends_with("Dispatch") {
-                let message_ty_last = quote::format_ident!("{}", last_ident.trim_end_matches("Dispatch"));
+                let message_ty_last =
+                    quote::format_ident!("{}", last_ident.trim_end_matches("Dispatch"));
                 mod_.segments.push(syn::PathSegment::from(message_ty_last));
                 Ok(mod_)
             } else {
@@ -257,8 +259,7 @@ pub fn wayland_object(
         |s| syn::parse_str(&s.value()).unwrap(),
     );
 
-    // Generate InterfaceMessageDispatch impl. We just need to replace the trait
-    // name with InterfaceMessageDispatch.
+    // Generate Object impl.
     let DispatchImpl {
         generics,
         trait_,
@@ -268,20 +269,21 @@ pub fn wayland_object(
         has_lifetime,
     } = item;
 
-    let mut last_seg = unwrap!(trait_
+    let Some(last_seg_args) = trait_
         .segments
         .last()
-        .ok_or_else(|| { syn::Error::new_spanned(&trait_, "Trait path must not be empty") }))
-    .clone();
-    last_seg.ident = format_ident!("InterfaceMessageDispatch");
-    match last_seg.arguments {
+        .map(|s| &s.arguments) else
+    {
+        return syn::Error::new_spanned(&trait_, "Trait path must not be empty").to_compile_error().into();
+    };
+    let ctx = match last_seg_args {
         syn::PathArguments::Parenthesized(_) | syn::PathArguments::None =>
-            return syn::Error::new_spanned(&last_seg, "Trait must have a single type parameter")
+            return syn::Error::new_spanned(last_seg_args, "Trait must have a single type parameter")
                 .to_compile_error()
                 .into(),
         syn::PathArguments::AngleBracketed(ref args) => {
             if args.args.len() != 1 {
-                return syn::Error::new_spanned(&last_seg, "Trait must have a single type parameter")
+                return syn::Error::new_spanned(last_seg_args, "Trait must have a single type parameter")
                     .to_compile_error()
                     .into()
             }
@@ -289,7 +291,7 @@ pub fn wayland_object(
                 syn::GenericArgument::Type(syn::Type::Path(ref path)) => path.path.clone(),
                 _ =>
                     return syn::Error::new_spanned(
-                        &last_seg,
+                        last_seg_args,
                         "Trait must have a single type parameter",
                     )
                     .to_compile_error()
@@ -297,26 +299,9 @@ pub fn wayland_object(
             }
         },
     };
-    let our_trait: syn::Path = syn::parse_quote! { #crate_::__private::#last_seg };
+    let our_trait: syn::Path = syn::parse_quote! { #crate_::objects::Object #last_seg_args };
     let where_clause = generics.where_clause.as_ref();
 
-    let match_items = items.iter().map(|item| {
-        let var = format_ident!("{}", item.ident.to_string().to_pascal_case());
-        let trait_ = as_turbofish(&trait_);
-        let ident = &item.ident;
-        let args = item.args.iter().map(|arg| {
-            if arg.to_string().starts_with('_') {
-                format_ident!("{}", arg.to_string().trim_start_matches('_'))
-            } else {
-                arg.clone()
-            }
-        });
-        quote! {
-            #message_ty::#var(msg) => {
-                (#trait_::#ident(self, ctx, object_id, #(msg.#args),*).await, bytes_read, fds_read)
-            }
-        }
-    });
     let match_items2 = items.iter().map(|item| {
         let var = format_ident!("{}", item.ident.to_string().to_pascal_case());
         let trait_ = as_turbofish(&trait_);
@@ -334,7 +319,11 @@ pub fn wayland_object(
             }
         }
     });
-    let message_lifetime = if has_lifetime { quote! { <'a> } } else { quote! {} };
+    let message_lifetime = if has_lifetime {
+        quote! { <'a> }
+    } else {
+        quote! {}
+    };
     let interface_tokens = if let Some(interface) = attr.interface {
         let interface = interface.value();
         quote! {
@@ -353,54 +342,26 @@ pub fn wayland_object(
             }
         }
     } else {
-        quote! {
-        }
+        quote! {}
     };
 
     quote! {
         #orig_item
         const _: () = {
             impl #generics #our_trait for #self_ty #where_clause {
-                type Error = #error;
-                type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
-                where
-                    Self: 'a,
-                    Ctx: 'a;
-                fn dispatch<'a>(
-                    &'a self,
-                    ctx: &'a mut Ctx,
-                    object_id: u32,
-                    reader: (&'a [u8], &'a [::std::os::unix::io::RawFd]),
-                ) -> Self::Fut<'a>
-                {
-                    let res: Result<(_, _, _), _> =
-                        <#message_ty as #crate_::__private::Deserialize>::deserialize(reader.0, reader.1);
-                    async move {
-                        match res {
-                            Ok((msg, bytes_read, fds_read)) => {
-                                match msg {
-                                    #(#match_items),*
-                                }
-                            },
-                            Err(e) => (Err(e.into()), 0, 0),
-                        }
-                    }
-                }
-            }
-            impl #generics #crate_::objects::Object<Ctx> for #self_ty #where_clause {
-                type Request<'a> = #message_ty #message_lifetime where Ctx: 'a, Self: 'a;
+                type Request<'a> = #message_ty #message_lifetime where #ctx: 'a, Self: 'a;
                 type Error = #error;
                 type Fut<'a> = impl ::std::future::Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
                 where
                     Self: 'a,
-                    Ctx: 'a;
+                    #ctx: 'a;
 
                 fn interface(&self) -> &'static str {
                     #interface_tokens
                 }
 
                 #[inline]
-                fn dispatch<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a> {
+                fn dispatch<'a>(&'a self, ctx: &'a mut #ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a> {
                     let (bytes, fds) = (
                         <#message_ty as #crate_::__private::Serialize>::len(&msg) as usize,
                         <#message_ty as #crate_::__private::Serialize>::nfds(&msg) as usize,
@@ -504,25 +465,6 @@ pub fn interface_message_dispatch_for_enum(
         first_var,
         "Enum variant must have at least one field",
     ).to_compile_error().into()};
-    let var = body.iter().map(|v| {
-        if v.discriminant.is_some() {
-            quote! {
-                compile_error!("Enum discriminant not supported");
-            }
-        } else if v.fields.len() != 1 {
-            quote! { compile_error!("Enum variant must have a single field"); }
-        } else if let syn::Fields::Unnamed(fields) = &v.fields {
-            let ty_ = &fields.unnamed.first().unwrap().ty;
-            let ident = &v.ident;
-            quote! {
-                Self::#ident(f) => {
-                    <#ty_ as #crate_::__private::InterfaceMessageDispatch<#context_param>>::dispatch(f, ctx, object_id, reader).await
-                }
-            }
-        } else {
-            quote! { compile_error!("Enum variant must have a single unnamed field"); }
-        }
-    });
     let var2 = body.iter().map(|v| {
         if v.discriminant.is_some() {
             quote! {
@@ -584,22 +526,6 @@ pub fn interface_message_dispatch_for_enum(
             Self::#v(f) => <#ty_ as #crate_::objects::Object<#context_param>>::on_disconnect(f, ctx),
         }
     });
-    let additional_bounds = body.iter().enumerate().map(|(i, v)| {
-        if let syn::Fields::Unnamed(fields) = &v.fields {
-            let ty_ = &fields.unnamed.first().unwrap().ty;
-            if i != 0 {
-                quote! {
-                    #ty_: #crate_::__private::InterfaceMessageDispatch<#context_param, Error = <#first_var as #crate_::__private::InterfaceMessageDispatch<#context_param>>::Error>,
-                }
-            } else {
-                quote! {
-                    #ty_: #crate_::__private::InterfaceMessageDispatch<#context_param>,
-                }
-            }
-        } else {
-            quote! {}
-        }
-    });
     let additional_bounds2 = body.iter().enumerate().map(|(i, v)| {
         if let syn::Fields::Unnamed(fields) = &v.fields {
             let ty_ = &fields.unnamed.first().unwrap().ty;
@@ -616,23 +542,6 @@ pub fn interface_message_dispatch_for_enum(
             quote! {}
         }
     });
-    let where_clause = if let Some(where_clause) = where_clause0 {
-        let mut where_clause = where_clause.clone();
-        if !where_clause.predicates.trailing_punct() {
-            where_clause
-                .predicates
-                .push_punct(<syn::Token![,]>::default());
-        }
-        quote! {
-            #where_clause
-            #(#additional_bounds)*
-        }
-    } else {
-        quote! {
-            where
-                #(#additional_bounds)*
-        }
-    };
     let where_clause2 = if let Some(where_clause) = where_clause0 {
         let mut where_clause = where_clause.clone();
         if !where_clause.predicates.trailing_punct() {
@@ -658,27 +567,6 @@ pub fn interface_message_dispatch_for_enum(
         quote! { Ctx: 'a }
     };
     quote! {
-        impl #impl_generics #crate_::__private::InterfaceMessageDispatch<#context_param> for #ident #ty_generics
-        #where_clause {
-            type Error = <#first_var as #crate_::__private::InterfaceMessageDispatch<#context_param>>::Error;
-            type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
-            where
-                Self: 'a,
-                #ctx_lifetime_bound;
-            fn dispatch<'a>(
-                &'a self,
-                ctx: &'a mut #context_param,
-                object_id: u32,
-                reader: (&'a [u8], &'a [::std::os::unix::io::RawFd]),
-            ) -> Self::Fut<'a>
-            {
-                async move {
-                    match self {
-                        #(#var)*
-                    }
-                }
-            }
-        }
         impl #impl_generics #crate_::objects::Object<#context_param> for #ident #ty_generics #where_clause2 {
             type Error = <#first_var as #crate_::objects::Object<#context_param>>::Error; // TODO
             type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a

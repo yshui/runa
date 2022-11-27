@@ -14,8 +14,8 @@ use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{self, ClientContext as _, Store},
     events::EventMux,
-    renderer_capability::RendererCapability,
     objects::Object,
+    renderer_capability::RendererCapability,
 };
 mod render;
 mod shell;

@@ -98,27 +98,6 @@ impl<D> Serial for IdAlloc<D> {
     }
 }
 
-/// The entry point of an interface implementation, called when message of a
-/// certain interface is received
-pub trait InterfaceMessageDispatch<Ctx> {
-    type Error;
-    // TODO: the R parameter might be unnecessary, see:
-    //       https://github.com/rust-lang/rust/issues/42940
-    type Fut<'a>: Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
-    where
-        Self: 'a,
-        Ctx: 'a;
-    // Dispatch a message to the interface implementation. Returns a future that resolves to
-    // `(Result<()>, usize, usize)`, which are the result of handling the request, number of bytes
-    // and file descriptors read from the message, respectively.
-    fn dispatch<'a>(
-        &'a self,
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        reader: (&'a [u8], &'a [RawFd]),
-    ) -> Self::Fut<'a>;
-}
-
 pub use std::convert::Infallible;
 
 pub use wl_macros::wayland_object;

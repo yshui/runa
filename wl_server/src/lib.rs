@@ -18,7 +18,6 @@ pub mod utils;
 pub mod __private {
     // Re-exports used by macros
     pub use static_assertions::assert_impl_all;
-    pub use wl_common::InterfaceMessageDispatch;
     pub use wl_io::traits::{
         buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
         de::{Deserialize, Error as DeserError},

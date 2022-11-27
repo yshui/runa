@@ -52,6 +52,9 @@ pub trait Object<Ctx> {
     {
         (self as &dyn std::any::Any).downcast_ref()
     }
+    /// Dispatch requests to the interface implementation. Returns a future, that resolves
+    /// to (Result, usize, usize), which are the result of the request, the number of bytes
+    /// and file descriptors in the message, respectively.
     fn dispatch<'a>(
         &'a self,
         ctx: &'a mut Ctx,
@@ -282,20 +285,5 @@ impl Callback {
         ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
             .await?;
         Ok(())
-    }
-}
-
-impl<Ctx> wl_common::InterfaceMessageDispatch<Ctx> for Callback {
-    type Error = crate::error::Error;
-
-    type Fut<'a> = impl Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a where Ctx: 'a, Self: 'a;
-
-    fn dispatch<'a>(
-        &'a self,
-        _ctx: &'a mut Ctx,
-        object_id: u32,
-        _reader: (&'a [u8], &'a [std::os::unix::io::RawFd]),
-    ) -> Self::Fut<'a> {
-        async move { (Err(crate::error::Error::InvalidObject(object_id)), 0, 0) }
     }
 }

@@ -1,7 +1,6 @@
 use std::{future::Future, num::NonZeroU32, rc::Rc};
 
 use derivative::Derivative;
-use crate::utils::geometry::{Extent, Point, Rectangle};
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
@@ -16,6 +15,7 @@ use wl_server::{
 use crate::{
     globals::xdg_shell::{WmBaseObject, WmBaseState},
     shell::{xdg, HasShell, ShellOf},
+    utils::geometry::{Extent, Point, Rectangle},
 };
 #[derive(Debug)]
 pub struct WmBase;

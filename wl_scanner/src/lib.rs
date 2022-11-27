@@ -464,7 +464,7 @@ fn generate_message_variant(
             }
             #[inline]
             fn len(&self) -> u16 {
-                (#fixed_len #(#variable_len)*) as u16 // 8 is the header
+                (#fixed_len #(#variable_len)*) as u16
             }
             #[inline]
             fn nfds(&self) -> u8 {
@@ -475,12 +475,11 @@ fn generate_message_variant(
             #[inline]
             fn deserialize(
                 mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd] 
-            ) -> Result<(Self, usize, usize), ::wl_scanner_support::io::de::Error> {
+            ) -> Result<Self, ::wl_scanner_support::io::de::Error> {
                 use ::wl_scanner_support::io::{pop_fd, pop_bytes, pop_i32, pop_u32};
-                let (data_len, fds_len) = (data.len(), fds.len());
-                Ok((Self {
+                Ok(Self {
                     #(#deserialize),*
-                }, data_len - data.len(), fds_len - fds.len()))
+                })
             }
         }
     };
@@ -616,9 +615,7 @@ fn generate_event_or_request(
                 let opcode = opcode as u32;
                 quote! {
                     #opcode => {
-                        let (msg, bytes_read, fds_read) = <#mod_name::#name>::deserialize(data, fds)?;
-                        // add 8 bytes for header
-                        Ok((Self::#name(msg), bytes_read + 8, fds_read))
+                        Ok(Self::#name(<#mod_name::#name>::deserialize(data, fds)?))
                     },
                 }
             });
@@ -673,7 +670,7 @@ fn generate_event_or_request(
             impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #type_name #enum_lifetime {
                 fn deserialize(
                     mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd]
-                ) -> ::std::result::Result<(Self, usize, usize), ::wl_scanner_support::io::de::Error> {
+                ) -> ::std::result::Result<Self, ::wl_scanner_support::io::de::Error> {
                     use ::wl_scanner_support::io::pop_u32;
                     let _object_id = pop_u32(&mut data);
                     let header = pop_u32(&mut data);

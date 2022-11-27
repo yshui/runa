@@ -176,16 +176,16 @@ pub mod de {
     pub trait Deserialize<'a>: Sized {
         /// Deserialize from the given buffer. Returns deserialized message, and number of bytes
         /// and file descriptors consumed, respectively.
-        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<(Self, usize, usize), Error>;
+        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<Self, Error>;
     }
     impl<'a> Deserialize<'a> for Infallible {
-        fn deserialize(_: &'a [u8], _: &'a [RawFd]) -> Result<(Self, usize, usize), Error> {
+        fn deserialize(_: &'a [u8], _: &'a [RawFd]) -> Result<Self, Error> {
             Err(Error::UnknownOpcode(0, "unexpected message for object"))
         }
     }
     impl<'a> Deserialize<'a> for (&'a [u8], &'a [RawFd]) {
-        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<(Self, usize, usize), Error> {
-            Ok(((data, fds), data.len(), fds.len()))
+        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<Self, Error> {
+            Ok((data, fds))
         }
     }
 }

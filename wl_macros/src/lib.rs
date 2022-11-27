@@ -478,7 +478,7 @@ pub fn interface_message_dispatch_for_enum(
             quote! {
                 Self::#ident(f) => {
                     let msg = match #crate_::__private::Deserialize::deserialize(msg.0, msg.1) {
-                        Ok((msg, _, _)) => msg,
+                        Ok(msg) => msg,
                         Err(e) => return (Err(e.into()), 0, 0),
                     };
                     let (res, bytes_read, fds_read) =

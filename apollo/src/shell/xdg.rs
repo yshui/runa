@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc, collections::VecDeque};
 
 use derivative::Derivative;
 use hashbrown::HashMap;
-use wl_common::utils::geometry::{Extent, Logical, Rectangle, Point};
+use crate::utils::geometry::{Extent, Logical, Rectangle, Point};
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };

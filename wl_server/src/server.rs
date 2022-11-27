@@ -4,9 +4,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use derivative::Derivative;
-use wl_common::Serial;
 
-use crate::{events::EventHandle, globals::Bind, connection::ClientContext};
+use crate::{events::EventHandle, globals::Bind, connection::ClientContext, Serial};
 
 pub trait Server: Sized {
     /// The per client context type.
@@ -40,13 +39,13 @@ pub trait Globals<Ctx: ClientContext> {
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct GlobalStore<Ctx: ClientContext> {
-    globals:   wl_common::IdAlloc<Rc<GlobalOf<Ctx>>>,
+    globals:   crate::IdAlloc<Rc<GlobalOf<Ctx>>>,
     listeners: crate::events::Listeners,
 }
 
 impl<S: ClientContext> FromIterator<GlobalOf<S>> for GlobalStore<S> {
     fn from_iter<T: IntoIterator<Item = GlobalOf<S>>>(iter: T) -> Self {
-        let mut id_alloc = wl_common::IdAlloc::default();
+        let mut id_alloc = crate::IdAlloc::default();
         for global in iter.into_iter() {
             id_alloc.next_serial(Rc::new(global));
         }
@@ -60,7 +59,7 @@ impl<S: ClientContext> FromIterator<GlobalOf<S>> for GlobalStore<S> {
 /// GlobalStore will notify listeners when globals are added or removed. The
 /// notification will be sent to the slot registered as "wl_registry".
 impl<Ctx: ClientContext> Globals<Ctx> for GlobalStore<Ctx> {
-    type Iter<'a> = <wl_common::IdAlloc<Rc<GlobalOf<Ctx>>> as Serial>::Iter<'a> where Ctx: 'a, Self: 'a;
+    type Iter<'a> = <crate::IdAlloc<Rc<GlobalOf<Ctx>>> as Serial>::Iter<'a> where Ctx: 'a, Self: 'a;
 
     fn insert(&mut self, global: impl Into<GlobalOf<Ctx>>) -> u32 {
         let id = self.globals.next_serial(Rc::new(global.into()));

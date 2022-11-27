@@ -1,12 +1,11 @@
 use std::{future::Future, rc::Rc};
 
-use ::wl_common::Object;
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
     connection::{ClientContext, State},
     events::{DispatchTo, EventHandler, EventMux},
-    objects::RegistryState,
+    objects::{Object, RegistryState},
     server::{GlobalOf, Server},
 };
 

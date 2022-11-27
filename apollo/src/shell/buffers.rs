@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use wl_common::utils::geometry::{Extent, Logical};
+use crate::utils::geometry::{Extent, Logical};
 
 /// The base buffer trait.
 ///

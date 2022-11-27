@@ -1,4 +1,5 @@
 use std::{hash::Hash, ops::Deref, rc::Rc};
+pub mod geometry;
 
 /// A wrapper of `Rc` that implements `Hash` and `Eq` by comparing
 /// raw pointer addresses.

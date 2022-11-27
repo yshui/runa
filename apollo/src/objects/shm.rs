@@ -7,23 +7,20 @@ use std::{
 
 use dlv_list::{Index, VecList};
 use spin::mutex::Mutex;
-use wl_common::{
-    wayland_object,
-    utils::geometry::{Extent, Logical},
-};
 use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
     connection::{ClientContext, Objects},
     error,
-    objects::{Object, DISPLAY_ID},
+    objects::{wayland_object, DISPLAY_ID},
 };
 
 use crate::{
     globals::ShmObject,
     objects::Buffer as BufferObj,
     shell::buffers::{BufferBase, HasBuffer},
+    utils::geometry::{Extent, Logical},
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]

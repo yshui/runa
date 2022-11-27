@@ -84,7 +84,7 @@ pub mod roles {
 
     use derivative::Derivative;
     use dlv_list::{Index, VecList};
-    use wl_common::utils::geometry::{Logical, Point};
+    use crate::utils::geometry::{Logical, Point};
     use wl_protocol::wayland::wl_subsurface;
     use wl_server::provide_any::{self, request_ref};
 

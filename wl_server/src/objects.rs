@@ -5,12 +5,12 @@
 
 use std::future::Future;
 
-pub use ::wl_common::{wayland_object, Object};
+pub use wl_macros::{wayland_object, Object};
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
 use tracing::debug;
-use wl_common::Infallible;
+use std::convert::Infallible;
 
 use crate::{
     connection::{ClientContext, Objects, State},

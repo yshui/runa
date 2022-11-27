@@ -1,7 +1,7 @@
-use std::{any::Any, future::Future, num::NonZeroU32, rc::Rc};
+use std::{future::Future, num::NonZeroU32, rc::Rc};
 
 use derivative::Derivative;
-use wl_common::utils::geometry::{Extent, Point, Rectangle};
+use crate::utils::geometry::{Extent, Point, Rectangle};
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,

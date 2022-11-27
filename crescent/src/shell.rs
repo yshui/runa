@@ -6,7 +6,7 @@ use apollo::shell::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use slotmap::{DefaultKey, SlotMap};
-use wl_common::utils::geometry::{Extent, Physical, Point};
+use apollo::utils::geometry::{Extent, Physical, Point};
 
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]

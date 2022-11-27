@@ -1,4 +1,4 @@
-use wl_common::utils::geometry::{Rectangle, Logical};
+use crate::utils::geometry::{Rectangle, Logical};
 
 #[derive(Debug)]
 pub struct Output {

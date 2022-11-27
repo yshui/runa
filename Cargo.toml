@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
   "apollo",
-  "wl_common",
   "wl_server",
   "wl_spec",
   "wl_scanner",

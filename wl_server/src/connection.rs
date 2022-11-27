@@ -242,7 +242,7 @@ impl<D> EventSerial<D> {
     }
 }
 
-impl<D: 'static> wl_common::Serial for EventSerial<D> {
+impl<D: 'static> crate::Serial for EventSerial<D> {
     type Data = D;
 
     type Iter<'a> = impl Iterator<Item = (u32, &'a D)> + 'a where Self: 'a;
@@ -299,3 +299,4 @@ pub trait State<T: Default>: Sized {
     /// Get a mutable reference to the state of type `T`.
     fn state_mut(&mut self) -> &mut T;
 }
+

@@ -9,7 +9,6 @@ bitvec = "1.0.1"
 event-listener = "2.5.3"
 rustix = { version = "0.35.9", features = ["fs"] }
 smol = "1.2.5"
-wl_common = { version = "0.1.0", path = "../wl_common" }
 wl_io = { path = "../wl_io" }
 wl_protocol = { version = "0.1.0", path = "../wl_protocol" }
 xdg = "2.4.1"
@@ -26,6 +25,7 @@ lazy_static = "1.4.0"
 derivative.workspace = true
 ahash.workspace = true
 static_assertions = "1.1.0"
+wl_macros = { version = "0.1.0", path = "../wl_macros" }
 
 [features]
 default = []

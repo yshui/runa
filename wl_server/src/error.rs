@@ -27,8 +27,8 @@ pub enum Error {
     },
 }
 
-impl From<wl_common::Infallible> for Error {
-    fn from(f: wl_common::Infallible) -> Self {
+impl From<std::convert::Infallible> for Error {
+    fn from(f: std::convert::Infallible) -> Self {
         match f {}
     }
 }

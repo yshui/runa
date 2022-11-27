@@ -1,10 +1,9 @@
 use std::rc::Rc;
 
-use wl_common::wayland_object;
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display};
 use wl_server::{
     connection::ClientContext,
-    objects::{Object, DISPLAY_ID},
+    objects::{wayland_object, DISPLAY_ID},
 };
 
 use crate::shell::buffers::HasBuffer;

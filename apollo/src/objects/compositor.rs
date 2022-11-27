@@ -13,10 +13,9 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{any::Any, cell::RefCell, collections::VecDeque, future::Future, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, future::Future, rc::Rc};
 
 use derivative::Derivative;
-use wl_common::{utils::geometry::Point, wayland_object};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
     wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
@@ -25,13 +24,13 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{ClientContext, State},
     error,
-    objects::{Object, DISPLAY_ID},
+    objects::{wayland_object, Object, DISPLAY_ID},
 };
 
 use crate::{
     globals::{CompositorObject, SubcompositorObject},
     shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
-    utils::RcPtr,
+    utils::{geometry::Point, RcPtr},
 };
 
 #[derive(Derivative)]

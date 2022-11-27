@@ -98,7 +98,7 @@ pub struct Surface<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
+#[wayland_object]
 impl<Ctx: ClientContext> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
 where
     Ctx::Context: HasShell,
@@ -200,7 +200,7 @@ pub struct TopLevel<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
+#[wayland_object]
 impl<Ctx: ClientContext> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
 where
     Ctx::Context: HasShell,

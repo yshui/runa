@@ -1,9 +1,8 @@
-use std::{future::Future, pin::Pin};
+use std::future::Future;
 
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use wl_common::InterfaceMessageDispatch;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
@@ -12,6 +11,7 @@ use wl_server::{
     connection::{ClientContext, State},
     events::{DispatchTo, EventHandler},
     globals::{Bind, ConstInit},
+    objects::Object,
     renderer_capability::RendererCapability,
 };
 
@@ -56,7 +56,7 @@ where
     }
 }
 
-#[derive(InterfaceMessageDispatch, Derivative)]
+#[derive(Object, Derivative)]
 #[derivative(Debug(bound = "<Ctx::Context as HasBuffer>::Buffer: std::fmt::Debug"))]
 pub enum CompositorObject<Ctx>
 where
@@ -80,7 +80,7 @@ where
             Ctx: 'a;
 
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
-        use wl_server::{connection::Objects, objects::Object};
+        use wl_server::connection::Objects;
         async move {
             // Use a tmp buffer so we don't need to hold RefMut of `current` acorss await.
             let mut tmp_frame_callback_buffer =
@@ -123,7 +123,7 @@ where
 #[derive(Debug)]
 pub struct Subcompositor;
 
-#[derive(InterfaceMessageDispatch, Derivative)]
+#[derive(Object, Derivative)]
 #[derivative(Debug(bound = ""))]
 pub enum SubcompositorObject<Ctx>
 where
@@ -163,7 +163,7 @@ where
 #[derive(Default)]
 pub struct Shm;
 
-#[derive(InterfaceMessageDispatch, Debug)]
+#[derive(Object, Debug)]
 pub enum ShmObject {
     Shm(crate::objects::shm::Shm),
     ShmPool(crate::objects::shm::ShmPool),

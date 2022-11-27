@@ -2,7 +2,6 @@ use std::{cell::RefCell, future::Future, rc::Rc};
 
 use derivative::Derivative;
 use hashbrown::HashMap;
-use wl_common::InterfaceMessageDispatch;
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
@@ -10,14 +9,14 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::{ClientContext, State},
     events::{DispatchTo, EventHandler},
-    globals::{Bind, ConstInit},
+    globals::{Bind, ConstInit}, objects::Object
 };
 
 use crate::shell::{xdg::Layout, HasShell};
 #[derive(Debug)]
 pub struct WmBase;
 
-#[derive(InterfaceMessageDispatch, Derivative)]
+#[derive(Object, Derivative)]
 #[derivative(Debug(bound = ""))]
 pub enum WmBaseObject<Ctx>
 where
@@ -58,7 +57,7 @@ where
             Ctx: 'a;
 
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
-        use wl_server::{connection::Objects, objects::Object};
+        use wl_server::connection::Objects;
         async move {
             let state = ctx.state_mut();
             let scratch_buffer = state.scratch_buffer.take().unwrap();

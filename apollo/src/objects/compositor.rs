@@ -16,7 +16,7 @@
 use std::{any::Any, cell::RefCell, collections::VecDeque, future::Future, rc::Rc};
 
 use derivative::Derivative;
-use wl_common::{wayland_object, utils::geometry::Point};
+use wl_common::{utils::geometry::Point, wayland_object};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
     wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
@@ -93,10 +93,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
     }
 }
 
-#[wayland_object(
-    on_disconnect = "deallocate_surface",
-    bounds = "Ctx: ClientContext, Ctx::Context: HasShell<Shell = S>"
-)]
+#[wayland_object(on_disconnect = "deallocate_surface")]
 impl<Ctx: ClientContext, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::Context: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
@@ -380,7 +377,7 @@ pub struct Subsurface<Ctx: ClientContext>(
 where
     Ctx::Context: HasShell;
 
-#[wayland_object(bounds = "Ctx: ClientContext, Ctx::Context: HasShell")]
+#[wayland_object]
 impl<Ctx: ClientContext> wl_subsurface::RequestDispatch<Ctx> for Subsurface<Ctx>
 where
     Ctx::Context: HasShell,

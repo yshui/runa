@@ -9,13 +9,13 @@ use apollo::shell::{
 use futures_util::{FutureExt, TryStreamExt};
 use log::debug;
 use smol::{LocalExecutor, Task};
-use wl_common::InterfaceMessageDispatch;
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{self, ClientContext as _, Store},
     events::EventMux,
     renderer_capability::RendererCapability,
+    objects::Object,
 };
 mod render;
 mod shell;
@@ -41,7 +41,7 @@ wl_server::globals! {
         Shm(apollo::globals::Shm),
         WmBase(apollo::globals::xdg_shell::WmBase),
     }
-    #[derive(InterfaceMessageDispatch, Debug)]
+    #[derive(Object, Debug)]
     #[wayland(context = "CrescentClient")]
     pub enum Objects {
         Buffer(apollo::objects::Buffer<RendererBuffer<render::BufferData>>),

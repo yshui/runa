@@ -19,11 +19,10 @@ pub mod __private {
     // Re-exports used by macros
     pub use static_assertions::assert_impl_all;
     pub use wl_common::InterfaceMessageDispatch;
-    pub use wl_io::{
-        traits::{
-            buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-            de::Deserialize,
-        },
+    pub use wl_io::traits::{
+        buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
+        de::{Deserialize, Error as DeserError},
+        ser::Serialize,
     };
     pub use wl_protocol::{wayland::wl_display, ProtocolError};
     pub use wl_types;
@@ -138,7 +137,7 @@ pub fn wayland_listener_auto(
 ///        Display(wl_server::objects::Display),
 ///        Registry(wl_server::objects::Registry),
 ///     }
-///     #[derive(Debug, InterfaceMessageDispatch)]
+///     #[derive(Debug, Object)]
 ///     #[wayland(context = "ClientContext")]
 ///     pub enum Objects {
 ///         // Extra objects
@@ -148,11 +147,13 @@ pub fn wayland_listener_auto(
 ///
 /// The name `Globals` and `Objects` can be changed.
 ///
-/// This will generate a `From<Variant> for Globals` for each of the variants of `Globals`. And for
-/// each global, a `From<Global::Object> for Objects` will be generated.
+/// This will generate a `From<Variant> for Globals` for each of the variants of
+/// `Globals`. And for each global, a `From<Global::Object> for Objects` will be
+/// generated.
 ///
-/// `Objects` will be filled with variants from `Global::Object` for each of the globals. It can
-/// also contain extra variants, for object types that aren't associated with a particular global.
+/// `Objects` will be filled with variants from `Global::Object` for each of the
+/// globals. It can also contain extra variants, for object types that aren't
+/// associated with a particular global.
 #[macro_export]
 macro_rules! globals {
     (
@@ -231,7 +232,7 @@ macro_rules! globals {
                     }).await; // don't care about the error.
                     return true;
                 };
-                let (ret, bytes_read, fds_read) = <<Self as $crate::connection::ClientContext>::Object as $crate::__private::InterfaceMessageDispatch<Self>>::dispatch(
+                let (ret, bytes_read, fds_read) = <<Self as $crate::connection::ClientContext>::Object as $crate::objects::Object<Self>>::dispatch(
                     obj.as_ref(),
                     self,
                     object_id,

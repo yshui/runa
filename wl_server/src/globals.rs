@@ -1,6 +1,6 @@
 use std::{future::Future, rc::Rc};
 
-use ::wl_common::InterfaceMessageDispatch;
+use ::wl_common::Object;
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
@@ -64,7 +64,7 @@ where
     }
 }
 
-#[derive(InterfaceMessageDispatch, Debug)]
+#[derive(Object, Debug)]
 #[wayland(crate = "crate")]
 pub enum DisplayObject {
     Display(crate::objects::Display),
@@ -128,7 +128,7 @@ where
     }
 }
 
-#[derive(InterfaceMessageDispatch, Debug)]
+#[derive(Object, Debug)]
 #[wayland(crate = "crate")]
 pub enum RegistryObject {
     Registry(crate::objects::Registry),

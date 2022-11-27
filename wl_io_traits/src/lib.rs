@@ -183,6 +183,11 @@ pub mod de {
             Err(Error::UnknownOpcode(0, "unexpected message for object"))
         }
     }
+    impl<'a> Deserialize<'a> for (&'a [u8], &'a [RawFd]) {
+        fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<(Self, usize, usize), Error> {
+            Ok(((data, fds), data.len(), fds.len()))
+        }
+    }
 }
 
 pub mod buf {

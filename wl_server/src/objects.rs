@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-pub use ::wl_common::wayland_object;
+pub use ::wl_common::{wayland_object, Object};
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
@@ -28,7 +28,15 @@ use crate::{
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
 pub trait Object<Ctx> {
-    type Request<'a>: wl_io::traits::de::Deserialize<'a>;
+    type Request<'a>: wl_io::traits::de::Deserialize<'a>
+    where
+        Ctx: 'a,
+        Self: 'a;
+    type Error;
+    type Fut<'a>: Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
+    where
+        Ctx: 'a,
+        Self: 'a;
     /// Return the interface name of this object.
     fn interface(&self) -> &'static str;
     /// A function that will be called when the client disconnects. It should
@@ -44,6 +52,12 @@ pub trait Object<Ctx> {
     {
         (self as &dyn std::any::Any).downcast_ref()
     }
+    fn dispatch<'a>(
+        &'a self,
+        ctx: &'a mut Ctx,
+        object_id: u32,
+        msg: Self::Request<'a>,
+    ) -> Self::Fut<'a>;
 }
 
 /// The object ID of the wl_display object
@@ -231,10 +245,22 @@ where
 #[derive(Debug, Default)]
 pub struct Callback;
 impl<Ctx> Object<Ctx> for Callback {
-    type Request<'a> = Infallible;
+    type Error = crate::error::Error;
+    type Request<'a> = Infallible where Ctx: 'a;
+
+    type Fut<'a> = impl Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a where Ctx: 'a, Self: 'a;
 
     fn interface(&self) -> &'static str {
         wl_protocol::wayland::wl_callback::v1::NAME
+    }
+
+    fn dispatch<'a>(
+        &'a self,
+        _ctx: &'a mut Ctx,
+        _object_id: u32,
+        msg: Self::Request<'a>,
+    ) -> Self::Fut<'a> {
+        async move { match msg {} }
     }
 }
 

@@ -117,7 +117,7 @@ pub trait ClientContext: Sized + crate::events::EventMux + 'static {
     where
         Self: 'a;
     type Objects: Objects<Self::Object>;
-    type Object: InterfaceMessageDispatch<Self> + Object<Self> + std::fmt::Debug;
+    type Object: Object<Self> + std::fmt::Debug;
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::Context;
 

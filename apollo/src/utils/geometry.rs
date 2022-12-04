@@ -898,7 +898,7 @@ impl Transform {
         let size = self.transform_size(rect.size);
         // Transform the upper-left corner.
         let loc = self.transform_point_in(rect.loc, area);
-        eprintln!("loc: {:?}, {:?}", loc, self);
+        eprintln!("loc: {loc:?}, {self:?}");
         // After transformation, the upper-left is no longer the upper-left, so find the
         // coordinate of the new upper-left.
         let (x, y) = match *self {

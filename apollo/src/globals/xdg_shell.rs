@@ -1,13 +1,12 @@
 use std::{cell::RefCell, future::Future, rc::Rc};
 
-use derivative::Derivative;
 use hashbrown::HashMap;
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{ClientContext, State},
+    connection::{Client, State},
     events::{DispatchTo, EventHandler},
     globals::{Bind, ConstInit}, objects::Object
 };
@@ -34,9 +33,9 @@ impl Default for WmBaseState {
 
 impl<Ctx> EventHandler<Ctx> for WmBase
 where
-    Ctx: ClientContext + DispatchTo<Self> + State<WmBaseState>,
-    Ctx::Context: HasShell,
-    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    Ctx: Client + DispatchTo<Self> + State<WmBaseState>,
+    Ctx::ServerContext: HasShell,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = std::io::Error;
 
@@ -54,7 +53,7 @@ where
             for (surface, layout) in pending_configure.drain() {
                 let surface = ctx.objects().borrow().get(surface).unwrap().clone();
                 // Send role specific configure event
-                let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<<Ctx::Context as HasShell>::Shell>>() {
+                let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<<Ctx::ServerContext as HasShell>::Shell>>() {
                     Some(toplevel) => {
                         let role_object_id = toplevel
                             .0
@@ -99,12 +98,12 @@ where
 impl ConstInit for WmBase {
     const INIT: Self = Self;
 }
-impl<Ctx: ClientContext> Bind<Ctx> for WmBase
+impl<Ctx: Client> Bind<Ctx> for WmBase
 where
     Ctx: State<WmBaseState>,
-    Ctx::Context: HasShell,
+    Ctx::ServerContext: HasShell,
     Ctx::Object: From<crate::objects::xdg_shell::WmBase>,
-    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 

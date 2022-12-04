@@ -8,7 +8,7 @@ use wl_protocol::wayland::{
     wl_subcompositor::v1 as wl_subcompositor,
 };
 use wl_server::{
-    connection::{ClientContext, State},
+    connection::{Client, State},
     events::{DispatchTo, EventHandler},
     globals::{Bind, ConstInit},
     objects::Object,
@@ -27,10 +27,10 @@ pub struct Compositor;
 impl ConstInit for Compositor {
     const INIT: Self = Self;
 }
-impl<Ctx: ClientContext> Bind<Ctx> for Compositor
+impl<Ctx: Client> Bind<Ctx> for Compositor
 where
     Ctx: State<CompositorState> + DispatchTo<Self>,
-    Ctx::Context: HasShell,
+    Ctx::ServerContext: HasShell,
     Ctx::Object: From<crate::objects::compositor::Compositor>,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
@@ -55,8 +55,8 @@ where
 
 impl<Ctx> EventHandler<Ctx> for Compositor
 where
-    Ctx: DispatchTo<Self> + State<CompositorState> + ClientContext,
-    Ctx::Context: HasShell,
+    Ctx: DispatchTo<Self> + State<CompositorState> + Client,
+    Ctx::ServerContext: HasShell,
 {
     type Error = std::io::Error;
 
@@ -77,7 +77,7 @@ where
             for (surface, _) in surfaces {
                 let surface = ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
                                                                                      // the Ref
-                let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::Context>> =
+                let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::ServerContext>> =
                     surface.cast().unwrap();
                 {
                     let mut shell = ctx.server_context().shell().borrow_mut();
@@ -111,9 +111,9 @@ pub struct Subcompositor;
 impl ConstInit for Subcompositor {
     const INIT: Self = Self;
 }
-impl<Ctx: ClientContext> Bind<Ctx> for Subcompositor
+impl<Ctx: Client> Bind<Ctx> for Subcompositor
 where
-    Ctx::Context: HasShell,
+    Ctx::ServerContext: HasShell,
     Ctx::Object: From<crate::objects::compositor::Subcompositor>,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
@@ -137,9 +137,9 @@ pub struct Shm;
 impl ConstInit for Shm {
     const INIT: Self = Self;
 }
-impl<Ctx: ClientContext> Bind<Ctx> for Shm
+impl<Ctx: Client> Bind<Ctx> for Shm
 where
-    Ctx::Context: RendererCapability,
+    Ctx::ServerContext: RendererCapability,
     Ctx::Object: From<crate::objects::shm::Shm>,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;

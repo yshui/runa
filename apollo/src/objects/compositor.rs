@@ -22,7 +22,7 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{ClientContext, State},
+    connection::{Client, State},
     error,
     objects::{wayland_object, Object, DISPLAY_ID},
 };
@@ -36,11 +36,11 @@ use crate::{
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Shell: shell::Shell>(pub(crate) Rc<crate::shell::surface::Surface<Shell>>);
 
-fn deallocate_surface<Ctx: ClientContext>(
-    this: &mut Surface<<Ctx::Context as HasShell>::Shell>,
+fn deallocate_surface<Ctx: Client>(
+    this: &mut Surface<<Ctx::ServerContext as HasShell>::Shell>,
     ctx: &mut Ctx,
 ) where
-    Ctx::Context: HasShell,
+    Ctx::ServerContext: HasShell,
 {
     let mut shell = ctx.server_context().shell().borrow_mut();
     this.0.destroy(&mut shell);
@@ -92,9 +92,9 @@ impl wl_protocol::ProtocolError for SurfaceError {
 }
 
 #[wayland_object(on_disconnect = "deallocate_surface")]
-impl<Ctx: ClientContext, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
+impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
-    Ctx::Context: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
+    Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
     Ctx: State<CompositorState>,
     Ctx::Object: From<wl_server::objects::Callback>,
 {
@@ -159,7 +159,7 @@ where
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = self.0.pending_mut(&mut shell);
             let buffer = buffer
-                .cast::<crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>>()
+                .cast::<crate::objects::Buffer<<Ctx::ServerContext as HasBuffer>::Buffer>>()
                 .unwrap();
             state.set_buffer(Some(buffer.buffer.clone()));
             Ok(())
@@ -277,10 +277,7 @@ where
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
             if ctx.state_mut().surfaces.remove(&object_id).is_none() {
-                panic!(
-                    "Incosistent compositor state, surface {} not found",
-                    object_id
-                );
+                panic!("Incosistent compositor state, surface {object_id} not found");
             }
             self.0
                 .destroy(&mut ctx.server_context().shell().borrow_mut());
@@ -318,11 +315,11 @@ impl Default for CompositorState {
 }
 
 #[wayland_object]
-impl<Ctx: ClientContext> wl_compositor::RequestDispatch<Ctx> for Compositor
+impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
-    Ctx::Context: HasShell,
+    Ctx::ServerContext: HasShell,
     Ctx: State<CompositorState>,
-    Ctx::Object: From<Surface<<Ctx::Context as HasShell>::Shell>>,
+    Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = error::Error;
 
@@ -352,9 +349,7 @@ where
                 surface.set_pending(pending);
                 shell.commit(None, current);
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
-                objects
-                    .insert(id.0, Surface(surface))
-                    .unwrap();
+                objects.insert(id.0, Surface(surface)).unwrap();
                 Ok(())
             } else {
                 Err(error::Error::IdExists(id.0))
@@ -374,14 +369,12 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Subsurface<S: Shell>(
-    Rc<crate::shell::surface::Surface<S>>,
-);
+pub struct Subsurface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
 
 #[wayland_object]
-impl<Ctx: ClientContext, S: Shell> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S>
+impl<Ctx: Client, S: Shell> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S>
 where
-    Ctx::Context: HasShell<Shell = S>,
+    Ctx::ServerContext: HasShell<Shell = S>,
 {
     type Error = error::Error;
 
@@ -433,11 +426,11 @@ where
             let mut shell = ctx.server_context().shell().borrow_mut();
             let role = self
                 .0
-                .role::<roles::Subsurface<<Ctx::Context as HasShell>::Shell>>()
+                .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
             let parent = role.parent.pending_mut(&mut shell);
             let parent_antirole = parent
-                .antirole_mut::<roles::SubsurfaceParent<<Ctx::Context as HasShell>::Shell>>(
+                .antirole_mut::<roles::SubsurfaceParent<<Ctx::ServerContext as HasShell>::Shell>>(
                     *roles::SUBSURFACE_PARENT_SLOT,
                 )
                 .unwrap();
@@ -491,10 +484,10 @@ impl wl_protocol::ProtocolError for Error {
 }
 
 #[wayland_object]
-impl<Ctx: ClientContext> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
+impl<Ctx: Client> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
 where
-    Ctx::Context: HasShell,
-    Ctx::Object: From<Subsurface<<Ctx::Context as HasShell>::Shell>>,
+    Ctx::ServerContext: HasShell,
+    Ctx::Object: From<Subsurface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = wl_server::error::Error;
 
@@ -528,7 +521,7 @@ where
             let surface = objects
                 .get(surface.0)
                 .and_then(|r| r.as_ref().cast())
-                .map(|sur: &Surface<ShellOf<Ctx::Context>>| sur.0.clone())
+                .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.0.clone())
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       surface.0,
@@ -538,7 +531,7 @@ where
             let parent = objects
                 .get(parent.0)
                 .and_then(|r| r.as_ref().cast())
-                .map(|sur: &Surface<ShellOf<Ctx::Context>>| sur.0.clone())
+                .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.0.clone())
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       parent.0,

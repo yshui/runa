@@ -5,30 +5,29 @@ use std::{cell::RefCell, rc::Rc};
 
 use derivative::Derivative;
 
-use crate::{events::EventHandle, globals::Bind, connection::ClientContext, Serial};
+use crate::{events::EventHandle, globals::Bind, Serial};
 
 pub trait Server: Sized {
     /// The per client context type.
-    type ClientContext: crate::connection::ClientContext<Context = Self>;
+    type ClientContext: crate::connection::Client<ServerContext = Self>;
     type Conn;
     type Error;
-    type Globals: Globals<Self::ClientContext>;
+    type GlobalStore: Globals<Self::Global>;
     type Global: Bind<Self::ClientContext>;
 
-    fn globals(&self) -> &RefCell<Self::Globals>;
+    fn globals(&self) -> &RefCell<Self::GlobalStore>;
     fn new_connection(&self, conn: Self::Conn) -> Result<(), Self::Error>;
 }
 
-pub(crate) type GlobalOf<Ctx> = <<Ctx as ClientContext>::Context as Server>::Global;
-pub trait Globals<Ctx: ClientContext> {
-    type Iter<'a>: Iterator<Item = (u32, &'a Rc<GlobalOf<Ctx>>)> + 'a
+pub trait Globals<G> {
+    type Iter<'a>: Iterator<Item = (u32, &'a Rc<G>)> + 'a
     where
-        Ctx: 'a,
+        G: 'a,
         Self: 'a;
     /// Add a global to the store, return its allocated ID.
-    fn insert(&mut self, global: impl Into<GlobalOf<Ctx>>) -> u32;
+    fn insert(&mut self, global: impl Into<G>) -> u32;
     /// Get the global with the given id.
-    fn get(&self, id: u32) -> Option<&Rc<GlobalOf<Ctx>>>;
+    fn get(&self, id: u32) -> Option<&Rc<G>>;
     /// Remove the global with the given id.
     fn remove(&mut self, id: u32) -> bool;
     fn iter(&self) -> Self::Iter<'_>;
@@ -38,13 +37,13 @@ pub trait Globals<Ctx: ClientContext> {
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct GlobalStore<Ctx: ClientContext> {
-    globals:   crate::IdAlloc<Rc<GlobalOf<Ctx>>>,
+pub struct GlobalStore<G> {
+    globals:   crate::IdAlloc<Rc<G>>,
     listeners: crate::events::Listeners,
 }
 
-impl<S: ClientContext> FromIterator<GlobalOf<S>> for GlobalStore<S> {
-    fn from_iter<T: IntoIterator<Item = GlobalOf<S>>>(iter: T) -> Self {
+impl<G> FromIterator<G> for GlobalStore<G> {
+    fn from_iter<T: IntoIterator<Item = G>>(iter: T) -> Self {
         let mut id_alloc = crate::IdAlloc::default();
         for global in iter.into_iter() {
             id_alloc.next_serial(Rc::new(global));
@@ -58,16 +57,16 @@ impl<S: ClientContext> FromIterator<GlobalOf<S>> for GlobalStore<S> {
 
 /// GlobalStore will notify listeners when globals are added or removed. The
 /// notification will be sent to the slot registered as "wl_registry".
-impl<Ctx: ClientContext> Globals<Ctx> for GlobalStore<Ctx> {
-    type Iter<'a> = <crate::IdAlloc<Rc<GlobalOf<Ctx>>> as Serial>::Iter<'a> where Ctx: 'a, Self: 'a;
+impl<G> Globals<G> for GlobalStore<G> {
+    type Iter<'a> = <crate::IdAlloc<Rc<G>> as Serial>::Iter<'a> where G: 'a, Self: 'a;
 
-    fn insert(&mut self, global: impl Into<GlobalOf<Ctx>>) -> u32 {
+    fn insert(&mut self, global: impl Into<G>) -> u32 {
         let id = self.globals.next_serial(Rc::new(global.into()));
         self.listeners.notify();
         id
     }
 
-    fn get(&self, id: u32) -> Option<&Rc<GlobalOf<Ctx>>> {
+    fn get(&self, id: u32) -> Option<&Rc<G>> {
         self.globals.get(id)
     }
 

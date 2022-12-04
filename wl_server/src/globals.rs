@@ -3,21 +3,21 @@ use std::{future::Future, rc::Rc};
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::{ClientContext, State},
+    connection::{Client, State},
     events::{DispatchTo, EventHandler, EventMux},
     objects::RegistryState,
-    server::{GlobalOf, Server},
+    server::Server,
 };
 
 pub trait Bind<Ctx> {
     type BindFut<'a>: Future<Output = std::io::Result<Ctx::Object>> + 'a
     where
-        Ctx: ClientContext + 'a,
+        Ctx: Client + 'a,
         Self: 'a;
     /// Called when the global is bound to a client, return the client side
     /// object, and optionally an I/O task to be completed after the object is
     /// inserted into the client's object store
-    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> where Ctx: ClientContext;
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> where Ctx: Client;
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
 }
@@ -40,7 +40,7 @@ impl ConstInit for Display {
 
 impl<Ctx> Bind<Ctx> for Display
 where
-    Ctx: ClientContext + std::fmt::Debug,
+    Ctx: Client + std::fmt::Debug,
     Ctx::Object: From<crate::objects::Display>,
     Registry: Bind<Ctx>,
 {
@@ -54,7 +54,7 @@ where
         wl_display::v1::VERSION
     }
 
-    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> where Ctx: ClientContext {
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> where Ctx: Client {
         futures_util::future::ok(crate::objects::Display.into())
     }
 }
@@ -72,9 +72,11 @@ impl ConstInit for Registry {
     const INIT: Self = Registry;
 }
 
+type GlobalOf<Ctx> = <<Ctx as Client>::ServerContext as Server>::Global;
+
 impl<Ctx> Bind<Ctx> for Registry
 where
-    Ctx: DispatchTo<Self> + State<RegistryState<GlobalOf<Ctx>>> + ClientContext,
+    Ctx: DispatchTo<Self> + State<RegistryState<GlobalOf<Ctx>>> + Client,
     Ctx::Object: From<crate::objects::Registry>,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
@@ -117,7 +119,7 @@ where
 
 impl<Ctx> EventHandler<Ctx> for Registry
 where
-    Ctx: EventMux + State<RegistryState<GlobalOf<Ctx>>> + DispatchTo<Self> + ClientContext,
+    Ctx: EventMux + State<RegistryState<GlobalOf<Ctx>>> + DispatchTo<Self> + Client,
 {
     type Error = std::io::Error;
 

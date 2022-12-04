@@ -6,7 +6,7 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{ClientContext, State},
+    connection::{Client, State},
     error::Error,
     events::DispatchTo,
     objects::{wayland_object, Object},
@@ -21,11 +21,11 @@ use crate::{
 pub struct WmBase;
 
 #[wayland_object]
-impl<Ctx: ClientContext> xdg_wm_base::RequestDispatch<Ctx> for WmBase
+impl<Ctx: Client> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
-    Ctx::Context: HasShell,
-    Ctx::Object: From<Surface<<Ctx::Context as HasShell>::Shell>>,
-    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    Ctx::ServerContext: HasShell,
+    Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
     Ctx: DispatchTo<crate::globals::xdg_shell::WmBase> + State<WmBaseState>,
 {
     type Error = Error;
@@ -61,7 +61,7 @@ where
                 .clone();
             let entry = objects.entry(id.0);
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::Context>> = surface
+            let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::ServerContext>> = surface
                 .as_ref()
                 .cast()
                 .ok_or_else(|| Error::UnknownObject(surface_id))?;
@@ -97,11 +97,11 @@ pub struct Surface<S: Shell>(
 );
 
 #[wayland_object]
-impl<Ctx: ClientContext, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
+impl<Ctx: Client, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
 where
-    Ctx::Context: HasShell<Shell = S>,
+    Ctx::ServerContext: HasShell<Shell = S>,
     Ctx::Object: From<TopLevel<S>>,
-    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
 
@@ -197,10 +197,10 @@ pub struct TopLevel<S: Shell>(
 );
 
 #[wayland_object]
-impl<Ctx: ClientContext, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S>
+impl<Ctx: Client, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S>
 where
-    Ctx::Context: HasShell<Shell = S>,
-    <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    Ctx::ServerContext: HasShell<Shell = S>,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
 

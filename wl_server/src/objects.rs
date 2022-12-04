@@ -13,9 +13,9 @@ use tracing::debug;
 use std::convert::Infallible;
 
 use crate::{
-    connection::{ClientContext, Objects, State},
+    connection::{Client, Objects, State},
     globals::Bind,
-    server::{self, GlobalOf, Globals},
+    server::{self, Globals},
 };
 
 /// This is the bottom type for all per client objects. This trait provides some
@@ -73,7 +73,7 @@ pub struct Display;
 #[wayland_object(crate = "crate")]
 impl<Ctx> wl_display::RequestDispatch<Ctx> for Display
 where
-    Ctx: ClientContext + std::fmt::Debug,
+    Ctx: Client + std::fmt::Debug,
     crate::globals::Registry: Bind<Ctx>,
 {
     type Error = crate::error::Error;
@@ -198,10 +198,12 @@ mod private {
 
 pub(crate) use private::RegistryState;
 
+type GlobalOf<Ctx> = <<Ctx as Client>::ServerContext as crate::server::Server>::Global;
+
 #[wayland_object(crate = "crate")]
 impl<Ctx> wl_registry::RequestDispatch<Ctx> for Registry
 where
-    Ctx: ClientContext + State<RegistryState<GlobalOf<Ctx>>>,
+    Ctx: Client + State<RegistryState<GlobalOf<Ctx>>>,
 {
     type Error = crate::error::Error;
 
@@ -268,7 +270,7 @@ impl<Ctx> Object<Ctx> for Callback {
 }
 
 impl Callback {
-    pub async fn fire(object_id: u32, data: u32, ctx: &impl ClientContext) -> std::io::Result<()> {
+    pub async fn fire(object_id: u32, data: u32, ctx: &impl Client) -> std::io::Result<()> {
         ctx.send(
             object_id,
             wl_protocol::wayland::wl_callback::v1::events::Done {

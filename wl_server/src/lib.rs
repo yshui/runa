@@ -259,7 +259,7 @@ macro_rules! globals {
             }
         )*
         impl $crate::globals::Bind<$ctx> for $N {
-            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<<$ctx as $crate::connection::ClientContext>::Object>> + 'a
+            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<<$ctx as $crate::connection::Client>::Object>> + 'a
             where
                 Self: 'a;
             fn interface(&self) -> &'static str {

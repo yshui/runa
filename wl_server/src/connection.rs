@@ -106,8 +106,8 @@ impl<O> Objects<O> for Store<O> {
 }
 
 /// A client connection
-pub trait ClientContext: Sized + crate::events::EventMux + 'static {
-    type Context: crate::server::Server<ClientContext = Self> + 'static;
+pub trait Client: Sized + crate::events::EventMux + 'static {
+    type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
     type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a,
@@ -115,14 +115,14 @@ pub trait ClientContext: Sized + crate::events::EventMux + 'static {
     type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a;
-    type Objects: Objects<Self::Object>;
+    type ObjectStore: Objects<Self::Object>;
     type Object: Object<Self> + std::fmt::Debug;
     type DispatchFut<'a, R>: Future<Output = bool> + 'a
     where
         Self: 'a,
         R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
     /// Return the server context singleton.
-    fn server_context(&self) -> &Self::Context;
+    fn server_context(&self) -> &Self::ServerContext;
 
     /// Send a message to the client.
     fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
@@ -136,7 +136,7 @@ pub trait ClientContext: Sized + crate::events::EventMux + 'static {
 
     /// Flush connection
     fn flush(&self) -> Self::Flush<'_>;
-    fn objects(&self) -> &RefCell<Self::Objects>;
+    fn objects(&self) -> &RefCell<Self::ObjectStore>;
     /// Spawn a client dependent task from the context. When the client is
     /// disconnected, the task should be cancelled, otherwise the task
     /// should keep running.
@@ -184,7 +184,7 @@ macro_rules! impl_dispatch {
                     return true;
                 };
                 let (ret, bytes_read, fds_read) = <
-                    <Self as $crate::connection::ClientContext>::Object as
+                    <Self as $crate::connection::Client>::Object as
                     $crate::objects::Object<Self>
                 >::dispatch(
                     obj.as_ref(),

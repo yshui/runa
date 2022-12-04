@@ -11,7 +11,7 @@ use smol::{LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
-    connection::{self, ClientContext as _, Store},
+    connection::{self, Client as _, Store},
     events::EventMux,
     objects::Object,
     renderer_capability::RendererCapability,
@@ -22,7 +22,7 @@ use shell::DefaultShell;
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals:  RefCell<wl_server::server::GlobalStore<CrescentClient>>,
+    globals:  RefCell<wl_server::server::GlobalStore<AnyGlobal>>,
     shell:    Rc<RefCell<<Crescent as HasShell>::Shell>>,
     executor: LocalExecutor<'static>,
 }
@@ -32,7 +32,7 @@ pub struct Crescent(Rc<CrescentState>);
 
 wl_server::globals! {
     type ClientContext = CrescentClient;
-    pub enum Globals {
+    pub enum AnyGlobal {
         Display(wl_server::globals::Display),
         Registry(wl_server::globals::Registry),
         Compositor(apollo::globals::Compositor),
@@ -45,7 +45,7 @@ wl_server::globals! {
 type Shell = <Crescent as HasShell>::Shell;
 #[derive(Object, Debug)]
 #[wayland(context = "CrescentClient")]
-pub enum Objects {
+pub enum AnyObject {
     // === core objects ===
     Display(wl_server::objects::Display),
     Registry(wl_server::objects::Registry),
@@ -74,10 +74,10 @@ impl wl_server::server::Server for Crescent {
     type ClientContext = CrescentClient;
     type Conn = UnixStream;
     type Error = ();
-    type Global = Globals;
-    type Globals = wl_server::server::GlobalStore<Self::ClientContext>;
+    type Global = AnyGlobal;
+    type GlobalStore = wl_server::server::GlobalStore<AnyGlobal>;
 
-    fn globals(&self) -> &RefCell<Self::Globals> {
+    fn globals(&self) -> &RefCell<Self::GlobalStore> {
         &self.0.globals
     }
 
@@ -150,7 +150,7 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:       RefCell<connection::Store<Objects>>,
+    store:       RefCell<connection::Store<AnyObject>>,
     per_client:  wl_server::utils::UnboundedAggregate,
     event_flags: wl_server::events::EventFlags,
     state:       Crescent,
@@ -191,17 +191,17 @@ impl EventMux for CrescentClient {
     }
 }
 
-impl connection::ClientContext for CrescentClient {
-    type Context = Crescent;
-    type Object = Objects;
-    type Objects = Store<Self::Object>;
+impl connection::Client for CrescentClient {
+    type ServerContext = Crescent;
+    type Object = AnyObject;
+    type ObjectStore = Store<Self::Object>;
 
     type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
     type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a
     where
         M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
 
-    fn server_context(&self) -> &Self::Context {
+    fn server_context(&self) -> &Self::ServerContext {
         &self.state
     }
 
@@ -221,7 +221,7 @@ impl connection::ClientContext for CrescentClient {
         connection::flush_to(&self.tx)
     }
 
-    fn objects(&self) -> &RefCell<Self::Objects> {
+    fn objects(&self) -> &RefCell<Self::ObjectStore> {
         &self.store
     }
 
@@ -257,7 +257,7 @@ fn main() -> Result<()> {
     });
     let window = rx.recv().unwrap();
     let server = Crescent(Rc::new(CrescentState {
-        globals:  RefCell::new(Globals::globals().collect()),
+        globals:  RefCell::new(AnyGlobal::globals().collect()),
         shell:    Default::default(),
         executor: LocalExecutor::new(),
     }));

@@ -11,7 +11,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::{ClientContext, Objects},
+    connection::{Client, Objects},
     error,
     objects::{wayland_object, DISPLAY_ID},
 };
@@ -118,7 +118,7 @@ pub enum ShmError {
 impl std::fmt::Debug for ShmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShmError::Mapping(_, err) => write!(f, "Mapping error: {}", err),
+            ShmError::Mapping(_, err) => write!(f, "Mapping error: {err}"),
         }
     }
 }
@@ -151,7 +151,7 @@ impl wl_protocol::ProtocolError for ShmError {
 #[wayland_object]
 impl<Ctx> wl_shm::RequestDispatch<Ctx> for Shm
 where
-    Ctx: ClientContext,
+    Ctx: Client,
     Ctx::Object: From<ShmPool>,
 {
     type Error = error::Error;
@@ -290,10 +290,10 @@ impl ShmPool {
 #[wayland_object]
 impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
-    Ctx: ClientContext,
-    Ctx::Context: HasBuffer,
-    <Ctx::Context as HasBuffer>::Buffer: From<Buffer>,
-    Ctx::Object: From<BufferObj<<Ctx::Context as HasBuffer>::Buffer>>,
+    Ctx: Client,
+    Ctx::ServerContext: HasBuffer,
+    <Ctx::ServerContext as HasBuffer>::Buffer: From<Buffer>,
+    Ctx::Object: From<BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer>>,
 {
     type Error = error::Error;
 
@@ -318,7 +318,7 @@ where
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(id.0);
             if entry.is_vacant() {
-                let buffer: BufferObj<<Ctx::Context as HasBuffer>::Buffer> = BufferObj {
+                let buffer: BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer> = BufferObj {
                     buffer: Rc::new(
                         Buffer {
                             base: BufferBase::new(id.0),

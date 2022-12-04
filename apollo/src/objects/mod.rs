@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display};
 use wl_server::{
-    connection::ClientContext,
+    connection::Client,
     objects::{wayland_object, DISPLAY_ID},
 };
 
@@ -20,8 +20,8 @@ pub struct Buffer<B> {
 #[wayland_object]
 impl<Ctx, B: 'static> wl_buffer::RequestDispatch<Ctx> for Buffer<B>
 where
-    Ctx: ClientContext,
-    Ctx::Context: HasBuffer<Buffer = B>,
+    Ctx: Client,
+    Ctx::ServerContext: HasBuffer<Buffer = B>,
 {
     type Error = wl_server::error::Error;
 

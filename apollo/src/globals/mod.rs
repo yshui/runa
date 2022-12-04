@@ -17,7 +17,7 @@ use wl_server::{
 
 use crate::{
     objects::compositor::CompositorState,
-    shell::{buffers::HasBuffer, HasShell, Shell, ShellOf},
+    shell::{HasShell, Shell, ShellOf},
 };
 
 #[derive(Derivative)]
@@ -31,10 +31,9 @@ impl<Ctx: ClientContext> Bind<Ctx> for Compositor
 where
     Ctx: State<CompositorState> + DispatchTo<Self>,
     Ctx::Context: HasShell,
+    Ctx::Object: From<crate::objects::compositor::Compositor>,
 {
-    type Objects = CompositorObject<Ctx>;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         wl_compositor::NAME
@@ -50,22 +49,8 @@ where
             .shell()
             .borrow()
             .add_render_listener((client.event_handle(), Ctx::SLOT));
-        futures_util::future::ok(CompositorObject::Compositor(
-            crate::objects::compositor::Compositor,
-        ))
+        futures_util::future::ok(crate::objects::compositor::Compositor.into())
     }
-}
-
-#[derive(Object, Derivative)]
-#[derivative(Debug(bound = "<Ctx::Context as HasBuffer>::Buffer: std::fmt::Debug"))]
-pub enum CompositorObject<Ctx>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell,
-{
-    Compositor(crate::objects::compositor::Compositor),
-    Surface(crate::objects::compositor::Surface<<Ctx::Context as HasShell>::Shell>),
-    Buffer(crate::objects::Buffer<<Ctx::Context as HasBuffer>::Buffer>),
 }
 
 impl<Ctx> EventHandler<Ctx> for Compositor
@@ -123,27 +108,15 @@ where
 #[derive(Debug)]
 pub struct Subcompositor;
 
-#[derive(Object, Derivative)]
-#[derivative(Debug(bound = ""))]
-pub enum SubcompositorObject<Ctx>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell,
-{
-    Subcompositor(crate::objects::compositor::Subcompositor),
-    Subsurface(crate::objects::compositor::Subsurface<Ctx>),
-}
-
 impl ConstInit for Subcompositor {
     const INIT: Self = Self;
 }
 impl<Ctx: ClientContext> Bind<Ctx> for Subcompositor
 where
     Ctx::Context: HasShell,
+    Ctx::Object: From<crate::objects::compositor::Subcompositor>,
 {
-    type Objects = SubcompositorObject<Ctx>;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         wl_subcompositor::NAME
@@ -154,20 +127,12 @@ where
     }
 
     fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
-        futures_util::future::ok(SubcompositorObject::Subcompositor(
-            crate::objects::compositor::Subcompositor,
-        ))
+        futures_util::future::ok(crate::objects::compositor::Subcompositor.into())
     }
 }
 
 #[derive(Default)]
 pub struct Shm;
-
-#[derive(Object, Debug)]
-pub enum ShmObject {
-    Shm(crate::objects::shm::Shm),
-    ShmPool(crate::objects::shm::ShmPool),
-}
 
 impl ConstInit for Shm {
     const INIT: Self = Self;
@@ -175,10 +140,9 @@ impl ConstInit for Shm {
 impl<Ctx: ClientContext> Bind<Ctx> for Shm
 where
     Ctx::Context: RendererCapability,
+    Ctx::Object: From<crate::objects::shm::Shm>,
 {
-    type Objects = ShmObject;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         wl_shm::NAME
@@ -200,7 +164,7 @@ where
                     )
                     .await?;
             }
-            Ok(ShmObject::Shm(crate::objects::shm::Shm))
+            Ok(crate::objects::shm::Shm.into())
         }
     }
 }

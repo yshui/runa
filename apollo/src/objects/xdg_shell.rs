@@ -13,8 +13,8 @@ use wl_server::{
 };
 
 use crate::{
-    globals::xdg_shell::{WmBaseObject, WmBaseState},
-    shell::{xdg, HasShell, ShellOf},
+    globals::xdg_shell::WmBaseState,
+    shell::{xdg, HasShell, ShellOf, Shell},
     utils::geometry::{Extent, Point, Rectangle},
 };
 #[derive(Debug)]
@@ -24,7 +24,7 @@ pub struct WmBase;
 impl<Ctx: ClientContext> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
     Ctx::Context: HasShell,
-    Ctx::Object: From<WmBaseObject<Ctx>>,
+    Ctx::Object: From<Surface<<Ctx::Context as HasShell>::Shell>>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
     Ctx: DispatchTo<crate::globals::xdg_shell::WmBase> + State<WmBaseState>,
 {
@@ -72,7 +72,7 @@ where
                     &pending_configure,
                 );
                 surface.0.set_role(role, &mut shell);
-                entry.or_insert(WmBaseObject::Surface(Surface(surface.0.clone())).into());
+                entry.or_insert(Surface(surface.0.clone()));
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -92,17 +92,15 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Surface<Ctx: ClientContext>(
-    pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
-)
-where
-    Ctx::Context: HasShell;
+pub struct Surface<S: Shell>(
+    pub(crate) Rc<crate::shell::surface::Surface<S>>,
+);
 
 #[wayland_object]
-impl<Ctx: ClientContext> xdg_surface::RequestDispatch<Ctx> for Surface<Ctx>
+impl<Ctx: ClientContext, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
 where
-    Ctx::Context: HasShell,
-    Ctx::Object: From<WmBaseObject<Ctx>>,
+    Ctx::Context: HasShell<Shell = S>,
+    Ctx::Object: From<TopLevel<S>>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;
@@ -143,7 +141,7 @@ where
                 let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 self.0.set_role(role, &mut shell);
-                entry.or_insert(WmBaseObject::TopLevel(TopLevel::<Ctx>(self.0.clone())).into());
+                entry.or_insert(TopLevel(self.0.clone()));
                 Ok(())
             } else {
                 Err(Error::IdExists(id.0))
@@ -194,16 +192,14 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct TopLevel<Ctx: ClientContext>(
-    pub(crate) Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
-)
-where
-    Ctx::Context: HasShell;
+pub struct TopLevel<S: Shell>(
+    pub(crate) Rc<crate::shell::surface::Surface<S>>,
+);
 
 #[wayland_object]
-impl<Ctx: ClientContext> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<Ctx>
+impl<Ctx: ClientContext, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S>
 where
-    Ctx::Context: HasShell,
+    Ctx::Context: HasShell<Shell = S>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
     type Error = wl_server::error::Error;

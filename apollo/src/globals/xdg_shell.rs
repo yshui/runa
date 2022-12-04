@@ -16,18 +16,6 @@ use crate::shell::{xdg::Layout, HasShell};
 #[derive(Debug)]
 pub struct WmBase;
 
-#[derive(Object, Derivative)]
-#[derivative(Debug(bound = ""))]
-pub enum WmBaseObject<Ctx>
-where
-    Ctx: ClientContext,
-    Ctx::Context: HasShell,
-{
-    WmBase(crate::objects::xdg_shell::WmBase),
-    Surface(crate::objects::xdg_shell::Surface<Ctx>),
-    TopLevel(crate::objects::xdg_shell::TopLevel<Ctx>),
-}
-
 pub(crate) struct WmBaseState {
     pub(crate) pending_configure: Rc<RefCell<HashMap<u32, Layout>>>,
     // A buffer we swap with pending_configure when we need to use it, so there is something to
@@ -66,7 +54,7 @@ where
             for (surface, layout) in pending_configure.drain() {
                 let surface = ctx.objects().borrow().get(surface).unwrap().clone();
                 // Send role specific configure event
-                let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<Ctx>>() {
+                let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<<Ctx::Context as HasShell>::Shell>>() {
                     Some(toplevel) => {
                         let role_object_id = toplevel
                             .0
@@ -115,11 +103,10 @@ impl<Ctx: ClientContext> Bind<Ctx> for WmBase
 where
     Ctx: State<WmBaseState>,
     Ctx::Context: HasShell,
+    Ctx::Object: From<crate::objects::xdg_shell::WmBase>,
     <Ctx::Context as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
-    type Objects = WmBaseObject<Ctx>;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         xdg_wm_base::NAME
@@ -130,6 +117,6 @@ where
     }
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
-        futures_util::future::ok(WmBaseObject::WmBase(crate::objects::xdg_shell::WmBase))
+        futures_util::future::ok(crate::objects::xdg_shell::WmBase.into())
     }
 }

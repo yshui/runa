@@ -17,7 +17,6 @@ use wl_server::{
 };
 
 use crate::{
-    globals::ShmObject,
     objects::Buffer as BufferObj,
     shell::buffers::{BufferBase, HasBuffer},
     utils::geometry::{Extent, Logical},
@@ -153,7 +152,7 @@ impl wl_protocol::ProtocolError for ShmError {
 impl<Ctx> wl_shm::RequestDispatch<Ctx> for Shm
 where
     Ctx: ClientContext,
-    Ctx::Object: From<ShmObject>,
+    Ctx::Object: From<ShmPool>,
 {
     type Error = error::Error;
 
@@ -212,7 +211,7 @@ where
             if ctx
                 .objects()
                 .borrow_mut()
-                .insert(id.0, ShmObject::ShmPool(pool))
+                .insert(id.0, pool)
                 .is_err()
             {
                 ctx.send(DISPLAY_ID, wl_display::events::Error {
@@ -302,39 +301,6 @@ where
     type DestroyFut<'a> = impl Future<Output = Result<(), error::Error>> + 'a where Ctx: 'a;
     type ResizeFut<'a> = impl Future<Output = Result<(), error::Error>> + 'a where Ctx: 'a;
 
-    fn resize<'a>(&'a self, _ctx: &'a mut Ctx, _object_id: u32, size: i32) -> Self::ResizeFut<'a> {
-        async move {
-            let len = size as usize;
-            let mut inner = self.inner.borrow_mut();
-            tracing::debug!("resize shm_pool {:p} to {}", &*inner, size);
-            if len > inner.len {
-                let fd = inner.fd.as_raw_fd();
-                inner.unmap();
-
-                // Safety: mapping the file descriptor is harmless until we try to access it.
-                let addr = unsafe {
-                    libc::mmap(
-                        std::ptr::null_mut(),
-                        len,
-                        libc::PROT_READ,
-                        libc::MAP_SHARED,
-                        fd,
-                        0,
-                    )
-                };
-                if addr == libc::MAP_FAILED {
-                    return Err(error::Error::UnknownFatalError("mmap failed"))
-                }
-
-                inner.addr = addr;
-                inner.len = len;
-                // update th map record
-                inner.map = MAP_RECORDS.lock().push_back(MapRecord { start: addr, len });
-            }
-            Ok(())
-        }
-    }
-
     fn create_buffer<'a>(
         &'a self,
         ctx: &'a mut Ctx,
@@ -366,7 +332,7 @@ where
                         .into(),
                     ),
                 };
-                entry.or_insert(buffer.into());
+                entry.or_insert(buffer);
                 Ok(())
             } else {
                 Err(wl_server::error::Error::IdExists(id.0))
@@ -381,6 +347,39 @@ where
                 id: object_id,
             })
             .await?;
+            Ok(())
+        }
+    }
+
+    fn resize<'a>(&'a self, _ctx: &'a mut Ctx, _object_id: u32, size: i32) -> Self::ResizeFut<'a> {
+        async move {
+            let len = size as usize;
+            let mut inner = self.inner.borrow_mut();
+            tracing::debug!("resize shm_pool {:p} to {}", &*inner, size);
+            if len > inner.len {
+                let fd = inner.fd.as_raw_fd();
+                inner.unmap();
+
+                // Safety: mapping the file descriptor is harmless until we try to access it.
+                let addr = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        len,
+                        libc::PROT_READ,
+                        libc::MAP_SHARED,
+                        fd,
+                        0,
+                    )
+                };
+                if addr == libc::MAP_FAILED {
+                    return Err(error::Error::UnknownFatalError("mmap failed"))
+                }
+
+                inner.addr = addr;
+                inner.len = len;
+                // update th map record
+                inner.map = MAP_RECORDS.lock().push_back(MapRecord { start: addr, len });
+            }
             Ok(())
         }
     }

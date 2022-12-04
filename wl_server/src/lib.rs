@@ -246,7 +246,6 @@ impl<D> Serial for IdAlloc<D> {
 macro_rules! globals {
     (
         __internal, $ctx:ty, $(#[$attr:meta])* ($($vis:tt)?) enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
-        $(#[$attr2:meta])* enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
     ) => {
         $(#[$attr])*
         $($vis)? enum $N {
@@ -260,8 +259,7 @@ macro_rules! globals {
             }
         )*
         impl $crate::globals::Bind<$ctx> for $N {
-            type Objects = $N2;
-            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<Self::Objects>> + 'a
+            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<<$ctx as $crate::connection::ClientContext>::Object>> + 'a
             where
                 Self: 'a;
             fn interface(&self) -> &'static str {
@@ -281,7 +279,7 @@ macro_rules! globals {
             fn bind<'a>(&'a self, client: &'a mut $ctx, object_id: u32) -> Self::BindFut<'a> {
                 async move {
                     Ok(match self {$(
-                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::bind(f, client, object_id).await?.into(),
+                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::bind(f, client, object_id).await?,
                     )*})
                 }
             }
@@ -291,106 +289,25 @@ macro_rules! globals {
                 [$($N::$var(<$f as $crate::globals::ConstInit>::INIT)),*].into_iter()
             }
         }
-        impl $ctx {
-            $($vis)? async fn dispatch<R>(
-                &mut self,
-                mut reader: Pin<&mut R>) -> bool
-            where
-                R: $crate::__private::AsyncBufReadWithFd
-            {
-                use $crate::__private::AsyncBufReadWithFdExt;
-                use $crate::{
-                    __private::{
-                        wl_types, wl_display::v1 as wl_display, ProtocolError,
-                    },
-                    objects::DISPLAY_ID
-                };
-                let (object_id, len, buf, fd) =
-                    match R::next_message(reader.as_mut()).await {
-                        Ok(v) => v,
-                        // I/O error, no point sending the error to the client
-                        Err(e) => return true,
-                    };
-                use $crate::connection::Objects;
-                let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
-                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
-                        object_id: wl_types::Object(object_id),
-                        code: 0,
-                        message: wl_types::str!("Invalid object ID"),
-                    }).await; // don't care about the error.
-                    return true;
-                };
-                let (ret, bytes_read, fds_read) = <<Self as $crate::connection::ClientContext>::Object as $crate::objects::Object<Self>>::dispatch(
-                    obj.as_ref(),
-                    self,
-                    object_id,
-                    (buf, fd),
-                ).await;
-                let (mut fatal, error) = match ret {
-                    Ok(_) => (false, None),
-                    Err(e) =>(
-                        e.fatal(),
-                        e.wayland_error()
-                        .map(|(object_id, error_code)|
-                             (
-                                 object_id,
-                                 error_code,
-                                 std::ffi::CString::new(e.to_string()).unwrap()
-                             )
-                        )
-                    )
-                };
-                if let Some((object_id, error_code, msg)) = error {
-                    // We are going to disconnect the client so we don't care about the
-                    // error.
-                    fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
-                        object_id: wl_types::Object(object_id),
-                        code: error_code,
-                        message: wl_types::Str(msg.as_c_str()),
-                    }).await.is_err();
-                }
-                if !fatal {
-                    use $crate::objects::Object;
-                    if bytes_read != len as usize {
-                        let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
-                        let opcode = len_opcode & 0xffff;
-                        tracing::error!("unparsed bytes in buffer, {bytes_read} != {len}. object_id: {}@{object_id}, opcode: {opcode}",
-                                        obj.interface());
-                        fatal = true;
-                    }
-                    reader.consume(bytes_read, fds_read);
-                }
-                fatal
-            }
-        }
-        $(#[$attr2])*
-        $($vis)? enum $N2 {
-            $($var(<$f as $crate::globals::Bind<$ctx>>::Objects)),*,
-            $($var2($f2)),*
-        }
     };
     (
         type ClientContext = $ctx:ty;
         $(#[$attr:meta])* pub enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
-        $(#[$attr2:meta])* pub enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
     ) => {
         $crate::globals!(
             __internal,
             $ctx,
-            $(#[$attr])* $(#[$attr])* (pub) enum $N { $($var($f)),* } $(#[$attr2])*
-            enum $N2 { $($var2($f2)),* }
+            $(#[$attr])* $(#[$attr])* (pub) enum $N { $($var($f)),* }
         );
     };
     (
         type ClientContext = $ctx:ty;
         $(#[$attr:meta])* enum $N:ident { $($var:ident($f:ty)),+ $(,)? }
-        $(#[$attr2:meta])* enum $N2:ident { $($var2:ident($f2:ty)),* $(,)? }
     ) => {
         $crate::globals!(
             __internal,
             $ctx,
-            $(#[$attr])* $(#[$attr])* () enum $N { $($var($f)),* } $(#[$attr2])*
-            enum $N2 { $($var2($f2)),* }
+            $(#[$attr])* $(#[$attr])* () enum $N { $($var($f)),* }
         );
     };
 }

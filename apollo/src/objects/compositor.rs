@@ -28,7 +28,6 @@ use wl_server::{
 };
 
 use crate::{
-    globals::{CompositorObject, SubcompositorObject},
     shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
     utils::{geometry::Point, RcPtr},
 };
@@ -97,7 +96,7 @@ impl<Ctx: ClientContext, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for S
 where
     Ctx::Context: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
     Ctx: State<CompositorState>,
-    Ctx::Object: From<wl_server::globals::DisplayObject>,
+    Ctx::Object: From<wl_server::objects::Callback>,
 {
     type Error = error::Error;
 
@@ -119,13 +118,12 @@ where
         _object_id: u32,
         callback: wl_types::NewId,
     ) -> Self::FrameFut<'a> {
-        use wl_server::globals::DisplayObject;
         async move {
             use wl_server::connection::{Entry, Objects};
             let mut objects = ctx.objects().borrow_mut();
             let entry = objects.entry(callback.0);
             if entry.is_vacant() {
-                entry.or_insert(DisplayObject::Callback(wl_server::objects::Callback).into());
+                entry.or_insert(wl_server::objects::Callback);
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 let state = self.0.pending_mut(&mut shell);
                 state.add_frame_callback(callback.0);
@@ -324,8 +322,7 @@ impl<Ctx: ClientContext> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::Context: HasShell,
     Ctx: State<CompositorState>,
-    Ctx::Object: From<CompositorObject<Ctx>>,
-    CompositorObject<Ctx>: std::fmt::Debug,
+    Ctx::Object: From<Surface<<Ctx::Context as HasShell>::Shell>>,
 {
     type Error = error::Error;
 
@@ -356,7 +353,7 @@ where
                 shell.commit(None, current);
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 objects
-                    .insert(id.0, CompositorObject::Surface(Surface(surface)))
+                    .insert(id.0, Surface(surface))
                     .unwrap();
                 Ok(())
             } else {
@@ -377,16 +374,14 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Subsurface<Ctx: ClientContext>(
-    Rc<crate::shell::surface::Surface<<Ctx::Context as HasShell>::Shell>>,
-)
-where
-    Ctx::Context: HasShell;
+pub struct Subsurface<S: Shell>(
+    Rc<crate::shell::surface::Surface<S>>,
+);
 
 #[wayland_object]
-impl<Ctx: ClientContext> wl_subsurface::RequestDispatch<Ctx> for Subsurface<Ctx>
+impl<Ctx: ClientContext, S: Shell> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S>
 where
-    Ctx::Context: HasShell,
+    Ctx::Context: HasShell<Shell = S>,
 {
     type Error = error::Error;
 
@@ -499,7 +494,7 @@ impl wl_protocol::ProtocolError for Error {
 impl<Ctx: ClientContext> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
 where
     Ctx::Context: HasShell,
-    Ctx::Object: From<SubcompositorObject<Ctx>>,
+    Ctx::Object: From<Subsurface<<Ctx::Context as HasShell>::Shell>>,
 {
     type Error = wl_server::error::Error;
 
@@ -562,9 +557,7 @@ where
                         subsurface_object: object_id,
                     }))
                 } else {
-                    entry.or_insert(
-                        SubcompositorObject::Subsurface(Subsurface::<Ctx>(surface)).into(),
-                    );
+                    entry.or_insert(Subsurface(surface));
                     Ok(())
                 }
             } else {

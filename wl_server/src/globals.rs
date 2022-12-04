@@ -5,22 +5,19 @@ use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 use crate::{
     connection::{ClientContext, State},
     events::{DispatchTo, EventHandler, EventMux},
-    objects::{Object, RegistryState},
+    objects::RegistryState,
     server::{GlobalOf, Server},
 };
 
 pub trait Bind<Ctx> {
-    /// An object that is the union of all objects that can be created from this
-    /// global.
-    type Objects;
-    type BindFut<'a>: Future<Output = std::io::Result<Self::Objects>> + 'a
+    type BindFut<'a>: Future<Output = std::io::Result<Ctx::Object>> + 'a
     where
-        Ctx: 'a,
+        Ctx: ClientContext + 'a,
         Self: 'a;
     /// Called when the global is bound to a client, return the client side
     /// object, and optionally an I/O task to be completed after the object is
     /// inserted into the client's object store
-    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a>;
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> where Ctx: ClientContext;
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
 }
@@ -44,11 +41,10 @@ impl ConstInit for Display {
 impl<Ctx> Bind<Ctx> for Display
 where
     Ctx: ClientContext + std::fmt::Debug,
+    Ctx::Object: From<crate::objects::Display>,
     Registry: Bind<Ctx>,
 {
-    type Objects = DisplayObject;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         wl_display::v1::NAME
@@ -58,16 +54,9 @@ where
         wl_display::v1::VERSION
     }
 
-    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
-        futures_util::future::ok(DisplayObject::Display(crate::objects::Display))
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> where Ctx: ClientContext {
+        futures_util::future::ok(crate::objects::Display.into())
     }
-}
-
-#[derive(Object, Debug)]
-#[wayland(crate = "crate")]
-pub enum DisplayObject {
-    Display(crate::objects::Display),
-    Callback(crate::objects::Callback),
 }
 
 /// The registry singleton. This is an interface only object. The actual list of
@@ -86,10 +75,9 @@ impl ConstInit for Registry {
 impl<Ctx> Bind<Ctx> for Registry
 where
     Ctx: DispatchTo<Self> + State<RegistryState<GlobalOf<Ctx>>> + ClientContext,
+    Ctx::Object: From<crate::objects::Registry>,
 {
-    type Objects = RegistryObject;
-
-    type BindFut<'a> = impl Future<Output = std::io::Result<Self::Objects>> + 'a;
+    type BindFut<'a> = impl Future<Output = std::io::Result<Ctx::Object>> + 'a;
 
     fn interface(&self) -> &'static str {
         wl_registry::NAME
@@ -122,15 +110,9 @@ where
             // the event handling will happen at an arbitrary time in the
             // future.
             Registry::invoke(client).await?;
-            Ok(RegistryObject::Registry(crate::objects::Registry))
+            Ok(crate::objects::Registry.into())
         }
     }
-}
-
-#[derive(Object, Debug)]
-#[wayland(crate = "crate")]
-pub enum RegistryObject {
-    Registry(crate::objects::Registry),
 }
 
 impl<Ctx> EventHandler<Ctx> for Registry

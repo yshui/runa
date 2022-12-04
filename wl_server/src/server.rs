@@ -13,7 +13,7 @@ pub trait Server: Sized {
     type Conn;
     type Error;
     type Globals: Globals<Self::ClientContext>;
-    type Global: Bind<Self::ClientContext, Objects = <Self::ClientContext as ClientContext>::Object>;
+    type Global: Bind<Self::ClientContext>;
 
     fn globals(&self) -> &RefCell<Self::Globals>;
     fn new_connection(&self, conn: Self::Conn) -> Result<(), Self::Error>;

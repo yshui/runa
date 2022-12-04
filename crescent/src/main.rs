@@ -7,7 +7,6 @@ use apollo::shell::{
     HasShell,
 };
 use futures_util::{FutureExt, TryStreamExt};
-use log::debug;
 use smol::{LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
@@ -41,11 +40,34 @@ wl_server::globals! {
         Shm(apollo::globals::Shm),
         WmBase(apollo::globals::xdg_shell::WmBase),
     }
-    #[derive(Object, Debug)]
-    #[wayland(context = "CrescentClient")]
-    pub enum Objects {
-        Buffer(apollo::objects::Buffer<RendererBuffer<render::BufferData>>),
-    }
+}
+
+type Shell = <Crescent as HasShell>::Shell;
+#[derive(Object, Debug)]
+#[wayland(context = "CrescentClient")]
+pub enum Objects {
+    // === core objects ===
+    Display(wl_server::objects::Display),
+    Registry(wl_server::objects::Registry),
+    Callback(wl_server::objects::Callback),
+
+    // === compositor objects ===
+    Compositor(apollo::objects::compositor::Compositor),
+    Surface(apollo::objects::compositor::Surface<Shell>),
+    Subcompositor(apollo::objects::compositor::Subcompositor),
+    Subsurface(apollo::objects::compositor::Subsurface<Shell>),
+
+    // === xdg_shell objects ===
+    WmBase(apollo::objects::xdg_shell::WmBase),
+    XdgSurface(apollo::objects::xdg_shell::Surface<Shell>),
+    XdgTopLevel(apollo::objects::xdg_shell::TopLevel<Shell>),
+
+    // === shm objects ===
+    Shm(apollo::objects::shm::Shm),
+    ShmPool(apollo::objects::shm::ShmPool),
+
+    // === buffer ===
+    Buffer(apollo::objects::Buffer<RendererBuffer<render::BufferData>>),
 }
 
 impl wl_server::server::Server for Crescent {
@@ -60,7 +82,7 @@ impl wl_server::server::Server for Crescent {
     }
 
     fn new_connection(&self, conn: UnixStream) -> Result<(), Self::Error> {
-        debug!("New connection");
+        tracing::debug!("New connection");
         let state = self.clone();
         self.0
             .executor
@@ -80,7 +102,7 @@ impl wl_server::server::Server for Crescent {
                     .borrow_mut()
                     .insert(
                         1,
-                        wl_server::globals::DisplayObject::Display(wl_server::objects::Display),
+                        wl_server::objects::Display,
                     )
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
@@ -207,6 +229,7 @@ impl connection::ClientContext for CrescentClient {
         let task = self.state.0.executor.spawn(fut);
         self.tasks.borrow_mut().push(task);
     }
+    wl_server::impl_dispatch!();
 }
 
 fn main() -> Result<()> {

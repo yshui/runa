@@ -21,7 +21,7 @@ pub struct Store<Object> {
 
 pub trait Entry<'a, Object>: Sized {
     fn is_vacant(&self) -> bool;
-    fn or_insert(self, v: Object) -> &'a mut Object;
+    fn or_insert(self, v: impl Into<Object>) -> &'a mut Object;
 }
 
 impl<'a, Object> Entry<'a, Object> for StoreEntry<'a, Object> {
@@ -32,8 +32,8 @@ impl<'a, Object> Entry<'a, Object> for StoreEntry<'a, Object> {
         }
     }
 
-    fn or_insert(self, v: Object) -> &'a mut Object {
-        let r = hash_map::Entry::or_insert(self, Rc::new(v));
+    fn or_insert(self, v: impl Into<Object>) -> &'a mut Object {
+        let r = hash_map::Entry::or_insert(self, Rc::new(v.into()));
         // Safety: we just created the Rc, so it must have only one reference
         unsafe { Rc::get_mut(r).unwrap_unchecked() }
     }
@@ -117,6 +117,10 @@ pub trait ClientContext: Sized + crate::events::EventMux + 'static {
         Self: 'a;
     type Objects: Objects<Self::Object>;
     type Object: Object<Self> + std::fmt::Debug;
+    type DispatchFut<'a, R>: Future<Output = bool> + 'a
+    where
+        Self: 'a,
+        R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::Context;
 
@@ -137,6 +141,96 @@ pub trait ClientContext: Sized + crate::events::EventMux + 'static {
     /// disconnected, the task should be cancelled, otherwise the task
     /// should keep running.
     fn spawn(&self, fut: impl Future<Output = ()> + 'static);
+    fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+    where
+        R: wl_io::traits::buf::AsyncBufReadWithFd;
+}
+
+#[macro_export]
+macro_rules! impl_dispatch {
+    () => {
+        type DispatchFut<'a, R> = impl Future<Output = bool> + 'a
+        where
+            Self: 'a,
+            R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+
+        fn dispatch<'a, R>(
+            &'a mut self,
+            mut reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+        where
+            R: $crate::__private::AsyncBufReadWithFd
+        {
+            async move {
+                use $crate::__private::AsyncBufReadWithFdExt;
+                use $crate::{
+                    __private::{
+                        wl_types, wl_display::v1 as wl_display, ProtocolError,
+                    },
+                    objects::DISPLAY_ID
+                };
+                let (object_id, len, buf, fd) =
+                    match R::next_message(reader.as_mut()).await {
+                        Ok(v) => v,
+                        // I/O error, no point sending the error to the client
+                        Err(e) => return true,
+                    };
+                use $crate::connection::Objects;
+                let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
+                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
+                        object_id: wl_types::Object(object_id),
+                        code: 0,
+                        message: wl_types::str!("Invalid object ID"),
+                    }).await; // don't care about the error.
+                    return true;
+                };
+                let (ret, bytes_read, fds_read) = <
+                    <Self as $crate::connection::ClientContext>::Object as
+                    $crate::objects::Object<Self>
+                >::dispatch(
+                    obj.as_ref(),
+                    self,
+                    object_id,
+                    (buf, fd),
+                ).await;
+                let (mut fatal, error) = match ret {
+                    Ok(_) => (false, None),
+                    Err(e) =>(
+                        e.fatal(),
+                        e.wayland_error()
+                        .map(|(object_id, error_code)|
+                             (
+                                 object_id,
+                                 error_code,
+                                 std::ffi::CString::new(e.to_string()).unwrap()
+                             )
+                        )
+                    )
+                };
+                if let Some((object_id, error_code, msg)) = error {
+                    // We are going to disconnect the client so we don't care about the
+                    // error.
+                    fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
+                        object_id: wl_types::Object(object_id),
+                        code: error_code,
+                        message: wl_types::Str(msg.as_c_str()),
+                    }).await.is_err();
+                }
+                if !fatal {
+                    use $crate::objects::Object;
+                    if bytes_read != len as usize {
+                        let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
+                        let opcode = len_opcode & 0xffff;
+                        tracing::error!("unparsed bytes in buffer, {bytes_read} != {len}. \
+                                         object_id: {}@{object_id}, opcode: {opcode}",
+                                        obj.interface());
+                        fatal = true;
+                    }
+                    reader.consume(bytes_read, fds_read);
+                }
+                fatal
+            }
+        }
+    };
 }
 
 /// Implementation helper for Connection::send. This assumes you stored the

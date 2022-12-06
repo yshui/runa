@@ -30,11 +30,33 @@ pub trait MaybeConstInit: Sized {
     const INIT: Option<Self>;
 }
 
-pub trait Global<Ctx>: MaybeConstInit + Bind<Ctx> {}
-impl<Ctx, T> Global<Ctx> for T where T: MaybeConstInit + Bind<Ctx> {}
+pub trait Global<Ctx>: MaybeConstInit + Bind<Ctx> {
+    fn cast<T: 'static>(&self) -> Option<&T>
+    where
+        Self: 'static + Sized,
+    {
+        (self as &dyn std::any::Any).downcast_ref()
+    }
+}
+
+/// Implement Global trait using the default implementation
+/// This could be a blanket impl, but that would deprive the user of the ability
+/// to have specialized impl for their own types. Not until we have
+/// specialization in Rust...
+#[macro_export]
+macro_rules! impl_global_for {
+    ($ty:ty $(where $($tt:tt)*)?) => {
+        impl<Ctx> $crate::globals::Global<Ctx> for $ty
+        where $ty: MaybeConstInit + $crate::globals::Bind<Ctx>,
+              $($($tt)*)?
+        {
+        }
+    };
+}
 
 #[derive(Debug, Default)]
 pub struct Display;
+impl_global_for!(Display);
 
 impl MaybeConstInit for Display {
     const INIT: Option<Self> = Some(Display);
@@ -72,6 +94,7 @@ where
 /// implementation.
 #[derive(Debug, Default)]
 pub struct Registry;
+impl_global_for!(Registry);
 
 impl MaybeConstInit for Registry {
     const INIT: Option<Self> = Some(Registry);

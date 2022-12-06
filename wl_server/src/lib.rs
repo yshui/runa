@@ -287,6 +287,15 @@ macro_rules! globals {
         impl $crate::globals::MaybeConstInit for $N {
             const INIT: Option<Self> = None;
         }
+        impl $crate::globals::Global<$ctx> for $N {
+            fn cast<T: 'static>(&self) -> Option<&T> {
+                match self {
+                    $(
+                        $N::$var(f) => <$f as $crate::globals::Global<$ctx>>::cast(f),
+                    )*
+                }
+            }
+        }
         impl $N {
             $($vis)? fn globals() -> impl Iterator<Item = $N> {
                 [$(<$f as $crate::globals::MaybeConstInit>::INIT.map($N::$var)),*].into_iter().flatten()

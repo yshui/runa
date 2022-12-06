@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display};
 use wl_server::{
-    connection::Client,
+    connection::{Client, Objects},
     objects::{wayland_object, DISPLAY_ID},
 };
 

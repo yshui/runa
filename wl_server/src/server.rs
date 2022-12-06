@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use derivative::Derivative;
 
-use crate::{events::EventHandle, globals::Bind, Serial};
+use crate::{events::EventHandle, globals::Global, Serial};
 
 pub trait Server: Sized {
     /// The per client context type.
@@ -13,7 +13,7 @@ pub trait Server: Sized {
     type Conn;
     type Error;
     type GlobalStore: Globals<Self::Global>;
-    type Global: Bind<Self::ClientContext>;
+    type Global: Global<Self::ClientContext>;
 
     fn globals(&self) -> &RefCell<Self::GlobalStore>;
     fn new_connection(&self, conn: Self::Conn) -> Result<(), Self::Error>;

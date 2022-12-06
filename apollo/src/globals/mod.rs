@@ -12,7 +12,7 @@ use wl_server::{
     events::{DispatchTo, EventHandler},
     globals::{Bind, MaybeConstInit, Global},
     objects::Object,
-    renderer_capability::RendererCapability,
+    renderer_capability::RendererCapability, server::{Server, Globals}, impl_global_for,
 };
 
 use crate::{
@@ -23,6 +23,7 @@ use crate::{
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor;
+impl_global_for!(Compositor);
 
 impl MaybeConstInit for Compositor {
     const INIT: Option<Self> = Some(Self);
@@ -107,6 +108,7 @@ where
 
 #[derive(Debug)]
 pub struct Subcompositor;
+impl_global_for!(Subcompositor);
 
 impl MaybeConstInit for Subcompositor {
     const INIT: Option<Self> = Some(Self);
@@ -133,6 +135,7 @@ where
 
 #[derive(Default)]
 pub struct Shm;
+impl_global_for!(Shm);
 
 impl MaybeConstInit for Shm {
     const INIT: Option<Self> = Some(Self);

@@ -9,12 +9,13 @@ use wl_server::{
     connection::{Client, State},
     events::{DispatchTo, EventHandler},
     globals::{Bind, MaybeConstInit},
-    objects::Object,
+    objects::Object, impl_global_for,
 };
 
 use crate::shell::{xdg::Layout, HasShell};
 #[derive(Debug)]
 pub struct WmBase;
+impl_global_for!(WmBase);
 
 pub(crate) struct WmBaseState {
     pub(crate) pending_configure: Rc<RefCell<HashMap<u32, Layout>>>,

@@ -148,81 +148,84 @@ pub trait Client: Sized + crate::events::EventMux + 'static {
 
 #[macro_export]
 macro_rules! impl_dispatch {
+    // This can be a default impl in the trait, but for that we need one of the
+    // following features:
+    //   1. async_fn_in_trait
+    //   2. return_position_impl_trait_in_trait
+    //   3. associated_type_defaults
+    // Neither of those are on clear paths to stabilization.
     () => {
         type DispatchFut<'a, R> = impl Future<Output = bool> + 'a
-        where
-            Self: 'a,
-            R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+                where
+                    Self: 'a,
+                    R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
 
-        fn dispatch<'a, R>(
-            &'a mut self,
-            mut reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+        fn dispatch<'a, R>(&'a mut self, mut reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
-            R: $crate::__private::AsyncBufReadWithFd
+            R: $crate::__private::AsyncBufReadWithFd,
         {
             async move {
-                use $crate::__private::AsyncBufReadWithFdExt;
                 use $crate::{
                     __private::{
-                        wl_types, wl_display::v1 as wl_display, ProtocolError,
+                        wl_display::v1 as wl_display, wl_types, AsyncBufReadWithFdExt,
+                        ProtocolError,
                     },
-                    objects::DISPLAY_ID
+                    objects::DISPLAY_ID,
                 };
-                let (object_id, len, buf, fd) =
-                    match R::next_message(reader.as_mut()).await {
-                        Ok(v) => v,
-                        // I/O error, no point sending the error to the client
-                        Err(e) => return true,
-                    };
+                let (object_id, len, buf, fd) = match R::next_message(reader.as_mut()).await {
+                    Ok(v) => v,
+                    // I/O error, no point sending the error to the client
+                    Err(e) => return true,
+                };
                 use $crate::connection::Objects;
                 let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
-                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
-                        object_id: wl_types::Object(object_id),
-                        code: 0,
-                        message: wl_types::str!("Invalid object ID"),
-                    }).await; // don't care about the error.
-                    return true;
-                };
-                let (ret, bytes_read, fds_read) = <
-                    <Self as $crate::connection::Client>::Object as
-                    $crate::objects::Object<Self>
-                >::dispatch(
-                    obj.as_ref(),
-                    self,
-                    object_id,
-                    (buf, fd),
-                ).await;
+                            let _ = self.send(DISPLAY_ID, wl_display::events::Error {
+                                object_id: wl_types::Object(object_id),
+                                code: 0,
+                                message: wl_types::str!("Invalid object ID"),
+                            }).await; // don't care about the error.
+                            return true;
+                        };
+                let (ret, bytes_read, fds_read) =
+                    <<Self as $crate::connection::Client>::Object as $crate::objects::Object<
+                        Self,
+                    >>::dispatch(obj.as_ref(), self, object_id, (buf, fd))
+                    .await;
                 let (mut fatal, error) = match ret {
                     Ok(_) => (false, None),
-                    Err(e) =>(
+                    Err(e) => (
                         e.fatal(),
-                        e.wayland_error()
-                        .map(|(object_id, error_code)|
-                             (
-                                 object_id,
-                                 error_code,
-                                 std::ffi::CString::new(e.to_string()).unwrap()
-                             )
-                        )
-                    )
+                        e.wayland_error().map(|(object_id, error_code)| {
+                            (
+                                object_id,
+                                error_code,
+                                std::ffi::CString::new(e.to_string()).unwrap(),
+                            )
+                        }),
+                    ),
                 };
                 if let Some((object_id, error_code, msg)) = error {
                     // We are going to disconnect the client so we don't care about the
                     // error.
-                    fatal |= self.send(DISPLAY_ID, wl_display::events::Error {
-                        object_id: wl_types::Object(object_id),
-                        code: error_code,
-                        message: wl_types::Str(msg.as_c_str()),
-                    }).await.is_err();
+                    fatal |= self
+                        .send(DISPLAY_ID, wl_display::events::Error {
+                            object_id: wl_types::Object(object_id),
+                            code:      error_code,
+                            message:   wl_types::Str(msg.as_c_str()),
+                        })
+                        .await
+                        .is_err();
                 }
                 if !fatal {
                     use $crate::objects::Object;
                     if bytes_read != len as usize {
                         let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
                         let opcode = len_opcode & 0xffff;
-                        tracing::error!("unparsed bytes in buffer, {bytes_read} != {len}. \
-                                         object_id: {}@{object_id}, opcode: {opcode}",
-                                        obj.interface());
+                        tracing::error!(
+                            "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
+                             {}@{object_id}, opcode: {opcode}",
+                            obj.interface()
+                        );
                         fatal = true;
                     }
                     reader.consume(bytes_read, fds_read);
@@ -393,4 +396,3 @@ pub trait State<T: Default>: Sized {
     /// Get a mutable reference to the state of type `T`.
     fn state_mut(&mut self) -> &mut T;
 }
-

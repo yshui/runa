@@ -8,7 +8,8 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::{Client, State},
     events::{DispatchTo, EventHandler},
-    globals::{Bind, ConstInit}, objects::Object
+    globals::{Bind, MaybeConstInit},
+    objects::Object,
 };
 
 use crate::shell::{xdg::Layout, HasShell};
@@ -95,8 +96,8 @@ where
     }
 }
 
-impl ConstInit for WmBase {
-    const INIT: Self = Self;
+impl MaybeConstInit for WmBase {
+    const INIT: Option<Self> = Some(Self);
 }
 impl<Ctx: Client> Bind<Ctx> for WmBase
 where

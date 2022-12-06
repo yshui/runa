@@ -17,25 +17,27 @@ pub trait Bind<Ctx> {
     /// Called when the global is bound to a client, return the client side
     /// object, and optionally an I/O task to be completed after the object is
     /// inserted into the client's object store
-    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> where Ctx: Client;
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a>
+    where
+        Ctx: Client;
     fn interface(&self) -> &'static str;
     fn version(&self) -> u32;
 }
 
 /// A value that can be initialized with a constant
-pub trait ConstInit {
+pub trait MaybeConstInit: Sized {
     /// A value that can be used to create an instance of `Self`.
-    const INIT: Self;
+    const INIT: Option<Self>;
 }
 
-pub trait Global<Ctx>: ConstInit + Bind<Ctx> {}
-impl<Ctx, T> Global<Ctx> for T where T: ConstInit + Bind<Ctx> {}
+pub trait Global<Ctx>: MaybeConstInit + Bind<Ctx> {}
+impl<Ctx, T> Global<Ctx> for T where T: MaybeConstInit + Bind<Ctx> {}
 
 #[derive(Debug, Default)]
 pub struct Display;
 
-impl ConstInit for Display {
-    const INIT: Self = Display;
+impl MaybeConstInit for Display {
+    const INIT: Option<Self> = Some(Display);
 }
 
 impl<Ctx> Bind<Ctx> for Display
@@ -54,7 +56,10 @@ where
         wl_display::v1::VERSION
     }
 
-    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> where Ctx: Client {
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a>
+    where
+        Ctx: Client,
+    {
         futures_util::future::ok(crate::objects::Display.into())
     }
 }
@@ -68,8 +73,8 @@ where
 #[derive(Debug, Default)]
 pub struct Registry;
 
-impl ConstInit for Registry {
-    const INIT: Self = Registry;
+impl MaybeConstInit for Registry {
+    const INIT: Option<Self> = Some(Registry);
 }
 
 type GlobalOf<Ctx> = <<Ctx as Client>::ServerContext as Server>::Global;

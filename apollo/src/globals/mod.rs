@@ -10,7 +10,7 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{Client, State},
     events::{DispatchTo, EventHandler},
-    globals::{Bind, ConstInit},
+    globals::{Bind, MaybeConstInit, Global},
     objects::Object,
     renderer_capability::RendererCapability,
 };
@@ -24,8 +24,8 @@ use crate::{
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor;
 
-impl ConstInit for Compositor {
-    const INIT: Self = Self;
+impl MaybeConstInit for Compositor {
+    const INIT: Option<Self> = Some(Self);
 }
 impl<Ctx: Client> Bind<Ctx> for Compositor
 where
@@ -108,8 +108,8 @@ where
 #[derive(Debug)]
 pub struct Subcompositor;
 
-impl ConstInit for Subcompositor {
-    const INIT: Self = Self;
+impl MaybeConstInit for Subcompositor {
+    const INIT: Option<Self> = Some(Self);
 }
 impl<Ctx: Client> Bind<Ctx> for Subcompositor
 where
@@ -134,8 +134,8 @@ where
 #[derive(Default)]
 pub struct Shm;
 
-impl ConstInit for Shm {
-    const INIT: Self = Self;
+impl MaybeConstInit for Shm {
+    const INIT: Option<Self> = Some(Self);
 }
 impl<Ctx: Client> Bind<Ctx> for Shm
 where

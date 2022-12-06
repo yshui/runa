@@ -6,19 +6,19 @@ use std::{
 use num_traits::{real::Real, AsPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
 
 /// Type-level marker for the logical coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Logical;
 
 /// Type-level marker for the physical coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Physical;
 
 /// Type-level marker for the buffer coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Buffer;
 
 /// Type-level marker for raw coordinate space, provided by input devices
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Raw;
 
 /// A tag trait for coordinate spaces, sealed so that only the types defined in
@@ -150,7 +150,7 @@ where
 /// A point as defined by its x and y coordinates
 ///
 /// Operations on points are saturating.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct Point<N, Kind: CoordinateSpace> {
     /// horizontal coordinate
@@ -355,7 +355,7 @@ impl<N: Zero + Copy, Kind: CoordinateSpace> Default for Point<N, Kind> {
 /// can break this invariant.
 ///
 /// Operations on sizes are saturating.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct Extent<N, Kind: CoordinateSpace> {
     /// width
@@ -589,7 +589,7 @@ impl<N: Sub<Output = N> + Copy, Kind: CoordinateSpace> Sub<Extent<N, Kind>> for 
 /// A rectangle defined by its top-left corner and dimensions
 ///
 /// Operations on rectangles are saturating.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(C)]
 pub struct Rectangle<N, Kind: CoordinateSpace> {
     /// Location of the top-left corner of the rectangle
@@ -756,6 +756,18 @@ impl<N: Ord + Sign + Sub<Output = N> + Zero + Copy, Kind: CoordinateSpace> Recta
         ])
     }
 }
+
+impl<N: SaturatingAdd + Ord, Kind: CoordinateSpace> Rectangle<N, Kind> {
+    /// Checks whether a given [`Rectangle`] overlaps with this one
+    #[inline]
+    pub fn overlaps(self, other: &Rectangle<N, Kind>) -> bool {
+        self.loc.x <= other.loc.x.saturating_add(&other.size.w)
+            && other.loc.x <= self.loc.x.saturating_add(&self.size.w)
+            && self.loc.y <= other.loc.y.saturating_add(&other.size.h)
+            && other.loc.y <= self.loc.y.saturating_add(&self.size.h)
+    }
+}
+
 impl<N: SaturatingMul + Sign + Copy> Rectangle<N, Logical> {
     #[inline]
     /// Convert this logical rectangle to physical coordinate space according to

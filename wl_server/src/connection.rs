@@ -11,12 +11,17 @@ use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
 use crate::objects::Object;
 
+const CLIENT_MAX_ID: u32 = 0xfeffffff;
+
 /// Per client mapping from object ID to objects. This is the reference
 /// implementation of [`Objects`].
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""))]
 pub struct Store<Object> {
-    map: HashMap<u32, Rc<Object>>,
+    map:     HashMap<u32, Rc<Object>>,
+    #[derivative(Default(value = "Some(CLIENT_MAX_ID + 1)"))]
+    next_id: Option<u32>,
+    id_used: u32,
 }
 
 pub trait Entry<'a, Object>: Sized {
@@ -50,6 +55,9 @@ pub trait Objects<O> {
     /// Insert object into the store with the given ID. Returns Ok(()) if
     /// successful, Err(T) if the ID is already in use.
     fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+    /// Allocate a new ID for the client, associate `object` for it.
+    /// According to the wayland spec, the ID must start from 0xff000000
+    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
     fn remove(&mut self, id: u32) -> Option<Rc<O>>;
     /// Get an object from the store.
     ///
@@ -83,6 +91,10 @@ impl<O> Objects<O> for Store<O> {
 
     #[inline]
     fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
+        if object_id > CLIENT_MAX_ID {
+            return Err(object)
+        }
+
         match self.map.entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
@@ -90,6 +102,30 @@ impl<O> Objects<O> for Store<O> {
                 Ok(())
             },
         }
+    }
+
+    #[inline]
+    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T> {
+        let Some(id) = self.next_id else { return Err(object) };
+        self.id_used += 1;
+
+        self.next_id = if self.id_used >= u32::MAX - CLIENT_MAX_ID {
+            None
+        } else {
+            let mut curr = id;
+            // Find the next unused id
+            loop {
+                curr = curr.wrapping_add(1);
+                if !self.map.contains_key(&curr) {
+                    break
+                }
+            }
+            Some(curr)
+        };
+
+        let inserted = self.map.insert(id, Rc::new(object.into()));
+        assert!(inserted.is_none());
+        Ok(id)
     }
 
     fn remove(&mut self, object_id: u32) -> Option<Rc<O>> {

@@ -14,7 +14,7 @@ use wl_server::{
     connection::{self, Client as _, Store},
     events::EventMux,
     objects::Object,
-    renderer_capability::RendererCapability,
+    renderer_capability::RendererCapability, impl_state_any_for,
 };
 mod render;
 mod shell;
@@ -166,15 +166,7 @@ impl Drop for CrescentClient {
     }
 }
 
-impl<T: std::any::Any + Default> connection::State<T> for CrescentClient {
-    fn state(&self) -> Option<&T> {
-        self.per_client.get::<T>()
-    }
-
-    fn state_mut(&mut self) -> &mut T {
-        self.per_client.get_or_default::<T>()
-    }
-}
+impl_state_any_for!(CrescentClient, per_client);
 
 wl_server::event_multiplexer! {
     ctx: CrescentClient,

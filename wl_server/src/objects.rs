@@ -229,10 +229,9 @@ where
             // send, so it doesn't know about the removal yet. Sometimes there can even be
             // global with that ID on the server's global state, which means the ID
             // was reused.
-            let state = ctx.state();
-            let empty = Default::default();
-            let known_globals = state.map(|s| &s.known_globals).unwrap_or(&empty);
-            if ctx.objects().borrow().get(id.0).is_some() {
+            let (ro_ctx, state) = ctx.state();
+            let known_globals = &state.known_globals;
+            if ro_ctx.objects().borrow().get(id.0).is_some() {
                 return Err(crate::error::Error::IdExists(id.0))
             }
             let global = known_globals.get(&name).and_then(|g| g.upgrade());

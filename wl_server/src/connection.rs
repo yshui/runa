@@ -192,9 +192,9 @@ macro_rules! impl_dispatch {
     // Neither of those are on clear paths to stabilization.
     () => {
         type DispatchFut<'a, R> = impl Future<Output = bool> + 'a
-                where
-                    Self: 'a,
-                    R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+                        where
+                            Self: 'a,
+                            R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
 
         fn dispatch<'a, R>(&'a mut self, mut reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
@@ -215,13 +215,13 @@ macro_rules! impl_dispatch {
                 };
                 use $crate::connection::Objects;
                 let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
-                            let _ = self.send(DISPLAY_ID, wl_display::events::Error {
-                                object_id: wl_types::Object(object_id),
-                                code: 0,
-                                message: wl_types::str!("Invalid object ID"),
-                            }).await; // don't care about the error.
-                            return true;
-                        };
+                                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
+                                        object_id: wl_types::Object(object_id),
+                                        code: 0,
+                                        message: wl_types::str!("Invalid object ID"),
+                                    }).await; // don't care about the error.
+                                    return true;
+                                };
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::Client>::Object as $crate::objects::Object<
                         Self,
@@ -428,7 +428,34 @@ impl<D: 'static> crate::Serial for EventSerial<D> {
 pub trait State<T: Default>: Sized {
     /// Get a reference to the state of type `T`, if `state_mut` has not been
     /// called before, this can return `None`.
-    fn state(&self) -> Option<&T>;
+    fn state(&mut self) -> (&Self, &T);
     /// Get a mutable reference to the state of type `T`.
     fn state_mut(&mut self) -> &mut T;
+}
+
+/// A helper macro to implement `State` generically for all `T: Any + Default`.
+///
+/// Takes 2 arguments:
+///    - The type name to implement `State` for
+///    - The name of the field in the type that holds the `UnboundedAggregate`.
+#[macro_export]
+macro_rules! impl_state_any_for {
+    ($ty:ty, $member:ident) => {
+        impl<T: std::any::Any + Default> $crate::connection::State<T> for $ty {
+            fn state<'a>(&mut self) -> (&Self, &T) {
+                // Safety: We are doing this to bypass the borrow checker, we make it forget
+                // that this &T came from a &mut self, so we will be able to return a &self
+                // later. This is safe because after this we never use self mutably again after the
+                // trick.
+                unsafe {
+                    let t = &*(self.$member.get_or_default::<T>() as *const _);
+                    (self, t)
+                }
+            }
+
+            fn state_mut(&mut self) -> &mut T {
+                self.$member.get_or_default::<T>()
+            }
+        }
+    };
 }

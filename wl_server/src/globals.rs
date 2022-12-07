@@ -156,11 +156,10 @@ where
     fn invoke<'a>(ctx: &'a mut Ctx) -> Self::Fut<'a> {
         // Allocation: Global addition and removal should be rare.
         use crate::server::Globals;
-        let empty = Default::default();
-        let state = ctx.state();
-        let known_globals = state.map(|s| &s.known_globals).unwrap_or(&empty);
+        let (ro_ctx, state) = ctx.state();
+        let known_globals = &state.known_globals;
         tracing::debug!("{:?}", known_globals.keys());
-        let added: Vec<_> = ctx
+        let added: Vec<_> = ro_ctx
             .server_context()
             .globals()
             .borrow()

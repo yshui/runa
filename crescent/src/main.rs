@@ -36,10 +36,22 @@ wl_server::globals! {
         Display(wl_server::globals::Display),
         Registry(wl_server::globals::Registry),
         Compositor(apollo::globals::Compositor),
+        Output(apollo::globals::Output),
         Subcompositor(apollo::globals::Subcompositor),
         Shm(apollo::globals::Shm),
         WmBase(apollo::globals::xdg_shell::WmBase),
     }
+}
+
+wl_server::event_multiplexer! {
+    ctx: CrescentClient,
+    error: wl_server::error::Error,
+    receivers: [
+        wl_server::globals::Registry,
+        apollo::globals::Compositor,
+        apollo::globals::xdg_shell::WmBase,
+        apollo::globals::Output
+    ],
 }
 
 type Shell = <Crescent as HasShell>::Shell;
@@ -50,6 +62,9 @@ pub enum AnyObject {
     Display(wl_server::objects::Display),
     Registry(wl_server::objects::Registry),
     Callback(wl_server::objects::Callback),
+
+    // === output ===
+    Output(apollo::objects::Output),
 
     // === compositor objects ===
     Compositor(apollo::objects::compositor::Compositor),
@@ -168,15 +183,6 @@ impl Drop for CrescentClient {
 
 impl_state_any_for!(CrescentClient, per_client);
 
-wl_server::event_multiplexer! {
-    ctx: CrescentClient,
-    error: wl_server::error::Error,
-    receivers: [
-        wl_server::globals::Registry,
-        apollo::globals::Compositor,
-        apollo::globals::xdg_shell::WmBase,
-    ],
-}
 impl EventMux for CrescentClient {
     fn event_handle(&self) -> wl_server::events::EventHandle {
         self.event_flags.as_handle()

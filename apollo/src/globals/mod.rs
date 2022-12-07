@@ -1,23 +1,26 @@
-use std::future::Future;
+use std::{future::Future, rc::Rc};
 
 pub mod xdg_shell;
 
 use derivative::Derivative;
+use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{
-    wl_compositor::v5 as wl_compositor, wl_shm::v1 as wl_shm,
+    wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor,
 };
 use wl_server::{
     connection::{Client, State},
     events::{DispatchTo, EventHandler},
-    globals::{Bind, MaybeConstInit, Global},
+    globals::{Bind, MaybeConstInit},
+    impl_global_for,
     objects::Object,
-    renderer_capability::RendererCapability, server::{Server, Globals}, impl_global_for,
+    renderer_capability::RendererCapability,
 };
 
 use crate::{
     objects::compositor::CompositorState,
-    shell::{HasShell, Shell, ShellOf},
+    shell::{output::OutputChange, HasShell, Shell, ShellOf},
+    utils::{Double, WeakPtr},
 };
 
 #[derive(Derivative)]
@@ -76,7 +79,7 @@ where
             let time = crate::time::elapsed().as_millis() as u32;
             for (surface, _) in surfaces {
                 let surface = ro_ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
-                                                                                     // the Ref
+                                                                                        // the Ref
                 let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::ServerContext>> =
                     surface.cast().unwrap();
                 {
@@ -167,6 +170,114 @@ where
                     .await?;
             }
             Ok(crate::objects::shm::Shm.into())
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Output(pub(crate) Rc<ShellOutput>);
+impl_global_for!(Output);
+impl MaybeConstInit for Output {
+    const INIT: Option<Self> = None;
+}
+
+impl<Ctx: Client + DispatchTo<Self> + State<OutputState>> Bind<Ctx> for Output
+where
+    Ctx::Object: From<crate::objects::Output>,
+{
+    type BindFut<'a> = impl Future<Output = std::io::Result<<Ctx>::Object>> + 'a
+        where
+            Ctx: Client + 'a,
+            Self: 'a;
+
+    fn interface(&self) -> &'static str {
+        wl_output::NAME
+    }
+
+    fn version(&self) -> u32 {
+        wl_output::VERSION
+    }
+
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a>
+    where
+        Ctx: Client,
+    {
+        let handle = (client.event_handle(), <Ctx as DispatchTo<Self>>::SLOT);
+        let state = client.state_mut();
+        // Add this binding to the new bindings list, so initial events will be sent for
+        // it
+        state
+            .new_bindings
+            .push((object_id, Rc::downgrade(&self.0).into()));
+        // Listen for output changes
+        self.0
+            .add_change_listener(handle, state.changed_outputs.write_end());
+        futures_util::future::ok(crate::objects::Output(Rc::downgrade(&self.0)).into())
+    }
+}
+
+use crate::shell::output::Output as ShellOutput;
+#[derive(Default)]
+pub struct OutputState {
+    changed_outputs: Double<HashMap<WeakPtr<ShellOutput>, OutputChange>>,
+    /// Map from output's global id to the output object ids in client's
+    /// context.
+    output_bindings: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
+    /// New bindings of outputs, to which we haven't sent the initial events.
+    /// A pair of (object_id, weak ref to the output)
+    new_bindings:    Vec<(u32, WeakPtr<ShellOutput>)>,
+}
+
+impl<Ctx> EventHandler<Ctx> for Output
+where
+    Ctx: DispatchTo<Output> + State<OutputState> + Client,
+{
+    type Error = std::io::Error;
+
+    type Fut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
+        where
+            Ctx: 'a;
+
+    fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
+        async move {
+            let (ro_ctx, state) = ctx.state();
+
+            // Send events for changed outputs
+            let changed_outputs = state.changed_outputs.read_exclusive().unwrap();
+            for (weak_output, change) in changed_outputs.iter() {
+                let Some(output_global) = weak_output.upgrade() else { continue };
+                for output_object_id in state.output_bindings.get(weak_output).unwrap() {
+                    if change.contains(OutputChange::GEOMETRY) {
+                        output_global
+                            .send_geometry(ro_ctx, *output_object_id)
+                            .await?;
+                    }
+                    if change.contains(OutputChange::NAME) {
+                        output_global.send_name(ro_ctx, *output_object_id).await?;
+                    }
+                    if change.contains(OutputChange::SCALE) {
+                        output_global.send_scale(ro_ctx, *output_object_id).await?;
+                    }
+                    ShellOutput::send_done(ro_ctx, *output_object_id).await?;
+                }
+            }
+
+            // Send initial events for the new bindings
+            for (object_id, weak_output) in &state.new_bindings {
+                let Some(output_global) = weak_output.upgrade() else { continue };
+                output_global.send_all(ro_ctx, *object_id).await?;
+            }
+
+            // Insert the new bindings into the output_bindings map
+            let state = ctx.state_mut();
+            for (object_id, weak_output) in state.new_bindings.drain(..) {
+                state
+                    .output_bindings
+                    .entry(weak_output)
+                    .or_default()
+                    .insert(object_id);
+            }
+            Ok(())
         }
     }
 }

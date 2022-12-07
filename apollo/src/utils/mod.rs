@@ -112,13 +112,9 @@ impl<T> From<Weak<T>> for WeakPtr<T> {
 /// Using this is better than `tmp = value.borrow().drain().collect()` when you
 /// need to read `value` but can't keep the borrow (e.g. because you can't hold
 /// a borrow across await). Because this doesn't allocate memory every time.
-#[derive(Default)]
-pub struct Double<T> {
-    inner: RefCell<DoubleInner<T>>,
-}
 
 #[derive(Default)]
-struct DoubleInner<T> {
+pub struct Double<T> {
     front: Rc<T>,
     back:  Rc<RefCell<T>>,
 }
@@ -128,35 +124,36 @@ impl<T: BufSwap> Double<T> {
     /// updates from the buffer using the BufSwap trait, usually this means
     /// the buffer content will be cleared; otherwise, the value retrieved by
     /// the first reader will be returned.
-    pub fn read(&self) -> Rc<T> {
+    pub fn read(&mut self) -> Rc<T> {
         if let Some(read) = self.read_exclusive() {
             read
         } else {
-            self.inner.borrow().front.clone()
+            self.front.clone()
         }
     }
 
     /// Like [`read`], but makes sure we are the first and only reader,
     /// returns None otherwise.
-    pub fn read_exclusive(&self) -> Option<Rc<T>> {
-        let mut inner = self.inner.borrow_mut();
-        let back = inner.back.clone();
-        if let Some(front_mut) = Rc::get_mut(&mut inner.front) {
+    pub fn read_exclusive(&mut self) -> Option<Rc<T>> {
+        let back = self.back.clone();
+        if let Some(front_mut) = Rc::get_mut(&mut self.front) {
             // We are the first reader, swap the buffers.
             front_mut.swap(
                 &mut back
                     .try_borrow_mut()
                     .expect("Trying to start read a Double while the write end is borrowed"),
             );
-            Some(inner.front.clone())
+            Some(self.front.clone())
         } else {
             None
         }
     }
+}
 
+impl<T> Double<T> {
     /// Get a copy of the write end of Double.
     pub fn write_end(&self) -> Rc<RefCell<T>> {
-        self.inner.borrow_mut().back.clone()
+        self.back.clone()
     }
 }
 

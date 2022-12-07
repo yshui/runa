@@ -240,10 +240,9 @@ where
 
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
         async move {
-            let (ro_ctx, state) = ctx.state();
-
             // Send events for changed outputs
-            let changed_outputs = state.changed_outputs.read_exclusive().unwrap();
+            let changed_outputs = ctx.state_mut().changed_outputs.read_exclusive().unwrap();
+            let (ro_ctx, state) = ctx.state();
             for (weak_output, change) in changed_outputs.iter() {
                 let Some(output_global) = weak_output.upgrade() else { continue };
                 for output_object_id in state.output_bindings.get(weak_output).unwrap() {

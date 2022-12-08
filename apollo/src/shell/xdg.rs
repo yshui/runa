@@ -1,4 +1,4 @@
-use std::{cell::RefCell, num::NonZeroU32, rc::Rc, collections::VecDeque};
+use std::{cell::{RefCell, RefMut}, num::NonZeroU32, rc::Rc, collections::VecDeque};
 
 use derivative::Derivative;
 use hashbrown::HashMap;
@@ -25,7 +25,7 @@ pub trait XdgShell: Shell {
 fn surface_commit<S: XdgShell>(
     shell: &mut S,
     surface: &Rc<super::surface::Surface<S>>,
-    role: &mut Surface,
+    mut role: RefMut<'_, Surface>,
     object_id: u32,
 ) -> Result<(), &'static str> {
     tracing::debug!("Committing xdg_surface");
@@ -46,11 +46,14 @@ fn surface_commit<S: XdgShell>(
             .borrow_mut()
             .insert(object_id, shell.layout(surface.current_key()));
     }
-    shell.commit(Some(surface.current_key()), surface.pending_key());
-    shell.rotate(surface.current_key(), surface.pending_key());
-    surface.swap_states();
-
     role.geometry = role.pending_geometry;
+
+    drop(role); // We are going into user code, drop the borrow to be safe.
+    let (current, pending) = (surface.current_key(), surface.pending_key());
+    shell.rotate(current, pending);
+    surface.swap_states();
+    shell.commit(Some(current), pending);
+
     Ok(())
 }
 
@@ -61,8 +64,9 @@ fn toplevel_commit<S: XdgShell>(
     tracing::debug!("Committing xdg_toplevel");
     let mut role = surface.role_mut::<TopLevel>().unwrap();
     let object_id = role.object_id;
-    surface_commit(shell, surface, &mut role.base, object_id)?;
     role.current = role.pending;
+
+    surface_commit(shell, surface, RefMut::map(role, |r| &mut r.base), object_id)?;
     Ok(())
 }
 

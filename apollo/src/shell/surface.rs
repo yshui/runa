@@ -1,14 +1,19 @@
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
     collections::VecDeque,
+    ops::{Deref, DerefMut},
     rc::Rc,
 };
 
 use dyn_clone::DynClone;
-use hashbrown::HashSet;
-use wl_server::provide_any::{request_mut, request_ref, Demand, Provider};
+use hashbrown::{HashMap, HashSet};
+use wl_server::{
+    events::EventHandle,
+    provide_any::{request_mut, request_ref, Demand, Provider},
+};
 
-use super::Shell;
+use super::{output::Output, Shell};
+use crate::utils::WeakPtr;
 
 pub fn allocate_antirole_slot() -> u8 {
     use std::sync::atomic::AtomicU8;
@@ -287,15 +292,13 @@ pub mod roles {
         if parent_antirole.children.get(stack_index).unwrap().key == stashed_state {
             // Parent is using the stashed state. We are free to modify the old
             // state.
-            s.commit(Some(old), new);
             s.rotate(old, new);
-            surface.current.swap(&surface.pending);
+            surface.swap_states();
         } else {
             // If parent is not using the stashed state, it must be using the current state.
             debug_assert_eq!(parent_antirole.children.get(stack_index).unwrap().key, old);
             // We need to stash away the current `current`, and use our stashed state as new
             // pending, because that one isn't being used.
-            s.commit(Some(old), new);
             s.rotate(stashed_state, new);
             let mut role: RefMut<Subsurface<S>> = surface.role_mut().unwrap();
             role.stashed_state = old;
@@ -309,6 +312,7 @@ pub mod roles {
             .antirole_mut::<SubsurfaceParent<S>>(*SUBSURFACE_PARENT_SLOT)
             .unwrap();
         parent_antirole.children.get_mut(stack_index).unwrap().key = new;
+        s.commit(Some(old), new);
         Ok(())
     }
     impl<S: Shell> Clone for Subsurface<S> {
@@ -903,11 +907,9 @@ impl<S: Shell> Surface<S> {
             // commit operation is overridden
             (commit)(shell, self)?;
         } else {
-            {
-                shell.commit(Some(current), pending);
-                shell.rotate(current, pending);
-            }
             self.swap_states();
+            shell.rotate(current, pending);
+            shell.commit(Some(current), pending);
         }
         Ok(())
     }

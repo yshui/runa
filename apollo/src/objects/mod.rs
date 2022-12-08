@@ -9,7 +9,7 @@ use wl_server::{
     objects::{wayland_object, DISPLAY_ID},
 };
 
-use crate::shell::buffers::HasBuffer;
+use crate::{shell::{buffers::HasBuffer, output::Output as ShellOutput}, utils::WeakPtr};
 
 pub mod compositor;
 pub mod shm;
@@ -41,12 +41,14 @@ where
 }
 
 #[derive(Debug)]
-pub struct Output(pub(crate) Weak<crate::shell::output::Output>);
+pub struct Output(pub(crate) Weak<ShellOutput>);
 
 #[wayland_object]
 impl<Ctx> wl_output::RequestDispatch<Ctx> for Output
 where
-    Ctx: Client + DispatchTo<crate::globals::Output> + State<crate::globals::OutputState>,
+    Ctx: Client
+        + DispatchTo<crate::globals::Output>
+        + State<crate::globals::OutputAndCompositorState>,
 {
     type Error = wl_server::error::Error;
 
@@ -61,6 +63,18 @@ where
             );
             output.remove_change_listener(&handle);
         }
+        // Remove this binding from recorded binding in the state
+        let state = ctx.state_mut();
+        let weak_output: WeakPtr<_> = self.0.clone().into();
+        let removed = state
+            .output_bindings
+            .get_mut(&weak_output)
+            .unwrap()
+            .remove(&object_id);
+        assert!(removed);
+        state
+            .new_bindings
+            .retain(|(new_object_id, _)| *new_object_id != object_id);
         async move {
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;

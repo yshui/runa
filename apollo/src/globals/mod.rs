@@ -1,4 +1,8 @@
-use std::{future::Future, rc::Rc};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    rc::{Rc, Weak},
+};
 
 pub mod xdg_shell;
 
@@ -6,7 +10,7 @@ use derivative::Derivative;
 use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
-    wl_subcompositor::v1 as wl_subcompositor,
+    wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
     connection::{Client, State},
@@ -18,8 +22,7 @@ use wl_server::{
 };
 
 use crate::{
-    objects::compositor::CompositorState,
-    shell::{output::OutputChange, HasShell, Shell, ShellOf},
+    shell::{output::OutputChange, surface::OutputSet, HasShell, Shell, ShellOf},
     utils::{Double, WeakPtr},
 };
 
@@ -33,7 +36,7 @@ impl MaybeConstInit for Compositor {
 }
 impl<Ctx: Client> Bind<Ctx> for Compositor
 where
-    Ctx: State<CompositorState> + DispatchTo<Self>,
+    Ctx: State<OutputAndCompositorState> + DispatchTo<Self>,
     Ctx::ServerContext: HasShell,
     Ctx::Object: From<crate::objects::compositor::Compositor>,
 {
@@ -59,7 +62,7 @@ where
 
 impl<Ctx> EventHandler<Ctx> for Compositor
 where
-    Ctx: DispatchTo<Self> + State<CompositorState> + Client,
+    Ctx: DispatchTo<Self> + State<OutputAndCompositorState> + Client,
     Ctx::ServerContext: HasShell,
 {
     type Error = std::io::Error;
@@ -70,6 +73,8 @@ where
 
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
         use wl_server::connection::Objects;
+
+        use crate::objects::compositor::Surface as SurfaceObject;
         async move {
             // Use a tmp buffer so we don't need to hold RefMut of `current` acorss await.
             let mut tmp_frame_callback_buffer =
@@ -80,8 +85,7 @@ where
             for (surface, _) in surfaces {
                 let surface = ro_ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
                                                                                         // the Ref
-                let surface: &crate::objects::compositor::Surface<ShellOf<Ctx::ServerContext>> =
-                    surface.cast().unwrap();
+                let surface: &SurfaceObject<ShellOf<Ctx::ServerContext>> = surface.cast().unwrap();
                 {
                     let mut shell = ro_ctx.server_context().shell().borrow_mut();
                     let current = surface.0.current_mut(&mut shell);
@@ -102,7 +106,70 @@ where
             let state = ctx.state_mut();
             // Put the buffer back so we can reuse it next time.
             state.tmp_frame_callback_buffer = Some(tmp_frame_callback_buffer);
-            //let output_buffer = state.output_buffer.take().unwrap();
+            let output_changed = state.output_changed.read_exclusive().unwrap();
+            let mut output_changed_buffer = state.output_changed_buffer.take().unwrap();
+
+            for (surface_object_id, new_outputs) in output_changed.as_ref() {
+                let old_outputs = state.surfaces.get(surface_object_id).unwrap();
+                let new_outputs = new_outputs.borrow();
+                // Calculate symmetric difference of old and new outputs.
+                for output in &*new_outputs {
+                    if old_outputs.contains(output) {
+                        continue
+                    }
+                    if let Some(output_object_ids) = state.output_bindings.get(output) {
+                        for output_object_id in output_object_ids {
+                            output_changed_buffer.push((
+                                *output_object_id,
+                                *surface_object_id,
+                                true,
+                            ));
+                        }
+                    }
+                }
+                for output in old_outputs {
+                    if new_outputs.contains(output) {
+                        continue
+                    }
+                    if let Some(output_object_ids) = state.output_bindings.get(output) {
+                        for output_object_id in output_object_ids {
+                            output_changed_buffer.push((
+                                *output_object_id,
+                                *surface_object_id,
+                                false,
+                            ));
+                        }
+                    }
+                }
+
+                // Update the recorded output set.
+                let outputs_mut = state.surfaces.get_mut(surface_object_id).unwrap();
+                outputs_mut.retain(|output| new_outputs.contains(output));
+                for output in &*new_outputs {
+                    outputs_mut.insert(output.clone());
+                }
+            }
+
+            // Send enter/leave events.
+            for (output_object_id, surface_object_id, added) in output_changed_buffer.drain(..) {
+                ctx.send(
+                    surface_object_id,
+                    if added {
+                        wl_surface::Event::Enter(wl_surface::events::Enter {
+                            output: wl_types::Object(output_object_id),
+                        })
+                    } else {
+                        wl_surface::Event::Leave(wl_surface::events::Leave {
+                            output: wl_types::Object(output_object_id),
+                        })
+                    },
+                )
+                .await?;
+            }
+
+            // Put the buffer back so we can reuse it next time.
+            let state = ctx.state_mut();
+            state.output_changed_buffer = Some(output_changed_buffer);
             Ok(())
         }
     }
@@ -176,12 +243,17 @@ where
 
 #[derive(Debug)]
 pub struct Output(pub(crate) Rc<ShellOutput>);
+impl Output {
+    pub fn new(output: Rc<ShellOutput>) -> Self {
+        Self(output)
+    }
+}
 impl_global_for!(Output);
 impl MaybeConstInit for Output {
     const INIT: Option<Self> = None;
 }
 
-impl<Ctx: Client + DispatchTo<Self> + State<OutputState>> Bind<Ctx> for Output
+impl<Ctx: Client + DispatchTo<Self> + State<OutputAndCompositorState>> Bind<Ctx> for Output
 where
     Ctx::Object: From<crate::objects::Output>,
 {
@@ -217,20 +289,35 @@ where
 }
 
 use crate::shell::output::Output as ShellOutput;
-#[derive(Default)]
-pub struct OutputState {
-    changed_outputs: Double<HashMap<WeakPtr<ShellOutput>, OutputChange>>,
+#[derive(Derivative)]
+#[derivative(Default)]
+pub struct OutputAndCompositorState {
+    changed_outputs:            Double<HashMap<WeakPtr<ShellOutput>, OutputChange>>,
     /// Map from output's global id to the output object ids in client's
     /// context.
-    output_bindings: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
+    pub(crate) output_bindings: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
     /// New bindings of outputs, to which we haven't sent the initial events.
     /// A pair of (object_id, weak ref to the output)
-    new_bindings:    Vec<(u32, WeakPtr<ShellOutput>)>,
+    pub(crate) new_bindings:    Vec<(u32, WeakPtr<ShellOutput>)>,
+    /// Map of surface ids to outputs they are currently on
+    pub(crate) surfaces:        HashMap<u32, HashSet<WeakPtr<ShellOutput>>>,
+    /// List of surfaces that have changed output
+    pub(crate) output_changed:  Double<HashMap<u32, OutputSet>>,
+    /// A buffer to store add/removed outputs, a tuple of
+    /// (output object id, surface object id, whether it was added)
+    #[derivative(Default(value = "Some(Default::default())"))]
+    output_changed_buffer:      Option<Vec<(u32, u32, bool)>>,
+    #[derivative(Default(value = "Some(Default::default())"))]
+    buffer:                     Option<HashSet<u32>>,
+    /// A buffer for holding fram callback list, so we don't need to hold borrow
+    /// or surface states across awaits.
+    #[derivative(Default(value = "Some(Default::default())"))]
+    tmp_frame_callback_buffer:  Option<VecDeque<u32>>,
 }
 
 impl<Ctx> EventHandler<Ctx> for Output
 where
-    Ctx: DispatchTo<Output> + State<OutputState> + Client,
+    Ctx: DispatchTo<Output> + State<OutputAndCompositorState> + Client,
 {
     type Error = std::io::Error;
 
@@ -265,6 +352,16 @@ where
             for (object_id, weak_output) in &state.new_bindings {
                 let Some(output_global) = weak_output.upgrade() else { continue };
                 output_global.send_all(ro_ctx, *object_id).await?;
+                // Send enter for surfaces already on the output
+                for (surface_id, surface_outputs) in &state.surfaces {
+                    if surface_outputs.contains(weak_output) {
+                        ro_ctx
+                            .send(*surface_id, wl_surface::events::Enter {
+                                output: wl_types::Object(*object_id),
+                            })
+                            .await?;
+                    }
+                }
             }
 
             // Insert the new bindings into the output_bindings map

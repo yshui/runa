@@ -1,6 +1,6 @@
 [toolchain]
 # Blocked by https://github.com/rust-lang/rust/issues/100267
-channel = "nightly-2022-11-25"
+channel = "nightly"
 components = [ "rustfmt", "rust-src", "miri" ]
 targets = [ "x86_64-unknown-linux-gnu" ]
 profile = "minimal"

@@ -1,10 +1,15 @@
 #![feature(type_alias_impl_trait)]
-use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc};
+use std::{
+    cell::RefCell, ffi::CString, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc,
+};
 
 use anyhow::Result;
-use apollo::shell::{
-    buffers::{HasBuffer, RendererBuffer},
-    HasShell,
+use apollo::{
+    shell::{
+        buffers::{HasBuffer, RendererBuffer},
+        HasShell,
+    },
+    utils::geometry::{Extent, Point, Rectangle},
 };
 use futures_util::{FutureExt, TryStreamExt};
 use smol::{LocalExecutor, Task};
@@ -13,8 +18,10 @@ use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{self, Client as _, Store},
     events::EventMux,
+    impl_state_any_for,
     objects::Object,
-    renderer_capability::RendererCapability, impl_state_any_for,
+    renderer_capability::RendererCapability,
+    server::{Globals, Server},
 };
 mod render;
 mod shell;
@@ -115,10 +122,7 @@ impl wl_server::server::Server for Crescent {
                 client_ctx
                     .objects()
                     .borrow_mut()
-                    .insert(
-                        1,
-                        wl_server::objects::Display,
-                    )
+                    .insert(1, wl_server::objects::Display)
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
@@ -190,14 +194,16 @@ impl EventMux for CrescentClient {
 }
 
 impl connection::Client for CrescentClient {
-    type ServerContext = Crescent;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
+    type ServerContext = Crescent;
 
     type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
     type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a
     where
         M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
+
+    wl_server::impl_dispatch!();
 
     fn server_context(&self) -> &Self::ServerContext {
         &self.state
@@ -227,7 +233,6 @@ impl connection::Client for CrescentClient {
         let task = self.state.0.executor.spawn(fut);
         self.tasks.borrow_mut().push(task);
     }
-    wl_server::impl_dispatch!();
 }
 
 fn main() -> Result<()> {
@@ -253,12 +258,33 @@ fn main() -> Result<()> {
             smol::block_on(event_tx.send(event)).unwrap();
         })
     });
+    let output_global_id = AnyGlobal::globals().count() as u32 + 1;
+    let output = apollo::shell::output::Output::new(
+        Rectangle::from_extemities(Point::new(0, 0), Point::new(1920, 1080)),
+        Extent::new(0, 0),
+        CString::new("Crescent").unwrap(),
+        CString::new("Crescent").unwrap(),
+        CString::new("virtual-output-0").unwrap(),
+        3 * 120,
+        output_global_id,
+    )
+    .into();
     let window = rx.recv().unwrap();
     let server = Crescent(Rc::new(CrescentState {
         globals:  RefCell::new(AnyGlobal::globals().collect()),
-        shell:    Default::default(),
+        shell:    Rc::new(RefCell::new(DefaultShell::new(&output))),
         executor: LocalExecutor::new(),
     }));
+    // Add output global and make sure its id is what we expect.
+    tracing::debug!("globals {:?}", server.0.globals.borrow());
+    assert_eq!(
+        server
+            .0
+            .globals
+            .borrow_mut()
+            .insert(apollo::globals::Output::new(output)),
+        output_global_id
+    );
     let shell2 = server.0.shell.clone();
     tracing::debug!("Size: {:?}", window.inner_size());
     let _render = server.0.executor.spawn(async move {

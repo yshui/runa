@@ -377,7 +377,7 @@ impl<N, Kind: CoordinateSpace> Extent<N, Kind> {
     /// Convert the underlying numerical type to f64 for floating point
     /// manipulations
     #[inline]
-    fn to<M: Copy + Sign + 'static>(self) -> Extent<M, Kind>
+    pub fn to<M: Copy + Sign + 'static>(self) -> Extent<M, Kind>
     where
         N: AsPrimitive<M>,
     {

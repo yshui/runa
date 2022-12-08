@@ -844,15 +844,19 @@ impl<S: Shell> std::fmt::Debug for RoleInfo<S> {
     }
 }
 
+pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
+pub(crate) type SurfaceOutputChanged = Rc<RefCell<HashMap<u32, OutputSet>>>;
 pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
-    current:   Cell<S::Key>,
+    current:                 Cell<S::Key>,
     /// The pending state of the surface, this will be moved to [`current`] when
     /// commit is called
-    pending:   Cell<S::Key>,
-    role_info: RefCell<Option<RoleInfo<S>>>,
-    outputs:   HashSet<crate::utils::RcPtr<super::output::Output>>,
+    pending:                 Cell<S::Key>,
+    role_info:               RefCell<Option<RoleInfo<S>>>,
+    outputs:                 OutputSet,
+    output_change_listeners: RefCell<HashMap<(EventHandle, usize), SurfaceOutputChanged>>,
+    object_id:               u32,
 }
 
 impl<S: Shell> std::fmt::Debug for Surface<S> {
@@ -876,14 +880,16 @@ impl<S: Shell> Drop for Surface<S> {
     }
 }
 
-impl<S: Shell> Default for Surface<S> {
+impl<S: Shell> Surface<S> {
     #[must_use]
-    fn default() -> Self {
+    pub fn new(object_id: u32) -> Self {
         Self {
-            current:   Cell::new(Default::default()),
-            pending:   Cell::new(Default::default()),
+            current: Cell::new(Default::default()),
+            pending: Cell::new(Default::default()),
             role_info: Default::default(),
-            outputs:   Default::default(),
+            outputs: Default::default(),
+            output_change_listeners: Default::default(),
+            object_id,
         }
     }
 }
@@ -1014,5 +1020,36 @@ impl<S: Shell> Surface<S> {
             role:   Box::new(role),
         });
         shell.role_added(self.current.get(), role_name);
+    }
+
+    pub fn outputs(&self) -> Ref<'_, HashSet<WeakPtr<Output>>> {
+        self.outputs.borrow()
+    }
+
+    pub fn add_output_change_listener(
+        &self,
+        handle: (EventHandle, usize),
+        changes: SurfaceOutputChanged,
+    ) {
+        self.output_change_listeners
+            .borrow_mut()
+            .insert(handle, changes);
+    }
+
+    pub fn remove_output_change_listener(&self, handle: (EventHandle, usize)) {
+        self.output_change_listeners.borrow_mut().remove(&handle);
+    }
+
+    pub fn outputs_mut(&self) -> RefMut<'_, HashSet<WeakPtr<Output>>> {
+        self.outputs.borrow_mut()
+    }
+
+    pub fn notify_output_changed(&self) {
+        for (handle, changes) in &*self.output_change_listeners.borrow() {
+            changes
+                .borrow_mut()
+                .insert(self.object_id, self.outputs.clone());
+            handle.0.set(handle.1);
+        }
     }
 }

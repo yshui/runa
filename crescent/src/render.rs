@@ -5,7 +5,7 @@ use apollo::{
         buffers::{Buffer, RendererBuffer},
         Shell,
     },
-    utils::geometry::Scale,
+    utils::geometry::{Scale, Extent},
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
@@ -258,7 +258,7 @@ impl Renderer {
                 let dimensions = buffer.dimension();
                 tracing::trace!(?offset, ?dimensions, "rendering subsurface {:p}", buffer);
                 let current_index = self.vertices.len() as u16;
-                let offset = offset.to_physical(Scale::new(1, 1)) + window.position;
+                let offset = offset + window.position;
                 let mut texture = buffer.data.texture.borrow_mut();
                 let texture = texture.get_or_insert_with(|| {
                     self.device.create_texture(&wgpu::TextureDescriptor {
@@ -435,6 +435,7 @@ impl Renderer {
                     let (surface, output) = texture_result.unwrap();
                     if let Some(new_size) = pending_size {
                         if new_size != self.size {
+                            self.shell.borrow_mut().update_size(Extent::new(new_size.width, new_size.height));
                             drop(output);
                             // size changed, reconfigure surface
                             surface.configure(&self.device, &wgpu::SurfaceConfiguration {

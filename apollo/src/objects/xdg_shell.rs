@@ -112,6 +112,7 @@ where
     type SetWindowGeometryFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+        // TODO remove from WmBaseState::pending_configure
         async move { unimplemented!() }
     }
 
@@ -241,6 +242,7 @@ where
     }
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+        // TODO remove from WmBaseState::pending_configure
         async move { unimplemented!() }
     }
 

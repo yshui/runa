@@ -4,6 +4,8 @@ use std::{
     ops::Deref,
     rc::{Rc, Weak},
 };
+
+use derivative::Derivative;
 pub mod geometry;
 
 /// A wrapper of `Rc` that implements `Hash` and `Eq` by comparing
@@ -60,8 +62,22 @@ impl<T> AsMut<Rc<T>> for RcPtr<T> {
 
 /// A wrapper of `Weak` that implements `Hash` and `Eq` by comparing
 /// raw pointer addresses.
-#[derive(Debug)]
 pub struct WeakPtr<T>(Weak<T>);
+
+impl<T> std::fmt::Debug for WeakPtr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WeakPtr")
+            .field("ptr", &self.0.as_ptr())
+            .finish()
+    }
+}
+
+impl<T> Clone for WeakPtr<T> {
+    fn clone(&self) -> Self {
+        Self(Weak::clone(&self.0))
+    }
+}
+
 impl<T> WeakPtr<T> {
     pub fn new(t: &Rc<T>) -> Self {
         Self(Rc::downgrade(t))
@@ -69,6 +85,10 @@ impl<T> WeakPtr<T> {
 
     pub fn upgrade(&self) -> Option<Rc<T>> {
         self.0.upgrade()
+    }
+
+    pub fn into_inner(self) -> Weak<T> {
+        self.0
     }
 }
 
@@ -113,7 +133,7 @@ impl<T> From<Weak<T>> for WeakPtr<T> {
 /// need to read `value` but can't keep the borrow (e.g. because you can't hold
 /// a borrow across await). Because this doesn't allocate memory every time.
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Double<T> {
     front: Rc<T>,
     back:  Rc<RefCell<T>>,
@@ -162,6 +182,13 @@ pub trait BufSwap {
 }
 
 impl<K, V> BufSwap for hashbrown::HashMap<K, V> {
+    fn swap(&mut self, back: &mut Self) {
+        std::mem::swap(self, back);
+        back.clear();
+    }
+}
+
+impl<K> BufSwap for hashbrown::HashSet<K> {
     fn swap(&mut self, back: &mut Self) {
         std::mem::swap(self, back);
         back.clear();

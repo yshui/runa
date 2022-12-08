@@ -29,7 +29,7 @@ use wl_server::{
 
 use crate::{
     shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
-    utils::{geometry::Point, RcPtr},
+    utils::{geometry::Point, RcPtr, WeakPtr, Double}, globals::OutputAndCompositorState,
 };
 
 #[derive(Derivative)]
@@ -95,7 +95,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
 impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
-    Ctx: State<CompositorState>,
+    Ctx: State<OutputAndCompositorState>,
     Ctx::Object: From<wl_server::objects::Callback>,
 {
     type Error = error::Error;
@@ -276,9 +276,12 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
-            if ctx.state_mut().surfaces.remove(&object_id).is_none() {
+            let state = ctx.state_mut();
+            if state.surfaces.remove(&object_id).is_none() {
                 panic!("Incosistent compositor state, surface {object_id} not found");
             }
+            // Remove the surface from surface with output changed.
+            state.output_changed.write_end().borrow_mut().remove(&object_id);
             self.0
                 .destroy(&mut ctx.server_context().shell().borrow_mut());
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
@@ -294,31 +297,12 @@ where
 pub struct Compositor;
 
 use hashbrown::{HashMap, HashSet};
-#[derive(Debug)]
-pub struct CompositorState {
-    /// Map of surface ids to outputs they are currently on
-    pub(crate) surfaces:                  HashMap<u32, HashSet<RcPtr<Output>>>,
-    pub(crate) output_changed:            Rc<RefCell<HashSet<u32>>>,
-    pub(crate) buffer:                    Option<HashSet<u32>>,
-    pub(crate) tmp_frame_callback_buffer: Option<VecDeque<u32>>,
-}
-
-impl Default for CompositorState {
-    fn default() -> Self {
-        Self {
-            surfaces:                  HashMap::new(),
-            output_changed:            Rc::new(RefCell::new(HashSet::new())),
-            buffer:                    Some(HashSet::new()),
-            tmp_frame_callback_buffer: Some(VecDeque::new()),
-        }
-    }
-}
 
 #[wayland_object]
 impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell,
-    Ctx: State<CompositorState>,
+    Ctx: State<OutputAndCompositorState>,
     Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = error::Error;
@@ -329,7 +313,7 @@ where
     fn create_surface<'a>(
         &'a self,
         ctx: &'a mut Ctx,
-        _object_id: u32,
+        object_id: u32,
         id: wl_types::NewId,
     ) -> Self::CreateSurfaceFut<'a> {
         use wl_server::connection::Objects;
@@ -342,7 +326,7 @@ where
                 let mut objects = ctx.objects().borrow_mut();
                 let shell = ctx.server_context().shell();
                 let mut shell = shell.borrow_mut();
-                let surface = Rc::new(surface::Surface::default());
+                let surface = Rc::new(surface::Surface::new(object_id));
                 let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
                 let pending = shell.allocate(surface::SurfaceState::new(surface.clone()));
                 surface.set_current(current);

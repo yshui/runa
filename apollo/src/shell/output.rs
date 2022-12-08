@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::{CStr, CString},
     rc::Rc,
 };
@@ -15,16 +15,16 @@ use crate::utils::{
 pub type OutputChanges = Rc<RefCell<HashMap<WeakPtr<Output>, OutputChange>>>;
 #[derive(Debug, Eq, PartialEq)]
 pub struct Output {
-    geometry:      Rectangle<i32, Logical>,
+    geometry:      RefCell<Rectangle<i32, Logical>>,
     /// Physical size in millimeters
     physical_size: Extent<u32, Physical>,
     make:          CString,
     model:         CString,
     name:          CString,
-    /// The scaling factor for this output, this is the numerator of a fraction with a denominator
-    /// of 120.
+    /// The scaling factor for this output, this is the numerator of a fraction
+    /// with a denominator of 120.
     /// See the fractional_scale_v1::preferred_scale for why 120.
-    scale:         u32,
+    scale:         Cell<u32>,
     global_id:     u32,
     listeners:     RefCell<HashMap<(EventHandle, usize), OutputChanges>>,
 }
@@ -37,6 +37,12 @@ bitflags::bitflags! {
     }
 }
 
+impl Default for OutputChange {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 #[allow(clippy::derive_hash_xor_eq)]
 impl std::hash::Hash for Output {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -46,7 +52,7 @@ impl std::hash::Hash for Output {
 
 impl Output {
     pub fn overlaps(&self, other: &Rectangle<i32, Logical>) -> bool {
-        self.geometry.overlaps(other)
+        self.geometry.borrow().overlaps(other)
     }
 
     pub fn add_change_listener(&self, handle: (EventHandle, usize), changes_map: OutputChanges) {
@@ -56,6 +62,15 @@ impl Output {
 
     pub fn remove_change_listener(&self, handle: &(EventHandle, usize)) {
         self.listeners.borrow_mut().remove(handle);
+    }
+
+    pub fn notify_change(self: &Rc<Self>, change: OutputChange) {
+        for changes_map in self.listeners.borrow().values() {
+            *changes_map
+                .borrow_mut()
+                .entry(Rc::downgrade(self).into())
+                .or_default() |= change;
+        }
     }
 
     pub fn new(
@@ -68,12 +83,12 @@ impl Output {
         global_id: u32,
     ) -> Self {
         Self {
-            geometry,
+            geometry: geometry.into(),
             physical_size,
             make,
             model,
             name,
-            scale,
+            scale: scale.into(),
             global_id,
             listeners: HashMap::new().into(),
         }
@@ -84,15 +99,19 @@ impl Output {
     }
 
     pub fn scale(&self) -> u32 {
-        self.scale
+        self.scale.get()
     }
 
     pub fn name(&self) -> &CStr {
         &self.name
     }
 
-    pub fn geometry(&self) -> &Rectangle<i32, Logical> {
-        &self.geometry
+    pub fn geometry(&self) -> Rectangle<i32, Logical> {
+        *self.geometry.borrow()
+    }
+
+    pub fn set_geometry(&self, geometry: &Rectangle<i32, Logical>) {
+        *self.geometry.borrow_mut() = *geometry;
     }
 
     pub fn model(&self) -> &CStr {
@@ -157,9 +176,11 @@ impl Output {
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
-        client.send(object_id, wl_output::events::Scale {
-            factor: (self.scale / 120) as i32,
-        }).await
+        client
+            .send(object_id, wl_output::events::Scale {
+                factor: (self.scale.get() / 120) as i32,
+            })
+            .await
     }
 
     /// Send a wl_output::done event to the client
@@ -189,9 +210,9 @@ impl Output {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Screen {
-    outputs: Vec<Rc<Output>>,
+    pub outputs: Vec<Rc<Output>>,
 }
 
 impl Screen {
@@ -204,5 +225,9 @@ impl Screen {
             .iter()
             .map(|o| o.as_ref())
             .filter(|output| output.overlaps(geometry))
+    }
+
+    pub fn new_single_output(output: &Rc<Output>) -> Self {
+        Self { outputs: vec![output.clone()] }
     }
 }

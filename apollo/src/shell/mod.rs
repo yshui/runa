@@ -54,7 +54,7 @@ pub trait Shell: Sized + 'static {
     ///
     /// This function is allowed to panic if either handle is invalid. Or if
     /// `old` has never been committed before.
-    fn commit(&mut self, old: Option<Self::Key>, new: Self::Key);
+    fn post_commit(&mut self, old: Option<Self::Key>, new: Self::Key);
     /// Add a listener to be notified when the shell has been rendered.
     /// TODO: change to per-surface listener, like for the configure event
     fn add_render_listener(&self, listener: (wl_server::events::EventHandle, usize));

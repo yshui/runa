@@ -71,6 +71,7 @@ where
         where
             Ctx: 'a;
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
         use wl_server::connection::Objects;
 
@@ -110,6 +111,7 @@ where
             let mut output_changed_buffer = state.output_changed_buffer.take().unwrap();
 
             for (surface_object_id, new_outputs) in output_changed.as_ref() {
+                tracing::debug!("output changed for surface object {surface_object_id}");
                 let old_outputs = state.surfaces.get(surface_object_id).unwrap();
                 let new_outputs = new_outputs.borrow();
                 // Calculate symmetric difference of old and new outputs.
@@ -274,13 +276,16 @@ where
     where
         Ctx: Client,
     {
-        let handle = (client.event_handle(), <Ctx as DispatchTo<Self>>::SLOT);
+        let slot = <Ctx as DispatchTo<Self>>::SLOT;
+        let handle = (client.event_handle(), slot);
         let state = client.state_mut();
         // Add this binding to the new bindings list, so initial events will be sent for
         // it
         state
             .new_bindings
             .push((object_id, Rc::downgrade(&self.0).into()));
+        // Invoke the event handler to send events for the new binding
+        handle.0.set(slot);
         // Listen for output changes
         self.0
             .add_change_listener(handle, state.changed_outputs.write_end());
@@ -325,7 +330,9 @@ where
         where
             Ctx: 'a;
 
+    #[tracing::instrument(skip(ctx))]
     fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
+        tracing::trace!("Output event handler invoked");
         async move {
             // Send events for changed outputs
             let changed_outputs = ctx.state_mut().changed_outputs.read_exclusive().unwrap();

@@ -52,7 +52,7 @@ fn surface_commit<S: XdgShell>(
     let (current, pending) = (surface.current_key(), surface.pending_key());
     shell.rotate(current, pending);
     surface.swap_states();
-    shell.commit(Some(current), pending);
+    shell.post_commit(Some(current), pending);
 
     Ok(())
 }
@@ -97,7 +97,7 @@ pub struct Surface {
 impl Surface {
     #[inline]
     pub fn new(
-        object_id: u32,
+        object_id: wl_types::NewId,
         listener: (EventHandle, usize),
         pending_list: &Rc<RefCell<HashMap<u32, Layout>>>,
     ) -> Self {
@@ -113,7 +113,7 @@ impl Surface {
                 slot:              listener.1,
                 pending_configure: pending_list.clone(),
             },
-            object_id,
+            object_id: object_id.0,
         }
     }
 }

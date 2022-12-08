@@ -174,25 +174,18 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
         }
     }
 
-    fn commit(&mut self, old: Option<Self::Key>, new: Self::Key) {
-        let (state, data) = &mut self.storage.get_mut(new).unwrap();
-        let new_dimension = state.buffer().map(|b| b.dimension()).unwrap_or_default();
+    fn post_commit(&mut self, old: Option<Self::Key>, new: Self::Key) {
+        let (_, data) = &mut self.storage.get_mut(new).unwrap();
         assert!(!data.is_current);
         data.is_current = true;
         if let Some(old) = old {
-            let (old_state, old_data) = &mut self.storage.get_mut(old).unwrap();
-            let old_dimension = old_state
-                .buffer()
-                .map(|b| b.dimension())
-                .unwrap_or_default();
+            let (_, old_data) = &mut self.storage.get_mut(old).unwrap();
             assert!(old_data.is_current);
             old_data.is_current = false;
             if let Some(index) = old_data.stack_index.take() {
                 // The window is in the window stack, so we may need to update its outputs.
-                if old_dimension != new_dimension {
-                    let window = self.stack.get(index).unwrap();
-                    self.update_subtree_outputs(new, window.position);
-                }
+                let window = self.stack.get(index).unwrap();
+                self.update_subtree_outputs(new, window.position);
                 // If the old state is in the window stack, replace it with the new state.
                 self.stack.get_mut(index).unwrap().surface_state = new;
                 // Safety: we did the same thing above, with unwrap().

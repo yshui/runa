@@ -67,7 +67,7 @@ where
                 .ok_or_else(|| Error::UnknownObject(surface_id))?;
             if entry.is_vacant() {
                 let role = crate::shell::xdg::Surface::new(
-                    id.0,
+                    id,
                     (ctx.event_handle(), Ctx::SLOT),
                     &pending_configure,
                 );

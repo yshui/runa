@@ -312,7 +312,7 @@ pub mod roles {
             .antirole_mut::<SubsurfaceParent<S>>(*SUBSURFACE_PARENT_SLOT)
             .unwrap();
         parent_antirole.children.get_mut(stack_index).unwrap().key = new;
-        s.commit(Some(old), new);
+        s.post_commit(Some(old), new);
         Ok(())
     }
     impl<S: Shell> Clone for Subsurface<S> {
@@ -668,6 +668,8 @@ pub struct SurfaceState<S: Shell> {
     /// A list of antiroles, ordered by their names.
     antiroles:                 Vec<Option<Box<dyn Antirole<S>>>>,
     buffer:                    Option<Rc<S::Buffer>>,
+    /// Scale of the buffer, a fraction with a denominator of 120
+    buffer_scale:              u32,
 }
 
 impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
@@ -691,6 +693,7 @@ impl<S: Shell> SurfaceState<S> {
             frame_callback: VecDeque::new(),
             antiroles: Vec::new(),
             buffer: None,
+            buffer_scale: 120,
         }
     }
 }
@@ -775,6 +778,16 @@ impl<S: Shell> SurfaceState<S> {
     #[inline]
     pub fn set_flags(&self, flags: SurfaceFlags) {
         self.flags.set(flags);
+    }
+
+    #[inline]
+    pub fn buffer_scale(&self) -> u32 {
+        self.buffer_scale
+    }
+
+    #[inline]
+    pub fn set_buffer_scale(&mut self, scale: u32) {
+        self.buffer_scale = scale;
     }
 
     #[inline]
@@ -882,14 +895,14 @@ impl<S: Shell> Drop for Surface<S> {
 
 impl<S: Shell> Surface<S> {
     #[must_use]
-    pub fn new(object_id: u32) -> Self {
+    pub fn new(object_id: wl_types::NewId) -> Self {
         Self {
-            current: Cell::new(Default::default()),
-            pending: Cell::new(Default::default()),
-            role_info: Default::default(),
-            outputs: Default::default(),
+            current:                 Cell::new(Default::default()),
+            pending:                 Cell::new(Default::default()),
+            role_info:               Default::default(),
+            outputs:                 Default::default(),
             output_change_listeners: Default::default(),
-            object_id,
+            object_id:               object_id.0,
         }
     }
 }
@@ -915,7 +928,7 @@ impl<S: Shell> Surface<S> {
         } else {
             self.swap_states();
             shell.rotate(current, pending);
-            shell.commit(Some(current), pending);
+            shell.post_commit(Some(current), pending);
         }
         Ok(())
     }

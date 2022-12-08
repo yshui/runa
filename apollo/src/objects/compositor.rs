@@ -24,12 +24,13 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{Client, State},
     error,
-    objects::{wayland_object, Object, DISPLAY_ID},
+    objects::{wayland_object, Object, DISPLAY_ID}, server::Globals, events::DispatchTo,
 };
 
 use crate::{
+    globals::OutputAndCompositorState,
     shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
-    utils::{geometry::Point, RcPtr, WeakPtr, Double}, globals::OutputAndCompositorState,
+    utils::{geometry::Point, Double, RcPtr, WeakPtr},
 };
 
 #[derive(Derivative)]
@@ -234,7 +235,11 @@ where
         object_id: u32,
         scale: i32,
     ) -> Self::SetBufferScaleFut<'a> {
-        async move { unimplemented!() }
+        let mut shell = ctx.server_context().shell().borrow_mut();
+        let pending_mut = self.0.pending_mut(&mut shell);
+
+        pending_mut.set_buffer_scale(scale as u32 * 120);
+        futures_util::future::ok(())
     }
 
     fn set_input_region<'a>(
@@ -281,7 +286,11 @@ where
                 panic!("Incosistent compositor state, surface {object_id} not found");
             }
             // Remove the surface from surface with output changed.
-            state.output_changed.write_end().borrow_mut().remove(&object_id);
+            state
+                .output_changed
+                .write_end()
+                .borrow_mut()
+                .remove(&object_id);
             self.0
                 .destroy(&mut ctx.server_context().shell().borrow_mut());
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
@@ -296,13 +305,11 @@ where
 #[derivative(Debug(bound = ""))]
 pub struct Compositor;
 
-use hashbrown::{HashMap, HashSet};
-
 #[wayland_object]
 impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell,
-    Ctx: State<OutputAndCompositorState>,
+    Ctx: State<OutputAndCompositorState> + DispatchTo<crate::globals::Compositor>,
     Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = error::Error;
@@ -317,27 +324,33 @@ where
         id: wl_types::NewId,
     ) -> Self::CreateSurfaceFut<'a> {
         use wl_server::connection::Objects;
+        use futures_util::future::ready;
 
         use crate::shell::surface;
-        async move {
-            if ctx.objects().borrow().get(id.0).is_none() {
-                // Add the id to the list of surfaces
-                ctx.state_mut().surfaces.insert(id.0, Default::default());
-                let mut objects = ctx.objects().borrow_mut();
-                let shell = ctx.server_context().shell();
-                let mut shell = shell.borrow_mut();
-                let surface = Rc::new(surface::Surface::new(object_id));
-                let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
-                let pending = shell.allocate(surface::SurfaceState::new(surface.clone()));
-                surface.set_current(current);
-                surface.set_pending(pending);
-                shell.commit(None, current);
-                tracing::debug!("id {} is surface {:p}", id.0, surface);
-                objects.insert(id.0, Surface(surface)).unwrap();
-                Ok(())
-            } else {
-                Err(error::Error::IdExists(id.0))
-            }
+        if ctx.objects().borrow().get(id.0).is_none() {
+            // Add the id to the list of surfaces
+            ctx.state_mut().surfaces.insert(id.0, Default::default());
+            let (ctx, state) = ctx.state();
+            let mut objects = ctx.objects().borrow_mut();
+            let shell = ctx.server_context().shell();
+            let mut shell = shell.borrow_mut();
+            let surface = Rc::new(surface::Surface::new(id));
+            let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
+            let pending = shell.allocate(surface::SurfaceState::new(surface.clone()));
+            surface.set_current(current);
+            surface.set_pending(pending);
+            shell.post_commit(None, current);
+
+            // Listen for output change events
+            let handle = ctx.event_handle();
+            let slot = <Ctx as DispatchTo<crate::globals::Compositor>>::SLOT;
+            surface.add_output_change_listener((handle, slot), state.output_changed.write_end());
+
+            tracing::debug!("id {} is surface {:p}", id.0, surface);
+            objects.insert(id.0, Surface(surface)).unwrap();
+            ready(Ok(()))
+        } else {
+            ready(Err(error::Error::IdExists(id.0)))
         }
     }
 

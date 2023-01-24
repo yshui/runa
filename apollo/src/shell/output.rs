@@ -8,25 +8,32 @@ use hashbrown::HashMap;
 use wl_server::events::EventHandle;
 
 use crate::utils::{
-    geometry::{Extent, Logical, Physical, Rectangle},
+    geometry::{coords, Extent, Point, Rectangle, Scale, Transform},
     WeakPtr,
 };
 
 pub type OutputChanges = Rc<RefCell<HashMap<WeakPtr<Output>, OutputChange>>>;
 #[derive(Debug, Eq, PartialEq)]
 pub struct Output {
-    geometry:      RefCell<Rectangle<i32, Logical>>,
+    /// Resolution of the output, in pixels
+    size:             Cell<Extent<u32, coords::Screen>>,
+    /// Position of the output on the unified screen.
+    position:         Cell<Point<i32, coords::Screen>>,
+    /// Scale independent position of the output, used to calculate the
+    /// of outputs and surfaces.
+    logical_position: Cell<Point<i32, coords::ScreenNormalized>>,
     /// Physical size in millimeters
-    physical_size: Extent<u32, Physical>,
-    make:          CString,
-    model:         CString,
-    name:          CString,
+    physical_size:    Extent<u32, coords::Physical>,
+    make:             CString,
+    model:            CString,
+    name:             CString,
+    transform:        Cell<Transform>,
     /// The scaling factor for this output, this is the numerator of a fraction
     /// with a denominator of 120.
     /// See the fractional_scale_v1::preferred_scale for why 120.
-    scale:         Cell<u32>,
-    global_id:     u32,
-    listeners:     RefCell<HashMap<(EventHandle, usize), OutputChanges>>,
+    scale:            Cell<Scale<u32>>,
+    global_id:        u32,
+    listeners:        RefCell<HashMap<(EventHandle, usize), OutputChanges>>,
 }
 
 bitflags::bitflags! {
@@ -51,8 +58,8 @@ impl std::hash::Hash for Output {
 }
 
 impl Output {
-    pub fn overlaps(&self, other: &Rectangle<i32, Logical>) -> bool {
-        self.geometry.borrow().overlaps(other)
+    pub fn overlaps(&self, other: &Rectangle<i32, coords::ScreenNormalized>) -> bool {
+        self.logical_geometry().overlaps(other)
     }
 
     pub fn add_change_listener(&self, handle: (EventHandle, usize), changes_map: OutputChanges) {
@@ -74,21 +81,22 @@ impl Output {
     }
 
     pub fn new(
-        geometry: Rectangle<i32, Logical>,
-        physical_size: Extent<u32, Physical>,
+        physical_size: Extent<u32, coords::Physical>,
         make: CString,
         model: CString,
         name: CString,
-        scale: u32,
         global_id: u32,
     ) -> Self {
         Self {
-            geometry: geometry.into(),
+            size: Default::default(),
+            position: Default::default(),
+            logical_position: Default::default(),
             physical_size,
             make,
             model,
             name,
-            scale: scale.into(),
+            transform: Default::default(),
+            scale: Scale::new(1, 1).into(),
             global_id,
             listeners: HashMap::new().into(),
         }
@@ -98,20 +106,67 @@ impl Output {
         self.global_id
     }
 
-    pub fn scale(&self) -> u32 {
+    pub fn scale(&self) -> Scale<u32> {
         self.scale.get()
+    }
+
+    pub fn scale_f32(&self) -> Scale<f32> {
+        let scale = self.scale.get().to::<f32>();
+        Scale::new(scale.x / 120., scale.y / 120.)
+    }
+
+    pub fn set_scale(&self, scale: u32) {
+        self.scale.set(Scale::new(scale, scale));
     }
 
     pub fn name(&self) -> &CStr {
         &self.name
     }
 
-    pub fn geometry(&self) -> Rectangle<i32, Logical> {
-        *self.geometry.borrow()
+    /// Scale invariant logical size of the output. This is used to determine where a window is
+    /// placed, so that it is not dependent on the scale of the window. To avoid a dependency
+    /// circle: window scale -> window placement -> window scale.
+    ///
+    /// Currently this is calculated as the size of the output divided by its scale.
+    pub fn logical_geometry(&self) -> Rectangle<i32, coords::ScreenNormalized> {
+        use crate::utils::geometry::coords::Map;
+        let transform = self.transform.get();
+        let scale = self.scale_f32();
+        let logical_size = self.size.get().map(|x| transform.transform_size(x.to() / scale).floor().to());
+        let logical_position = self.logical_position.get();
+        Rectangle::from_loc_and_size(logical_position, logical_size.to())
     }
 
-    pub fn set_geometry(&self, geometry: &Rectangle<i32, Logical>) {
-        *self.geometry.borrow_mut() = *geometry;
+    pub fn geometry(&self) -> Rectangle<i32, coords::Screen> {
+        use crate::utils::geometry::coords::Map;
+        let transform = self.transform.get();
+        let size = self.size.get().map(|x| transform.transform_size(x));
+        let position = self.position.get();
+        Rectangle::from_loc_and_size(position, size.to())
+    }
+
+    pub fn size(&self) -> Extent<u32, coords::Screen> {
+        self.size.get()
+    }
+
+    pub fn position(&self) -> Point<i32, coords::Screen> {
+        self.position.get()
+    }
+
+    pub fn logical_position(&self) -> Point<i32, coords::ScreenNormalized> {
+        self.logical_position.get()
+    }
+
+    pub fn set_size(&self, geometry: Extent<u32, coords::Screen>) {
+        self.size.set(geometry);
+    }
+
+    pub fn set_position(&self, position: Point<i32, coords::Screen>) {
+        self.position.set(position);
+    }
+
+    pub fn set_logical_position(&self, logical_position: Point<i32, coords::ScreenNormalized>) {
+        self.logical_position.set(logical_position);
     }
 
     pub fn model(&self) -> &CStr {
@@ -122,8 +177,16 @@ impl Output {
         &self.make
     }
 
+    pub fn transform(&self) -> Transform {
+        self.transform.get()
+    }
+
+    pub fn set_transform(&self, transform: Transform) {
+        self.transform.set(transform);
+    }
+
     /// Physical size in millimeters
-    pub fn physical_size(&self) -> Extent<u32, Physical> {
+    pub fn physical_size(&self) -> Extent<u32, coords::Physical> {
         self.physical_size
     }
 
@@ -178,7 +241,7 @@ impl Output {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
             .send(object_id, wl_output::events::Scale {
-                factor: (self.scale.get() / 120) as i32,
+                factor: (self.scale.get().x / 120) as i32,
             })
             .await
     }
@@ -219,7 +282,7 @@ impl Screen {
     /// Find all outputs that overlaps with `geometry`
     pub fn find_outputs<'a>(
         &'a self,
-        geometry: &'a Rectangle<i32, Logical>,
+        geometry: &'a Rectangle<i32, coords::ScreenNormalized>,
     ) -> impl Iterator<Item = &'a Output> {
         self.outputs
             .iter()
@@ -228,6 +291,8 @@ impl Screen {
     }
 
     pub fn new_single_output(output: &Rc<Output>) -> Self {
-        Self { outputs: vec![output.clone()] }
+        Self {
+            outputs: vec![output.clone()],
+        }
     }
 }

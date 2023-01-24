@@ -19,7 +19,7 @@ use wl_server::{
 use crate::{
     objects::Buffer as BufferObj,
     shell::buffers::{BufferBase, HasBuffer},
-    utils::geometry::{Extent, Logical},
+    utils::geometry::{coords, Extent},
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -90,7 +90,8 @@ unsafe fn map_zeroed(addr: *const libc::c_void, len: usize) -> Result<(), libc::
 ///
 /// # Safety
 ///
-/// Must be called from a SIGBUS handler, with `info` provided to the signal handler.
+/// Must be called from a SIGBUS handler, with `info` provided to the signal
+/// handler.
 pub unsafe fn handle_sigbus(info: &libc::siginfo_t) -> bool {
     let faulty_ptr = unsafe { info.si_addr() } as *const libc::c_void;
     // # Regarding deadlocks
@@ -208,12 +209,7 @@ where
                     }),
                 })),
             };
-            if ctx
-                .objects()
-                .borrow_mut()
-                .insert(id.0, pool)
-                .is_err()
-            {
+            if ctx.objects().borrow_mut().insert(id.0, pool).is_err() {
                 ctx.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_display::enums::Error::InvalidObject as u32,
                     object_id: object_id.into(),
@@ -343,10 +339,8 @@ where
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
             ctx.objects().borrow_mut().remove(object_id).unwrap();
-            ctx.send(DISPLAY_ID, wl_display::events::DeleteId {
-                id: object_id,
-            })
-            .await?;
+            ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+                .await?;
             Ok(())
         }
     }
@@ -409,7 +403,7 @@ impl crate::shell::buffers::Buffer for Buffer {
         self.base.get_damage()
     }
 
-    fn dimension(&self) -> Extent<u32, Logical> {
+    fn dimension(&self) -> Extent<u32, coords::Buffer> {
         Extent::new(self.width as u32, self.height as u32)
     }
 

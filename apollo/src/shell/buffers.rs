@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::utils::geometry::{Extent, Logical};
+use crate::utils::geometry::{Extent, coords};
 
 /// The base buffer trait.
 ///
@@ -13,7 +13,7 @@ pub trait Buffer: 'static {
     fn clear_damage(&self);
     fn get_damage(&self) -> bool;
     // TODO: really logical?
-    fn dimension(&self) -> Extent<u32, Logical>;
+    fn dimension(&self) -> Extent<u32, coords::Buffer>;
     /// Return the object id for the buffer object.
     /// Used for sending release event to the client.
     fn object_id(&self) -> u32;
@@ -61,7 +61,7 @@ impl Buffer for BufferBase {
     }
 
     #[inline]
-    fn dimension(&self) -> Extent<u32, Logical> {
+    fn dimension(&self) -> Extent<u32, coords::Buffer> {
         unimplemented!()
     }
     #[inline]
@@ -111,7 +111,7 @@ impl Buffer for Buffers {
     }
 
     #[inline]
-    fn dimension(&self) -> Extent<u32, Logical> {
+    fn dimension(&self) -> Extent<u32, coords::Buffer> {
         match self {
             Self::Shm(buffer) => buffer.dimension(),
         }
@@ -152,7 +152,7 @@ impl<Data: 'static> Buffer for RendererBuffer<Data> {
     }
 
     #[inline]
-    fn dimension(&self) -> Extent<u32, Logical> {
+    fn dimension(&self) -> Extent<u32, coords::Buffer> {
         self.buffer.dimension()
     }
     #[inline]

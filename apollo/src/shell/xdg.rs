@@ -1,19 +1,24 @@
-use std::{cell::{RefCell, RefMut}, num::NonZeroU32, rc::Rc, collections::VecDeque};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::VecDeque,
+    num::NonZeroU32,
+    rc::Rc,
+};
 
 use derivative::Derivative;
 use hashbrown::HashMap;
-use crate::utils::geometry::{Extent, Logical, Rectangle, Point};
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };
 use wl_server::{events::EventHandle, provide_any::Demand};
 
 use super::Shell;
+use crate::utils::geometry::{coords, Extent, Point, Rectangle};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Layout {
-    pub position: Option<Point<i32, Logical>>,
-    pub extent: Option<Extent<u32, Logical>>,
+    pub position: Option<Point<i32, coords::Screen>>,
+    pub extent:   Option<Extent<u32, coords::Screen>>,
 }
 
 pub trait XdgShell: Shell {
@@ -66,7 +71,12 @@ fn toplevel_commit<S: XdgShell>(
     let object_id = role.object_id;
     role.current = role.pending;
 
-    surface_commit(shell, surface, RefMut::map(role, |r| &mut r.base), object_id)?;
+    surface_commit(
+        shell,
+        surface,
+        RefMut::map(role, |r| &mut r.base),
+        object_id,
+    )?;
     Ok(())
 }
 
@@ -81,8 +91,8 @@ pub(crate) struct ConfigureListener {
 #[derive(Debug, Clone)]
 pub struct Surface {
     active:                        bool,
-    geometry:                      Option<Rectangle<i32, Logical>>,
-    pub(crate) pending_geometry:   Option<Rectangle<i32, Logical>>,
+    geometry:                      Option<Rectangle<i32, coords::Surface>>,
+    pub(crate) pending_geometry:   Option<Rectangle<i32, coords::Surface>>,
     /// Pending configure events that haven't been ACK'd, associated with a
     /// oneshot channel which will be notified once the client ACK the
     /// configure event.
@@ -113,7 +123,7 @@ impl Surface {
                 slot:              listener.1,
                 pending_configure: pending_list.clone(),
             },
-            object_id: object_id.0,
+            object_id:          object_id.0,
         }
     }
 }
@@ -145,19 +155,19 @@ impl<S: Shell> super::surface::Role<S> for Surface {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct TopLevelState {
-    pub(crate) min_size: Option<Extent<i32, Logical>>,
-    pub(crate) max_size: Option<Extent<i32, Logical>>,
+    pub(crate) min_size: Option<Extent<i32, coords::Surface>>,
+    pub(crate) max_size: Option<Extent<i32, coords::Surface>>,
 }
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct TopLevel {
-    pub(crate) base:    Surface,
-    is_active:          bool,
-    pub(crate) app_id:  Option<String>,
-    pub(crate) title:   Option<String>,
-    pub(crate) current: TopLevelState,
-    pub(crate) pending: TopLevelState,
+    pub(crate) base:      Surface,
+    is_active:            bool,
+    pub(crate) app_id:    Option<String>,
+    pub(crate) title:     Option<String>,
+    pub(crate) current:   TopLevelState,
+    pub(crate) pending:   TopLevelState,
     pub(crate) object_id: u32,
 }
 

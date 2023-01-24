@@ -95,7 +95,7 @@ pub mod roles {
     use super::Antirole;
     use crate::{
         shell::Shell,
-        utils::geometry::{Logical, Point},
+        utils::geometry::{coords, Point},
     };
 
     /// The wl_subsurface role.
@@ -331,7 +331,7 @@ pub mod roles {
     #[derivative(Debug(bound = ""), Clone(bound = ""), Copy(bound = ""))]
     pub struct SubsurfaceChild<S: Shell> {
         pub(crate) key:      S::Key,
-        pub(crate) position: Point<i32, Logical>,
+        pub(crate) position: Point<i32, coords::Surface>,
     }
     /// The anti-role of the wl_subsurface role.
     pub struct SubsurfaceParent<S: Shell> {
@@ -464,11 +464,11 @@ pub mod roles {
     pub fn subsurface_iter<'a, S: Shell>(
         root: S::Key,
         s: &'a S,
-    ) -> impl Iterator<Item = (S::Key, Point<i32, Logical>)> + 'a {
+    ) -> impl Iterator<Item = (S::Key, Point<i32, coords::Surface>)> + 'a {
         struct SubsurfaceIter<'a, S: Shell> {
             shell:    &'a S,
             /// Key and offset from the root surface.
-            head:     [(S::Key, Point<i32, Logical>); 2],
+            head:     [(S::Key, Point<i32, coords::Surface>); 2],
             is_empty: bool,
         }
         #[repr(usize)]
@@ -555,7 +555,7 @@ pub mod roles {
                 };
             }
 
-            fn next_impl(&mut self, direction: Direction) -> Option<(S::Key, Point<i32, Logical>)> {
+            fn next_impl(&mut self, direction: Direction) -> Option<(S::Key, Point<i32, coords::Surface>)> {
                 if self.is_empty {
                     return None
                 }
@@ -565,7 +565,7 @@ pub mod roles {
             }
         }
         impl<'a, S: Shell> Iterator for SubsurfaceIter<'a, S> {
-            type Item = (S::Key, Point<i32, Logical>);
+            type Item = (S::Key, Point<i32, coords::Surface>);
 
             fn next(&mut self) -> Option<Self::Item> {
                 self.next_impl(Direction::Forward)
@@ -581,7 +581,7 @@ pub mod roles {
             root: S::Key,
             s: &S,
             direction: Direction,
-        ) -> (S::Key, Point<i32, Logical>) {
+        ) -> (S::Key, Point<i32, coords::Surface>) {
             let mut curr = root;
             let mut offset = Point::new(0, 0);
             while let Some(p) = s
@@ -674,13 +674,14 @@ pub struct SurfaceState<S: Shell> {
 
 impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::shell::buffers::Buffer;
         f.debug_struct("SurfaceState")
             .field("flags", &self.flags)
-            .field("surface", &self.surface)
+            .field("surface", &self.surface.object_id())
             .field("frame_callback", &self.frame_callback)
             .field("antiroles", &"…")
-            .field("buffer", &"…")
-            .field("data", &"…")
+            .field("buffer", &self.buffer.as_ref().map(|b| b.object_id()))
+            .field("buffer_scale", &self.buffer_scale_f32())
             .finish()
     }
 }
@@ -786,6 +787,11 @@ impl<S: Shell> SurfaceState<S> {
     }
 
     #[inline]
+    pub fn buffer_scale_f32(&self) -> f32 {
+        self.buffer_scale as f32 / 120.0
+    }
+
+    #[inline]
     pub fn set_buffer_scale(&mut self, scale: u32) {
         self.buffer_scale = scale;
     }
@@ -801,6 +807,7 @@ impl<S: Shell> SurfaceState<S> {
         debug_assert!(Rc::ptr_eq(&self.surface, &pending.surface));
         self.frame_callback.clone_from(&pending.frame_callback);
         self.buffer = pending.buffer.clone();
+        self.buffer_scale = pending.buffer_scale;
         while self.antiroles.len() < pending.antiroles.len() {
             self.antiroles.push(None)
         }
@@ -930,7 +937,12 @@ impl<S: Shell> Surface<S> {
             shell.rotate(current, pending);
             shell.post_commit(Some(current), pending);
         }
+        tracing::trace!("new surface state: {:?}", self.current(shell));
         Ok(())
+    }
+
+    pub fn object_id(&self) -> u32 {
+        self.object_id
     }
 
     pub fn swap_states(&self) {

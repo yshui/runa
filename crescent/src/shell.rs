@@ -9,7 +9,7 @@ use apollo::{
         Shell,
     },
     utils::{
-        geometry::{Extent, Logical, Point, Rectangle},
+        geometry::{coords, Extent, Point, Rectangle, Scale},
         WeakPtr,
     },
 };
@@ -23,7 +23,7 @@ pub struct DefaultShell<S: buffers::Buffer> {
     storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     stack:           VecList<Window>,
     listeners:       wl_server::events::Listeners,
-    position_offset: Point<i32, Logical>,
+    position_offset: Point<i32, coords::Screen>,
     screen:          apollo::shell::output::Screen,
 }
 
@@ -42,7 +42,21 @@ impl<B: buffers::Buffer> DefaultShell<B> {
 #[derive(Debug)]
 pub struct Window {
     pub surface_state: DefaultKey,
-    pub position:      Point<i32, Logical>,
+    /// Position of the top-left corner of the window.
+    /// i.e. the window covers from (position.x, position.y - extent.height)
+    /// to (position.x + extent.width, position.y)
+    pub position:      Point<i32, coords::Screen>,
+}
+
+impl Window {
+    pub fn normalized_position(
+        &self,
+        output: &apollo::shell::output::Output,
+    ) -> Point<i32, coords::ScreenNormalized> {
+        use apollo::utils::geometry::coords::Map as _;
+        self.position
+            .map(|p| (p.to() / output.scale_f32()).floor().to())
+    }
 }
 
 #[derive(Default, Debug)]
@@ -61,7 +75,12 @@ impl<B: buffers::Buffer> DefaultShell<B> {
         self.listeners.notify();
     }
 
-    fn update_subtree_outputs(&mut self, root: DefaultKey, root_position: Point<i32, Logical>) {
+    fn update_subtree_outputs(
+        &mut self,
+        root: DefaultKey,
+        root_position: Point<i32, coords::ScreenNormalized>,
+    ) {
+        use apollo::utils::geometry::coords::Map as _;
         let output = self.screen.outputs.get(0).unwrap();
         // Recalculate surface overlaps
         for (surface, offset) in subsurface_iter(root, self) {
@@ -69,8 +88,14 @@ impl<B: buffers::Buffer> DefaultShell<B> {
             let state = self.get(surface).unwrap();
             let surface = state.surface();
             if let Some(buffer) = state.buffer() {
+                tracing::debug!("Surface: {}, buffer: {}", surface.object_id(), buffer.object_id());
                 let geometry = buffer.dimension();
-                let rectangle = Rectangle::from_loc_and_size(root_position + offset, geometry.to());
+                let buffer_scale_inverse =
+                    Scale::uniform(1. / (surface.current(self).buffer_scale_f32()));
+                let geometry = geometry.map(|g| (g.to() * buffer_scale_inverse).to()).to();
+                let rectangle =
+                    Rectangle::from_loc_and_size(offset.map(|o| o + root_position), geometry);
+                tracing::debug!(?geometry, ?rectangle, "output: {:?}, overlaps: {}", output.logical_geometry(), output.overlaps(&rectangle));
                 let old_outputs = surface.outputs();
 
                 // If: (there are some outputs no longer overlapping with window anymore) ||
@@ -100,30 +125,33 @@ impl<B: buffers::Buffer> DefaultShell<B> {
                     state.surface().notify_output_changed();
                 }
             } else if !surface.outputs().is_empty() {
+                tracing::debug!("Clearing outputs for surface {surface:?} because it has no buffer");
                 surface.outputs_mut().clear();
                 state.surface().notify_output_changed();
             }
         }
     }
 
-    pub fn update_size(&mut self, size: Extent<u32, Logical>) {
-        let output = self.screen.outputs.get_mut(0).unwrap();
-        let mut geometry = output.geometry();
-        let size = size.to();
-        if size != geometry.size {
+    /// Change the size of the only output in this shell.
+    pub fn update_size(&mut self, size: Extent<u32, coords::Screen>) {
+        let output = self.screen.outputs.get_mut(0).unwrap().clone();
+        if size != output.size() {
             tracing::debug!("Updating output size to {:?}", size);
-            geometry.size = size;
-            output.set_geometry(&geometry);
+            output.set_size(size);
             output.notify_change(OutputChange::GEOMETRY);
         }
 
         // Take the stack out to avoid borrowing self.
         let stack = std::mem::take(&mut self.stack);
         for window in stack.iter() {
-            self.update_subtree_outputs(window.surface_state, window.position);
+            self.update_subtree_outputs(window.surface_state, window.normalized_position(&output))
         }
         // Put the stack back.
         let _ = std::mem::replace(&mut self.stack, stack);
+    }
+
+    pub fn scale_f32(&self) -> Scale<f32> {
+        self.screen.outputs.get(0).unwrap().scale_f32()
     }
 }
 impl<B: buffers::Buffer> Shell for DefaultShell<B> {
@@ -161,21 +189,24 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
         assert!(data.is_current);
 
         if role == "xdg_toplevel" {
+            let output = self.screen.outputs.get(0).unwrap();
             let position = self.position_offset;
             let window = Window {
                 surface_state: key,
                 position,
             };
+            let normalized_position = window.normalized_position(output);
             self.position_offset += Point::new(100, 100);
             data.stack_index = Some(self.stack.push_back(window));
             tracing::debug!("Added to stack: {:?}", self.stack);
 
-            self.update_subtree_outputs(key, position);
+            self.update_subtree_outputs(key, normalized_position);
         }
     }
 
     fn post_commit(&mut self, old: Option<Self::Key>, new: Self::Key) {
         let (_, data) = &mut self.storage.get_mut(new).unwrap();
+        let output = self.screen.outputs.get(0).unwrap();
         assert!(!data.is_current);
         data.is_current = true;
         if let Some(old) = old {
@@ -185,7 +216,7 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
             if let Some(index) = old_data.stack_index.take() {
                 // The window is in the window stack, so we may need to update its outputs.
                 let window = self.stack.get(index).unwrap();
-                self.update_subtree_outputs(new, window.position);
+                self.update_subtree_outputs(new, window.normalized_position(output));
                 // If the old state is in the window stack, replace it with the new state.
                 self.stack.get_mut(index).unwrap().surface_state = new;
                 // Safety: we did the same thing above, with unwrap().
@@ -209,7 +240,7 @@ impl<B: apollo::shell::buffers::Buffer> XdgShell for super::DefaultShell<B> {
     fn layout(&self, key: Self::Key) -> Layout {
         Layout {
             position: None,
-            extent:   Some(Extent::new(1200, 900)),
+            extent:   Some(Extent::new(400, 300)),
         }
     }
 }

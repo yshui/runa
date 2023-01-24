@@ -5,41 +5,64 @@ use std::{
 
 use num_traits::{real::Real, AsPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
 
-/// Type-level marker for the logical coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Logical;
+pub mod coords {
+    /// Screen coordinates. The compositor can have a virutal "screen",
+    /// essentially a unified canvas where all the windows are drawn. This
+    /// is that coordinate system.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Screen;
 
-/// Type-level marker for the physical coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Physical;
+    /// Scale invariant screen coordinates. Used to determine intersection
+    /// between surfaces and outputs. The reason for this is, the actual
+    /// pixel size of a surface can change depends on how it's scaled, which
+    /// depends on which output an surface is on. If intersection between
+    /// surface and output is calculated using the pixel coordinates, there wll
+    /// be a circular dependency, which could create a feedback loop.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct ScreenNormalized;
 
-/// Type-level marker for the buffer coordinate space
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Buffer;
+    /// Coordinates local to an output. An output is usually a transformed part
+    /// of the screen.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Output;
 
-/// Type-level marker for raw coordinate space, provided by input devices
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Raw;
+    /// Surface local coordinates, for positioning subsurfaces (and maybe
+    /// popups).
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Surface;
 
-/// A tag trait for coordinate spaces, sealed so that only the types defined in
-/// this module can implement it.
-pub trait CoordinateSpace:
-    sealed::Sealed + Clone + Copy + Default + PartialEq + Eq + fmt::Debug
-{
+    /// Size/location in physical units like meters, inches, etc.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Physical;
+
+    /// Buffer local coordinates.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct Buffer;
+
+    /// A tag trait for coordinate spaces, sealed so that only the types defined
+    /// in this module can implement it.
+    pub trait CoordinateSpace: Clone + Copy + Default + PartialEq + Eq + std::fmt::Debug {}
+
+    /// Mapping from one coordinate space to another
+    pub trait Map: Sized {
+        type Output<Kind>
+        where
+            Kind: CoordinateSpace;
+        fn map<Kind: CoordinateSpace>(
+            self,
+            f: impl FnOnce(Self::Output<Kind>) -> Self::Output<Kind>,
+        ) -> Self::Output<Kind>;
+    }
+
+    impl CoordinateSpace for Screen {}
+    impl CoordinateSpace for ScreenNormalized {}
+    impl CoordinateSpace for Output {}
+    impl CoordinateSpace for Surface {}
+    impl CoordinateSpace for Physical {}
+    impl CoordinateSpace for Buffer {}
 }
-impl CoordinateSpace for Logical {}
-impl CoordinateSpace for Physical {}
-impl CoordinateSpace for Buffer {}
-impl CoordinateSpace for Raw {}
 
-#[doc(hidden)]
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::Logical {}
-    impl Sealed for super::Physical {}
-    impl Sealed for super::Buffer {}
-    impl Sealed for super::Raw {}
-}
+use coords::*;
 
 /// A trait about the sign of a number. We need this because `num_traits` does
 /// not define `abs` or `signum` for unsigned numbers.
@@ -90,11 +113,14 @@ pub struct Scale<N: Copy> {
     pub y: N,
 }
 
-impl<N: AsPrimitive<f64>> Scale<N> {
+impl<N: Copy> Scale<N> {
     /// Convert the underlying numerical type to f64 for floating point
     /// manipulations
     #[inline]
-    pub fn to_f64(self) -> Scale<f64> {
+    pub fn to<M: Copy + 'static>(self) -> Scale<M>
+    where
+        N: AsPrimitive<M>,
+    {
         Scale {
             x: self.x.as_(),
             y: self.y.as_(),
@@ -115,14 +141,16 @@ impl<N: Copy> Scale<N> {
     }
 }
 
-impl<N> Mul<Scale<N>> for Scale<N>
+impl<N, N2> Mul<Scale<N2>> for Scale<N>
 where
-    N: Mul<Output = N> + Copy,
+    N: Mul<N2> + Copy,
+    N2: Copy,
+    <N as Mul<N2>>::Output: Copy,
 {
-    type Output = Scale<N>;
+    type Output = Scale<<N as Mul<N2>>::Output>;
 
     #[inline]
-    fn mul(self, rhs: Scale<N>) -> Self::Output {
+    fn mul(self, rhs: Scale<N2>) -> Self::Output {
         Scale {
             x: self.x * rhs.x,
             y: self.y * rhs.y,
@@ -139,6 +167,22 @@ where
         Scale {
             x: self.x.saturating_mul(&rhs.x),
             y: self.y.saturating_mul(&rhs.y),
+        }
+    }
+}
+impl<N, N2> Div<Scale<N2>> for Scale<N>
+where
+    N: Div<N2> + Copy,
+    N2: Copy,
+    <N as Div<N2>>::Output: Copy,
+{
+    type Output = Scale<<N as Div<N2>>::Output>;
+
+    #[inline]
+    fn div(self, rhs: Scale<N2>) -> Self::Output {
+        Scale {
+            x: self.x / rhs.x,
+            y: self.y / rhs.y,
         }
     }
 }
@@ -160,7 +204,19 @@ pub struct Point<N, Kind: CoordinateSpace> {
     _kind: Kind,
 }
 
-impl<N: Copy, Kind: CoordinateSpace> Point<N, Kind> {
+impl<N, Kind: CoordinateSpace> coords::Map for Point<N, Kind> {
+    type Output<Kind2> = Point<N, Kind2> where Kind2: CoordinateSpace;
+
+    fn map<Kind2: CoordinateSpace>(
+        self,
+        f: impl FnOnce(Point<N, Kind2>) -> Point<N, Kind2>,
+    ) -> Point<N, Kind2> {
+        let mapped = Point::new(self.x, self.y);
+        f(mapped)
+    }
+}
+
+impl<N, Kind: CoordinateSpace> Point<N, Kind> {
     #[inline]
     pub fn new(x: N, y: N) -> Self {
         Point {
@@ -267,35 +323,6 @@ impl<N, Kind: CoordinateSpace> Point<N, Kind> {
     }
 }
 
-impl<N: Copy + SaturatingMul> Point<N, Logical> {
-    #[inline]
-    /// Convert this logical point to physical coordinate space according to
-    /// given scale factor
-    pub fn to_physical_saturating(self, scale: Scale<N>) -> Point<N, Physical> {
-        let Self { x, y, .. } = self.saturating_mul(scale);
-        Point::new(x, y)
-    }
-}
-impl<N: Copy + Mul<Output = N>> Point<N, Logical> {
-    pub fn to_physical(self, scale: Scale<N>) -> Point<N, Physical> {
-        let Self { x, y, .. } = self * scale;
-        Point::new(x, y)
-    }
-    // TODO: Convert this logical point to buffer coordinate space
-}
-
-impl<N: Copy + Div<Output = N>> Point<N, Physical> {
-    #[inline]
-    /// Convert this physical point to logical coordinate space by downscaling
-    /// according to given scale factor
-    pub fn to_logical(self, scale: Scale<N>) -> Point<N, Logical> {
-        let Self { x, y, .. } = self / scale;
-        Point::new(x, y)
-    }
-    // TODO: Convert this physical point to logical coordinate space according to
-    // given scale factor
-}
-
 impl<N: Add<Output = N> + Copy, Kind: CoordinateSpace> Add for Point<N, Kind> {
     type Output = Point<N, Kind>;
 
@@ -363,6 +390,21 @@ pub struct Extent<N, Kind: CoordinateSpace> {
     /// height
     pub h: N,
     _kind: Kind,
+}
+
+impl<N: Sign, Kind: CoordinateSpace> coords::Map for Extent<N, Kind> {
+    type Output<Kind2> = Extent<N, Kind2> where Kind2: CoordinateSpace;
+
+    #[inline]
+    /// Convert this physical point to logical coordinate space by scaling down
+    /// according to given scale factor
+    fn map<Kind2: CoordinateSpace>(
+        self,
+        f: impl FnOnce(Extent<N, Kind2>) -> Extent<N, Kind2>,
+    ) -> Extent<N, Kind2> {
+        let mapped = Extent::new(self.w, self.h);
+        f(mapped)
+    }
 }
 
 impl<N: Ord + Sign, Kind: CoordinateSpace> Extent<N, Kind> {
@@ -452,50 +494,6 @@ impl<N: Real + Sign, Kind: CoordinateSpace> Extent<N, Kind> {
     pub fn ceil(self) -> Extent<N, Kind> {
         Extent::new(self.w.ceil(), self.h.ceil())
     }
-}
-
-impl<N: SaturatingMul + Sign + Copy> Extent<N, Logical> {
-    #[inline]
-    /// Convert this logical size to physical coordinate space by scaling up
-    /// according to given scale factor
-    pub fn to_physical_saturating(self, scale: Scale<N>) -> Extent<N, Physical> {
-        let ret = self.saturating_mul(scale);
-        Extent::new(ret.w, ret.h)
-    }
-}
-impl<N: Mul<Output = N> + Sign + Copy> Extent<N, Logical> {
-    pub fn to_physical(self, scale: Scale<N>) -> Extent<N, Physical> {
-        let ret = self * scale;
-        Extent::new(ret.w, ret.h)
-    }
-}
-
-impl<N: Mul<Output = N> + AsPrimitive<f64> + Copy> Extent<N, Logical> {
-    /// Convenience function to convert extent to f64 before upscaling to
-    /// preserve precision
-    #[inline]
-    pub fn to_physical_f64(self, scale: Scale<f64>) -> Extent<f64, Physical> {
-        self.to().to_physical(scale)
-    }
-
-    // Convert this logical size to buffer coordinate space according to given
-    // scale factor
-    // TODO: pub fn to_buffer
-}
-
-impl<N: Div<Output = N> + Sign + Copy> Extent<N, Physical> {
-    #[inline]
-    /// Convert this physical point to logical coordinate space by scaling down
-    /// according to given scale factor
-    pub fn to_logical(self, scale: Scale<N>) -> Extent<N, Logical> {
-        let ret = self / scale;
-        Extent::new(ret.w, ret.h)
-    }
-}
-
-impl<N> Extent<N, Buffer> {
-    // TODO: Convert this physical point to logical coordinate space according to
-    // given scale factor
 }
 
 impl<N: Add<Output = N> + Sign + Copy, Kind: CoordinateSpace> Add for Extent<N, Kind> {
@@ -761,51 +759,28 @@ impl<N: SaturatingAdd + Ord, Kind: CoordinateSpace> Rectangle<N, Kind> {
     /// Checks whether a given [`Rectangle`] overlaps with this one
     #[inline]
     pub fn overlaps(self, other: &Rectangle<N, Kind>) -> bool {
-        self.loc.x <= other.loc.x.saturating_add(&other.size.w)
-            && other.loc.x <= self.loc.x.saturating_add(&self.size.w)
-            && self.loc.y <= other.loc.y.saturating_add(&other.size.h)
-            && other.loc.y <= self.loc.y.saturating_add(&self.size.h)
+        self.loc.x <= other.loc.x.saturating_add(&other.size.w) &&
+            other.loc.x <= self.loc.x.saturating_add(&self.size.w) &&
+            self.loc.y <= other.loc.y.saturating_add(&other.size.h) &&
+            other.loc.y <= self.loc.y.saturating_add(&self.size.h)
     }
 }
 
-impl<N: SaturatingMul + Sign + Copy> Rectangle<N, Logical> {
-    #[inline]
-    /// Convert this logical rectangle to physical coordinate space according to
-    /// given scale factor
-    pub fn to_physical_saturating(self, scale: Scale<N>) -> Rectangle<N, Physical> {
-        Rectangle::from_loc_and_size(
-            self.loc.to_physical_saturating(scale),
-            self.size.to_physical_saturating(scale),
-        )
-    }
-}
+impl<N: Sign + Copy, Kind: CoordinateSpace> coords::Map for Rectangle<N, Kind> {
+    type Output<Kind2> = Rectangle<N, Kind2> where Kind2: CoordinateSpace;
 
-impl<N: Mul<Output = N> + Sign + Copy> Rectangle<N, Logical> {
-    /// Convert this logical rectangle to physical coordinate space according to
-    /// given scale factor
-    #[inline]
-    pub fn to_physical(self, scale: Scale<N>) -> Rectangle<N, Physical> {
-        Rectangle {
-            loc:  self.loc.to_physical(scale),
-            size: self.size.to_physical(scale),
-        }
-    }
-}
-
-impl<N: Mul<Output = N> + AsPrimitive<f64> + Copy> Rectangle<N, Logical> {
-    // TODO: Convert this logical rectangle to buffer coordinate space according to
-    // given scale factor
-}
-
-impl<N: Div<Output = N> + Sign + Copy> Rectangle<N, Physical> {
     /// Convert this physical rectangle to logical coordinate space according to
     /// given scale factor
     #[inline]
-    pub fn to_logical(self, scale: Scale<N>) -> Rectangle<N, Logical> {
-        Rectangle {
-            loc:  self.loc.to_logical(scale),
-            size: self.size.to_logical(scale),
-        }
+    fn map<Kind2: CoordinateSpace>(
+        self,
+        f: impl FnOnce(Rectangle<N, Kind2>) -> Rectangle<N, Kind2>,
+    ) -> Rectangle<N, Kind2> {
+        let mapped = Rectangle {
+            loc:  Point::new(self.loc.x, self.loc.y),
+            size: Extent::new(self.size.w, self.size.h),
+        };
+        f(mapped)
     }
 }
 
@@ -984,12 +959,12 @@ impl std::ops::Mul for Transform {
 
 #[cfg(test)]
 mod tests {
-    use super::{Extent, Logical, Point, Rectangle, Transform};
+    use super::{Extent, Point, Rectangle, Screen, Transform};
 
     #[test]
     fn transform_rect_ident() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::Normal;
 
@@ -999,7 +974,7 @@ mod tests {
     #[test]
     fn transform_rect_90() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::_90;
 
@@ -1012,7 +987,7 @@ mod tests {
     #[test]
     fn transform_rect_180() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::_180;
 
@@ -1025,7 +1000,7 @@ mod tests {
     #[test]
     fn transform_rect_270() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::_270;
 
@@ -1038,7 +1013,7 @@ mod tests {
     #[test]
     fn transform_rect_f() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::Flipped;
 
@@ -1051,7 +1026,7 @@ mod tests {
     #[test]
     fn transform_rect_f90() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 80);
         let transform = Transform::Flipped90;
 
@@ -1064,7 +1039,7 @@ mod tests {
     #[test]
     fn transform_rect_f180() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::Flipped180;
 
@@ -1077,7 +1052,7 @@ mod tests {
     #[test]
     fn transform_rect_f270() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let area = Extent::new(70, 90);
         let transform = Transform::Flipped270;
 
@@ -1090,25 +1065,25 @@ mod tests {
     #[test]
     fn rectangle_contains_rect_itself() {
         let rect =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         assert!(rect.contains_rect(rect));
     }
 
     #[test]
     fn rectangle_contains_rect_outside() {
         let first =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let second =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(41, 61), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(41, 61), Extent::new(30, 40));
         assert!(!first.contains_rect(second));
     }
 
     #[test]
     fn rectangle_contains_rect_extends() {
         let first =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 40));
         let second =
-            Rectangle::<i32, Logical>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 45));
+            Rectangle::<i32, Screen>::from_loc_and_size(Point::new(10, 20), Extent::new(30, 45));
         assert!(!first.contains_rect(second));
     }
 }

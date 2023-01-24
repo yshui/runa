@@ -260,15 +260,17 @@ fn main() -> Result<()> {
     });
     let output_global_id = AnyGlobal::globals().count() as u32 + 1;
     let output = apollo::shell::output::Output::new(
-        Rectangle::from_extemities(Point::new(0, 0), Point::new(1920, 1080)),
         Extent::new(0, 0),
         CString::new("Crescent").unwrap(),
         CString::new("Crescent").unwrap(),
         CString::new("virtual-output-0").unwrap(),
-        3 * 120,
         output_global_id,
-    )
-    .into();
+    );
+    output.set_size(Extent::new(1920, 1080));
+    output.set_position(Point::new(0, 0));
+    output.set_logical_position(Point::new(0, 0));
+    output.set_scale(3 * 120);
+    let output = output.into();
     let window = rx.recv().unwrap();
     let server = Crescent(Rc::new(CrescentState {
         globals:  RefCell::new(AnyGlobal::globals().collect()),

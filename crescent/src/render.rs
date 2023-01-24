@@ -3,9 +3,9 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 use apollo::{
     shell::{
         buffers::{Buffer, RendererBuffer},
-        Shell,
+        Shell, xdg::TopLevel,
     },
-    utils::geometry::{Scale, Extent},
+    utils::geometry::{Scale, Extent, Transform, coords},
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
@@ -247,18 +247,29 @@ impl Renderer {
 
     fn render(&mut self, output: wgpu::SurfaceTexture) {
         use apollo::shell::surface::roles::subsurface_iter;
+        use apollo::utils::geometry::coords::Map as _;
         let shell = self.shell.borrow();
+        let output_scale = shell.scale_f32();
         self.vertices.clear();
         self.textures.clear();
         for window in shell.stack() {
             tracing::trace!(?window, "rendering window");
+            let window_scale = self.shell.borrow().get(window.surface_state).unwrap().buffer_scale_f32();
             for (subsurface, offset) in subsurface_iter(window.surface_state, &*shell) {
+                let relative_scale = output_scale / Scale::uniform(window_scale as f32);
                 let state = shell.get(subsurface).unwrap();
                 let Some(buffer) = state.buffer() else { continue };
-                let dimensions = buffer.dimension();
-                tracing::trace!(?offset, ?dimensions, "rendering subsurface {:p}", buffer);
+                let raw_dimensions = buffer.dimension();
+                // Scale the buffer size to output scale
+                let dimensions = raw_dimensions.map::<coords::Screen>(|dim| (dim.to() * relative_scale).floor().to::<u32>());
+                tracing::trace!(?offset, ?raw_dimensions, ?dimensions, ?relative_scale, window_scale, "rendering subsurface {:p}", buffer);
                 let current_index = self.vertices.len() as u16;
-                let offset = offset + window.position;
+                // Scale the offset to output scale, and Y-flip it.
+                let offset = offset.map(|o| {
+                    let mut o = (o.to() * output_scale).to::<i32>();
+                    o.y = - o.y;
+                    o + window.position
+                });
                 let mut texture = buffer.data.texture.borrow_mut();
                 let texture = texture.get_or_insert_with(|| {
                     self.device.create_texture(&wgpu::TextureDescriptor {
@@ -268,8 +279,8 @@ impl Renderer {
                         mip_level_count: 1,
                         sample_count:    1,
                         size:            wgpu::Extent3d {
-                            width:                 dimensions.w,
-                            height:                dimensions.h,
+                            width:                 raw_dimensions.w,
+                            height:                raw_dimensions.h,
                             depth_or_array_layers: 1,
                         },
                         usage:           wgpu::TextureUsages::TEXTURE_BINDING |
@@ -284,7 +295,7 @@ impl Renderer {
                             let pool = shm_buffer.pool();
                             let data = unsafe { pool.map() };
                             let offset = shm_buffer.offset() as usize;
-                            let size = shm_buffer.stride() as usize * dimensions.h as usize;
+                            let size = shm_buffer.stride() as usize * raw_dimensions.h as usize;
                             #[cfg(feature = "dump_texture")]
                             {
                                 use std::{fs::File, io::BufWriter};
@@ -295,7 +306,7 @@ impl Renderer {
                                 .to_owned();
                                 let ref mut file = BufWriter::new(File::create(dump_path).unwrap());
                                 let mut encoder =
-                                    png::Encoder::new(file, dimensions.w, dimensions.h);
+                                    png::Encoder::new(file, raw_dimensions.w, raw_dimensions.h);
                                 encoder.set_color(png::ColorType::Rgba);
                                 encoder.set_depth(png::BitDepth::Eight);
                                 let mut writer = encoder.write_header().unwrap();
@@ -319,12 +330,12 @@ impl Renderer {
                                     ),
                                     // TODO: reject 0 height
                                     rows_per_image: Some(
-                                        NonZeroU32::new(dimensions.h as u32).unwrap(),
+                                        NonZeroU32::new(raw_dimensions.h as u32).unwrap(),
                                     ),
                                 },
                                 wgpu::Extent3d {
-                                    width:                 dimensions.w,
-                                    height:                dimensions.h,
+                                    width:                 raw_dimensions.w,
+                                    height:                raw_dimensions.h,
                                     depth_or_array_layers: 1,
                                 },
                             );
@@ -361,12 +372,12 @@ impl Renderer {
                     Vertex {
                         position: [
                             offset.x as f32 + dimensions.w as f32,
-                            offset.y as f32 + dimensions.h as f32,
+                            offset.y as f32 - dimensions.h as f32,
                         ],
                         uv:       [1., 1.],
                     },
                     Vertex {
-                        position: [offset.x as f32, offset.y as f32 + dimensions.h as f32],
+                        position: [offset.x as f32, offset.y as f32 - dimensions.h as f32],
                         uv:       [0., 1.],
                     },
                 ]);

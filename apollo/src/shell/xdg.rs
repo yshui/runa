@@ -22,62 +22,9 @@ pub struct Layout {
 }
 
 pub trait XdgShell: Shell {
-    fn layout(&self, key: Self::Key) -> Layout {
+    fn layout(&self, key: &Self::Token) -> Layout {
         Layout::default()
     }
-}
-
-fn surface_commit<S: XdgShell>(
-    shell: &mut S,
-    surface: &Rc<super::surface::Surface<S>>,
-    mut role: RefMut<'_, Surface>,
-    object_id: u32,
-) -> Result<(), &'static str> {
-    tracing::debug!("Committing xdg_surface");
-    if surface.pending(shell).buffer().is_some() && role.last_ack.is_none() {
-        return Err("Cannot attach buffer before the initial configure sequence is completed")
-    }
-    if role.pending_serial.is_empty() && role.last_ack.is_none() {
-        // We haven't sent out the first configure event yet.
-        // notify the configure listener which will send out the configure event.
-        tracing::debug!("sending initial configure event");
-        let alive = role
-            .configure_listener
-            .handle
-            .set(role.configure_listener.slot);
-        assert!(alive, "Surface not destructed after client disconnected");
-        role.configure_listener
-            .pending_configure
-            .borrow_mut()
-            .insert(object_id, shell.layout(surface.current_key()));
-    }
-    role.geometry = role.pending_geometry;
-
-    drop(role); // We are going into user code, drop the borrow to be safe.
-    let (current, pending) = (surface.current_key(), surface.pending_key());
-    shell.rotate(current, pending);
-    surface.swap_states();
-    shell.post_commit(Some(current), pending);
-
-    Ok(())
-}
-
-fn toplevel_commit<S: XdgShell>(
-    shell: &mut S,
-    surface: &Rc<super::surface::Surface<S>>,
-) -> Result<(), &'static str> {
-    tracing::debug!("Committing xdg_toplevel");
-    let mut role = surface.role_mut::<TopLevel>().unwrap();
-    let object_id = role.object_id;
-    role.current = role.pending;
-
-    surface_commit(
-        shell,
-        surface,
-        RefMut::map(role, |r| &mut r.base),
-        object_id,
-    )?;
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +72,35 @@ impl Surface {
             },
             object_id:          object_id.0,
         }
+    }
+
+    fn commit<S: XdgShell>(
+        &mut self,
+        shell: &mut S,
+        surface: &super::surface::Surface<S>,
+        object_id: u32,
+    ) -> Result<(), &'static str> {
+        tracing::debug!("Committing xdg_surface");
+        if surface.pending(shell).buffer().is_some() && self.last_ack.is_none() {
+            return Err("Cannot attach buffer before the initial configure sequence is completed")
+        }
+        if self.pending_serial.is_empty() && self.last_ack.is_none() {
+            // We haven't sent out the first configure event yet.
+            // notify the configure listener which will send out the configure event.
+            tracing::debug!("sending initial configure event");
+            let alive = self
+                .configure_listener
+                .handle
+                .set(self.configure_listener.slot);
+            assert!(alive, "Surface not destructed after client disconnected");
+            self.configure_listener
+                .pending_configure
+                .borrow_mut()
+                .insert(object_id, shell.layout(&surface.current_key()));
+        }
+        self.geometry = self.pending_geometry;
+
+        Ok(())
     }
 }
 
@@ -213,11 +189,17 @@ impl<S: XdgShell> super::surface::Role<S> for TopLevel {
         }
     }
 
-    fn commit_fn(
-        &self,
-    ) -> Option<fn(&mut S, &Rc<super::surface::Surface<S>>) -> Result<(), &'static str>> {
-        tracing::debug!("commit_fn xdg_toplevel");
-        Some(toplevel_commit::<S>)
+    fn pre_commit(
+        &mut self,
+        shell: &mut S,
+        surface: &super::surface::Surface<S>,
+    ) -> Result<(), &'static str> {
+        tracing::debug!("Committing xdg_toplevel");
+        let object_id = self.object_id;
+        self.current = self.pending;
+
+        self.base.commit(shell, surface, object_id)?;
+        Ok(())
     }
 }
 

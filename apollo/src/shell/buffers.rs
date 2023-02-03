@@ -7,7 +7,7 @@ use crate::utils::geometry::{Extent, coords};
 /// If you want to add a new type of buffer to use with this crate, you need to
 /// provide a `&dyn Buffer` from [`ObjectMeta::provide`] function your buffer
 /// object implements.
-pub trait Buffer: 'static {
+pub trait Buffer: std::fmt::Debug + 'static {
     // TODO: take rectangles
     fn damage(&self);
     fn clear_damage(&self);
@@ -135,7 +135,7 @@ where
         }
     }
 }
-impl<Data: 'static> Buffer for RendererBuffer<Data> {
+impl<Data: std::fmt::Debug + 'static> Buffer for RendererBuffer<Data> {
     #[inline]
     fn damage(&self) {
         self.buffer.damage()

@@ -1,37 +1,47 @@
 pub mod buffers;
+pub mod output;
 pub mod surface;
 pub mod xdg;
-pub mod output;
 use std::cell::RefCell;
 
 pub trait Shell: Sized + 'static {
-    /// The key to surfaces. Default value of `Key` must be an invalid key.
-    /// Using the default key should always result in an error, or getting None.
-    type Key: std::fmt::Debug + Copy + PartialEq + Eq + Default;
+    /// A token to surfaces.
+    ///
+    /// Eq and PartialEq should compare if the keys point to the same surface
+    /// state.
+    ///
+    /// Tokens to surface states should be reference counted, if a token to
+    /// a surface state exists, the surface state should not be freed.
+    ///
+    /// A token must be released, impls of Shell can choose to panic
+    /// if it was dropped it without being released.
+    type Token: std::fmt::Debug + Copy + PartialEq + Eq;
+
     /// A buffer type. We allow a user supplied buffer type instead of `dyn
     /// Buffer` to avoid virutal call overhead, and allow for a more
     /// flexible Buffer trait.
     type Buffer: buffers::Buffer;
+
     /// Allocate a SurfaceState and returns a handle to it.
-    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key;
-    /// Deallocate a SurfaceState.
-    ///
-    /// # Panic
-    ///
-    /// Panics if the handle is invalid.
-    fn deallocate(&mut self, key: Self::Key);
+    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token;
+
+    /// Release a token.
+    fn destroy(&mut self, key: Self::Token);
 
     /// Get a reference to a SurfaceState by key.
     ///
     /// Returns None if the key is invalid.
-    fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>>;
+    fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self>;
+
     /// Get a mutable reference to a SurfaceState.
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut surface::SurfaceState<Self>>;
-    /// Called right after `commit`. `from` is the incoming current state, `to`
-    /// is the incoming pending state & the outgoing current state. This
-    /// function should call `rotate` function on the surface state, which
-    /// will copy the state from `from` to `to`.
-    fn rotate(&mut self, to: Self::Key, from: Self::Key);
+    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self>;
+
+    /// Get mutable references to multiple SurfaceStates.
+    ///
+    /// # Panic
+    ///
+    /// Panics if any of the keys are invalid, or if any two of the keys are equal.
+    fn get_disjoint_mut<const N: usize>(&mut self, keys: [Self::Token; N]) -> [&mut surface::SurfaceState<Self>; N];
 
     /// Callback which is called when a role is added to a surface corresponds
     /// to the given surface state. A role can be attached using a committed
@@ -40,12 +50,16 @@ pub trait Shell: Sized + 'static {
     /// # Panic
     ///
     /// Panics if the handle is invalid.
-    fn role_added(&mut self, key: Self::Key, role: &'static str);
+    fn role_added(&mut self, key: Self::Token, role: &'static str);
+    fn role_deactivated(&mut self, key: Self::Token, role: &'static str);
 
     /// A commit happened on the surface which used to have surface state `old`.
     /// The new state is `new`. If `old` is None, this is the first commit
     /// on the surface. After this call returns, `new` is considered currently
     /// committed.
+    ///
+    /// old can be equal to new, if no changes has been made to double buffered
+    /// surface states since the last commit.
     ///
     /// Note, for synced subsurface, this is called when `new` became cached
     /// state.
@@ -54,7 +68,8 @@ pub trait Shell: Sized + 'static {
     ///
     /// This function is allowed to panic if either handle is invalid. Or if
     /// `old` has never been committed before.
-    fn post_commit(&mut self, old: Option<Self::Key>, new: Self::Key);
+    fn post_commit(&mut self, old: Option<Self::Token>, new: Self::Token);
+
     /// Add a listener to be notified when the shell has been rendered.
     /// TODO: change to per-surface listener, like for the configure event
     fn add_render_listener(&self, listener: (wl_server::events::EventHandle, usize));

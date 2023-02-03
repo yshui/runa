@@ -13,7 +13,7 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{cell::RefCell, collections::VecDeque, future::Future, rc::Rc};
+use std::{future::Future, rc::Rc};
 
 use derivative::Derivative;
 use wl_protocol::wayland::{
@@ -24,13 +24,14 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{Client, State},
     error,
-    objects::{wayland_object, Object, DISPLAY_ID}, server::Globals, events::DispatchTo,
+    events::DispatchTo,
+    objects::{wayland_object, Object, DISPLAY_ID},
 };
 
 use crate::{
     globals::OutputAndCompositorState,
-    shell::{self, buffers::HasBuffer, output::Output, surface::roles, HasShell, Shell, ShellOf},
-    utils::{geometry::Point, Double, RcPtr, WeakPtr},
+    shell::{self, buffers::HasBuffer, surface::roles, HasShell, Shell, ShellOf},
+    utils::geometry::Point,
 };
 
 #[derive(Derivative)]
@@ -42,9 +43,12 @@ fn deallocate_surface<Ctx: Client>(
     ctx: &mut Ctx,
 ) where
     Ctx::ServerContext: HasShell,
+    Ctx: State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>,
 {
-    let mut shell = ctx.server_context().shell().borrow_mut();
-    this.0.destroy(&mut shell);
+    let server_context = ctx.server_context().clone();
+    let mut shell = server_context.shell().borrow_mut();
+    this.0
+        .destroy(&mut shell, &mut ctx.state_mut().commit_scratch_buffer);
 }
 
 #[derive(Debug)]
@@ -96,7 +100,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
 impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
-    Ctx: State<OutputAndCompositorState>,
+    Ctx: State<OutputAndCompositorState<S>>,
     Ctx::Object: From<wl_server::objects::Callback>,
 {
     type Error = error::Error;
@@ -204,13 +208,18 @@ where
     fn commit<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::CommitFut<'a> {
         async move {
             use crate::shell::buffers::Buffer;
+            let server_context = ctx.server_context().clone();
             let released_buffer = {
-                let mut shell = ctx.server_context().shell().borrow_mut();
+                let mut shell = server_context.shell().borrow_mut();
                 let old_buffer = self.0.current(&shell).buffer().cloned();
                 self.0
-                    .commit(&mut shell)
+                    .commit(&mut shell, &mut ctx.state_mut().commit_scratch_buffer)
                     .map_err(wl_server::error::Error::UnknownFatalError)?;
+
                 let new_buffer = self.0.current(&shell).buffer().cloned();
+                drop(shell);
+
+                // TODO: this released_buffer calculation is wrong.
                 if let Some(old_buffer) = old_buffer {
                     if new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer)) {
                         Some(old_buffer.object_id())
@@ -281,6 +290,7 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
+            let server_context = ctx.server_context().clone();
             let state = ctx.state_mut();
             if state.surfaces.remove(&object_id).is_none() {
                 panic!("Incosistent compositor state, surface {object_id} not found");
@@ -291,8 +301,12 @@ where
                 .write_end()
                 .borrow_mut()
                 .remove(&object_id);
-            self.0
-                .destroy(&mut ctx.server_context().shell().borrow_mut());
+
+            self.0.destroy(
+                &mut server_context.shell().borrow_mut(),
+                &mut state.commit_scratch_buffer,
+            );
+
             ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
@@ -309,7 +323,8 @@ pub struct Compositor;
 impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell,
-    Ctx: State<OutputAndCompositorState> + DispatchTo<crate::globals::Compositor>,
+    Ctx: State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>
+        + DispatchTo<crate::globals::Compositor>,
     Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = error::Error;
@@ -323,8 +338,8 @@ where
         object_id: u32,
         id: wl_types::NewId,
     ) -> Self::CreateSurfaceFut<'a> {
-        use wl_server::connection::Objects;
         use futures_util::future::ready;
+        use wl_server::connection::Objects;
 
         use crate::shell::surface;
         if ctx.objects().borrow().get(id.0).is_none() {
@@ -336,9 +351,15 @@ where
             let mut shell = shell.borrow_mut();
             let surface = Rc::new(surface::Surface::new(id));
             let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
-            let pending = shell.allocate(surface::SurfaceState::new(surface.clone()));
+            let current_state = shell.get_mut(current);
+            current_state.stack_index = Some(current_state.stack_mut().push_back(
+                crate::shell::surface::SurfaceStackEntry {
+                    token:    current,
+                    position: Point::new(0, 0),
+                },
+            ));
             surface.set_current(current);
-            surface.set_pending(pending);
+            surface.set_pending(current);
             shell.post_commit(None, current);
 
             // Listen for output change events
@@ -425,17 +446,8 @@ where
                 .0
                 .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
-            let parent = role.parent.pending_mut(&mut shell);
-            let parent_antirole = parent
-                .antirole_mut::<roles::SubsurfaceParent<<Ctx::ServerContext as HasShell>::Shell>>(
-                    *roles::SUBSURFACE_PARENT_SLOT,
-                )
-                .unwrap();
-            parent_antirole
-                .children
-                .get_mut(role.stack_index)
-                .unwrap()
-                .position = Point::new(x, y);
+            let parent = role.parent().upgrade().unwrap().pending_mut(&mut shell);
+            parent.stack_mut().get_mut(role.stack_index).unwrap().position = Point::new(x, y);
             Ok(())
         }
     }

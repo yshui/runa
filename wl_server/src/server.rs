@@ -7,7 +7,11 @@ use derivative::Derivative;
 
 use crate::{events::EventHandle, globals::Global, Serial};
 
-pub trait Server: Sized {
+/// A server context.
+///
+/// A server context must be cloneable. Clone of the server context should create another shared
+/// reference to the same server context. (i.e. work like an Rc)
+pub trait Server: Clone + Sized {
     /// The per client context type.
     type ClientContext: crate::connection::Client<ServerContext = Self>;
     type Conn;

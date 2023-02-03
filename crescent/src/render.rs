@@ -3,9 +3,9 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 use apollo::{
     shell::{
         buffers::{Buffer, RendererBuffer},
-        Shell, xdg::TopLevel,
+        Shell,
     },
-    utils::geometry::{Scale, Extent, Transform, coords},
+    utils::geometry::{coords, Extent, Scale},
 };
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
@@ -246,28 +246,39 @@ impl Renderer {
     }
 
     fn render(&mut self, output: wgpu::SurfaceTexture) {
-        use apollo::shell::surface::roles::subsurface_iter;
-        use apollo::utils::geometry::coords::Map as _;
+        use apollo::{shell::surface::roles::subsurface_iter, utils::geometry::coords::Map as _};
         let shell = self.shell.borrow();
         let output_scale = shell.scale_f32();
         self.vertices.clear();
         self.textures.clear();
         for window in shell.stack() {
             tracing::trace!(?window, "rendering window");
-            let window_scale = self.shell.borrow().get(window.surface_state).unwrap().buffer_scale_f32();
+            let window_scale = self
+                .shell
+                .borrow()
+                .get(window.surface_state)
+                .buffer_scale_f32();
             for (subsurface, offset) in subsurface_iter(window.surface_state, &*shell) {
-                let relative_scale = output_scale / Scale::uniform(window_scale as f32);
-                let state = shell.get(subsurface).unwrap();
+                let relative_scale = output_scale / Scale::uniform(window_scale);
+                let state = shell.get(subsurface);
                 let Some(buffer) = state.buffer() else { continue };
                 let raw_dimensions = buffer.dimension();
                 // Scale the buffer size to output scale
-                let dimensions = raw_dimensions.map::<coords::Screen>(|dim| (dim.to() * relative_scale).floor().to::<u32>());
-                tracing::trace!(?offset, ?raw_dimensions, ?dimensions, ?relative_scale, window_scale, "rendering subsurface {:p}", buffer);
-                let current_index = self.vertices.len() as u16;
+                let dimensions = raw_dimensions
+                    .map::<coords::Screen>(|dim| (dim.to() * relative_scale).floor().to::<u32>());
+                tracing::trace!(
+                    ?offset,
+                    ?raw_dimensions,
+                    ?dimensions,
+                    ?relative_scale,
+                    window_scale,
+                    "rendering subsurface {:p}",
+                    buffer
+                );
                 // Scale the offset to output scale, and Y-flip it.
                 let offset = offset.map(|o| {
                     let mut o = (o.to() * output_scale).to::<i32>();
-                    o.y = - o.y;
+                    o.y = -o.y;
                     o + window.position
                 });
                 let mut texture = buffer.data.texture.borrow_mut();

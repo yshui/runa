@@ -9,7 +9,7 @@ use apollo::{
         buffers::{HasBuffer, RendererBuffer},
         HasShell,
     },
-    utils::geometry::{Extent, Point, Rectangle},
+    utils::geometry::{Extent, Point},
 };
 use futures_util::{FutureExt, TryStreamExt};
 use smol::{LocalExecutor, Task};
@@ -21,7 +21,7 @@ use wl_server::{
     impl_state_any_for,
     objects::Object,
     renderer_capability::RendererCapability,
-    server::{Globals, Server},
+    server::Globals,
 };
 mod render;
 mod shell;

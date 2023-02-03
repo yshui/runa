@@ -36,7 +36,8 @@ impl MaybeConstInit for Compositor {
 }
 impl<Ctx: Client> Bind<Ctx> for Compositor
 where
-    Ctx: State<OutputAndCompositorState> + DispatchTo<Self>,
+    Ctx:
+        State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>> + DispatchTo<Self>,
     Ctx::ServerContext: HasShell,
     Ctx::Object: From<crate::objects::compositor::Compositor>,
 {
@@ -62,7 +63,9 @@ where
 
 impl<Ctx> EventHandler<Ctx> for Compositor
 where
-    Ctx: DispatchTo<Self> + State<OutputAndCompositorState> + Client,
+    Ctx: DispatchTo<Self>
+        + State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>
+        + Client,
     Ctx::ServerContext: HasShell,
 {
     type Error = std::io::Error;
@@ -255,9 +258,13 @@ impl MaybeConstInit for Output {
     const INIT: Option<Self> = None;
 }
 
-impl<Ctx: Client + DispatchTo<Self> + State<OutputAndCompositorState>> Bind<Ctx> for Output
+impl<Ctx> Bind<Ctx> for Output
 where
     Ctx::Object: From<crate::objects::Output>,
+    Ctx::ServerContext: HasShell,
+    Ctx: Client
+        + DispatchTo<Self>
+        + State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<<Ctx>::Object>> + 'a
         where
@@ -296,33 +303,37 @@ where
 use crate::shell::output::Output as ShellOutput;
 #[derive(Derivative)]
 #[derivative(Default)]
-pub struct OutputAndCompositorState {
-    changed_outputs:            Double<HashMap<WeakPtr<ShellOutput>, OutputChange>>,
+pub struct OutputAndCompositorState<S: crate::shell::Shell> {
+    changed_outputs:                  Double<HashMap<WeakPtr<ShellOutput>, OutputChange>>,
     /// Map from output's global id to the output object ids in client's
     /// context.
-    pub(crate) output_bindings: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
+    pub(crate) output_bindings:       HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
     /// New bindings of outputs, to which we haven't sent the initial events.
     /// A pair of (object_id, weak ref to the output)
-    pub(crate) new_bindings:    Vec<(u32, WeakPtr<ShellOutput>)>,
+    pub(crate) new_bindings:          Vec<(u32, WeakPtr<ShellOutput>)>,
     /// Map of surface ids to outputs they are currently on
-    pub(crate) surfaces:        HashMap<u32, HashSet<WeakPtr<ShellOutput>>>,
+    pub(crate) surfaces:              HashMap<u32, HashSet<WeakPtr<ShellOutput>>>,
     /// List of surfaces that have changed output
-    pub(crate) output_changed:  Double<HashMap<u32, OutputSet>>,
+    pub(crate) output_changed:        Double<HashMap<u32, OutputSet>>,
     /// A buffer to store add/removed outputs, a tuple of
     /// (output object id, surface object id, whether it was added)
     #[derivative(Default(value = "Some(Default::default())"))]
-    output_changed_buffer:      Option<Vec<(u32, u32, bool)>>,
+    output_changed_buffer:            Option<Vec<(u32, u32, bool)>>,
     #[derivative(Default(value = "Some(Default::default())"))]
-    buffer:                     Option<HashSet<u32>>,
+    buffer:                           Option<HashSet<u32>>,
     /// A buffer for holding fram callback list, so we don't need to hold borrow
     /// or surface states across awaits.
     #[derivative(Default(value = "Some(Default::default())"))]
-    tmp_frame_callback_buffer:  Option<VecDeque<u32>>,
+    tmp_frame_callback_buffer:        Option<VecDeque<u32>>,
+    pub(crate) commit_scratch_buffer: Vec<S::Token>,
 }
 
 impl<Ctx> EventHandler<Ctx> for Output
 where
-    Ctx: DispatchTo<Output> + State<OutputAndCompositorState> + Client,
+    Ctx::ServerContext: HasShell,
+    Ctx: DispatchTo<Output>
+        + State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>
+        + Client,
 {
     type Error = std::io::Error;
 

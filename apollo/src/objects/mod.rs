@@ -9,7 +9,7 @@ use wl_server::{
     objects::{wayland_object, DISPLAY_ID},
 };
 
-use crate::{shell::{buffers::HasBuffer, output::Output as ShellOutput}, utils::WeakPtr};
+use crate::{shell::{buffers::HasBuffer, output::Output as ShellOutput, HasShell}, utils::WeakPtr};
 
 pub mod compositor;
 pub mod shm;
@@ -46,9 +46,10 @@ pub struct Output(pub(crate) Weak<ShellOutput>);
 #[wayland_object]
 impl<Ctx> wl_output::RequestDispatch<Ctx> for Output
 where
+    Ctx::ServerContext: HasShell,
     Ctx: Client
         + DispatchTo<crate::globals::Output>
-        + State<crate::globals::OutputAndCompositorState>,
+        + State<crate::globals::OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = wl_server::error::Error;
 

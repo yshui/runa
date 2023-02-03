@@ -1,4 +1,4 @@
-use std::{ffi::CString, rc::Rc};
+use std::rc::Rc;
 
 use apollo::{
     shell::{
@@ -41,11 +41,11 @@ impl<B: buffers::Buffer> DefaultShell<B> {
 
 #[derive(Debug)]
 pub struct Window {
-    pub surface_state: DefaultKey,
+    pub(crate) surface_state: DefaultKey,
     /// Position of the top-left corner of the window.
     /// i.e. the window covers from (position.x, position.y - extent.height)
     /// to (position.x + extent.width, position.y)
-    pub position:      Point<i32, coords::Screen>,
+    pub position:             Point<i32, coords::Screen>,
 }
 
 impl Window {
@@ -81,21 +81,32 @@ impl<B: buffers::Buffer> DefaultShell<B> {
         root_position: Point<i32, coords::ScreenNormalized>,
     ) {
         use apollo::utils::geometry::coords::Map as _;
-        let output = self.screen.outputs.get(0).unwrap();
         // Recalculate surface overlaps
-        for (surface, offset) in subsurface_iter(root, self) {
-            tracing::debug!("Scanning surface {surface:?} for output updates");
-            let state = self.get(surface).unwrap();
-            let surface = state.surface();
+        for (surface_token, offset) in subsurface_iter(root, self) {
+            let state = self.get(surface_token);
+            let surface = state.surface().upgrade().unwrap();
+            tracing::debug!(
+                "Scanning surface {surface_token:?} for output updates, surface id: {}",
+                surface.object_id()
+            );
             if let Some(buffer) = state.buffer() {
-                tracing::debug!("Surface: {}, buffer: {}", surface.object_id(), buffer.object_id());
+                tracing::debug!("Buffer: {}", buffer.object_id());
                 let geometry = buffer.dimension();
                 let buffer_scale_inverse =
                     Scale::uniform(1. / (surface.current(self).buffer_scale_f32()));
                 let geometry = geometry.map(|g| (g.to() * buffer_scale_inverse).to()).to();
+                // FIXME: offset is in Surface coordinates which is Y-down, while our output
+                // coordinates are Y-up.
                 let rectangle =
                     Rectangle::from_loc_and_size(offset.map(|o| o + root_position), geometry);
-                tracing::debug!(?geometry, ?rectangle, "output: {:?}, overlaps: {}", output.logical_geometry(), output.overlaps(&rectangle));
+                let output = self.screen.outputs.get(0).unwrap();
+                tracing::debug!(
+                    ?geometry,
+                    ?rectangle,
+                    "output: {:?}, overlaps: {}",
+                    output.logical_geometry(),
+                    output.overlaps(&rectangle)
+                );
                 let old_outputs = surface.outputs();
 
                 // If: (there are some outputs no longer overlapping with window anymore) ||
@@ -122,12 +133,14 @@ impl<B: buffers::Buffer> DefaultShell<B> {
                         outputs.insert(Rc::downgrade(output).into());
                     }
                     tracing::debug!("New outputs: {outputs:?}");
-                    state.surface().notify_output_changed();
+                    state.surface().upgrade().unwrap().notify_output_changed();
                 }
             } else if !surface.outputs().is_empty() {
-                tracing::debug!("Clearing outputs for surface {surface:?} because it has no buffer");
+                tracing::debug!(
+                    "Clearing outputs for surface {surface:?} because it has no buffer"
+                );
                 surface.outputs_mut().clear();
-                state.surface().notify_output_changed();
+                state.surface().upgrade().unwrap().notify_output_changed();
             }
         }
     }
@@ -154,37 +167,36 @@ impl<B: buffers::Buffer> DefaultShell<B> {
         self.screen.outputs.get(0).unwrap().scale_f32()
     }
 }
+
 impl<B: buffers::Buffer> Shell for DefaultShell<B> {
     type Buffer = B;
-    type Key = DefaultKey;
+    type Token = DefaultKey;
 
     #[tracing::instrument(skip_all)]
-    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Key {
+    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token {
         self.storage.insert((state, DefaultShellData::default()))
     }
 
-    fn deallocate(&mut self, key: Self::Key) {
-        tracing::debug!("Deallocating {:?}", key);
-        let (_, data) = self.storage.remove(key).unwrap();
-        if let Some(stack_index) = data.stack_index {
-            self.stack.remove(stack_index);
-        }
+    fn destroy(&mut self, key: Self::Token) {
+        self.storage.remove(key).unwrap();
+        tracing::debug!("Released {:?}, #surfaces left: {}", key, self.storage.len());
     }
 
-    fn get(&self, key: Self::Key) -> Option<&surface::SurfaceState<Self>> {
-        self.storage.get(key).map(|v| &v.0)
+    fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self> {
+        // This unwrap cannot fail, unless there is a bug in this implementation to
+        // cause it to return an invalid token.
+        self.storage.get(key).map(|v| &v.0).unwrap()
     }
 
-    fn get_mut(&mut self, key: Self::Key) -> Option<&mut surface::SurfaceState<Self>> {
-        self.storage.get_mut(key).map(|v| &mut v.0)
+    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {
+        self.storage.get_mut(key).map(|v| &mut v.0).unwrap()
     }
 
-    fn rotate(&mut self, to_key: Self::Key, from_key: Self::Key) {
-        let [to, from] = self.storage.get_disjoint_mut([to_key, from_key]).unwrap();
-        to.0.rotate_from(&from.0);
+    fn get_disjoint_mut<const N: usize>(&mut self, keys: [Self::Token; N]) -> [&mut surface::SurfaceState<Self>; N] {
+        self.storage.get_disjoint_mut(keys).unwrap().map(|v| &mut v.0)
     }
 
-    fn role_added(&mut self, key: Self::Key, role: &'static str) {
+    fn role_added(&mut self, key: Self::Token, role: &'static str) {
         let (_, data) = self.storage.get_mut(key).unwrap();
         assert!(data.is_current);
 
@@ -204,21 +216,46 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
         }
     }
 
-    fn post_commit(&mut self, old: Option<Self::Key>, new: Self::Key) {
+    fn role_deactivated(&mut self, key: Self::Token, role: &'static str) {
+        let (_, data) = self.storage.get_mut(key).unwrap();
+        assert!(data.is_current);
+        tracing::debug!("Deactivated role {:?} for {:?}", role, key);
+
+        if role == "xdg_toplevel" {
+            self.stack.remove(data.stack_index.unwrap()).unwrap();
+            tracing::debug!("Removed {key:?} from stack: {:?}", self.stack);
+        }
+    }
+
+    fn post_commit(&mut self, old: Option<Self::Token>, new: Self::Token) {
+        tracing::debug!("post_commit: old: {old:?}, new: {new:?}");
+        if old == Some(new) {
+            // Nothing changed.
+            return
+        }
+
         let (_, data) = &mut self.storage.get_mut(new).unwrap();
         let output = self.screen.outputs.get(0).unwrap();
-        assert!(!data.is_current);
+        assert!(
+            !data.is_current,
+            "a current state was committed to current again? {new:?}"
+        );
         data.is_current = true;
         if let Some(old) = old {
             let (_, old_data) = &mut self.storage.get_mut(old).unwrap();
             assert!(old_data.is_current);
             old_data.is_current = false;
+            // old_data might still be used, but if old_data.stack_index is Some(), then
+            // it must be a root surface and thus the old data is no longer needed after
+            // commit.
             if let Some(index) = old_data.stack_index.take() {
                 // The window is in the window stack, so we may need to update its outputs.
                 let window = self.stack.get(index).unwrap();
                 self.update_subtree_outputs(new, window.normalized_position(output));
                 // If the old state is in the window stack, replace it with the new state.
-                self.stack.get_mut(index).unwrap().surface_state = new;
+                let window = self.stack.get_mut(index).unwrap();
+                window.surface_state = new;
+
                 // Safety: we did the same thing above, with unwrap().
                 unsafe { self.storage.get_mut(new).unwrap_unchecked() }
                     .1
@@ -237,7 +274,7 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
 }
 
 impl<B: apollo::shell::buffers::Buffer> XdgShell for super::DefaultShell<B> {
-    fn layout(&self, key: Self::Key) -> Layout {
+    fn layout(&self, _key: &Self::Token) -> Layout {
         Layout {
             position: None,
             extent:   Some(Extent::new(400, 300)),

@@ -141,9 +141,7 @@ impl<O> Objects<O> for Store<O> {
     }
 }
 
-/// A client connection
-pub trait Client: Sized + crate::events::EventMux + 'static {
-    type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
+pub trait WriteMessage {
     type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a,
@@ -151,15 +149,6 @@ pub trait Client: Sized + crate::events::EventMux + 'static {
     type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
     where
         Self: 'a;
-    type ObjectStore: Objects<Self::Object>;
-    type Object: Object<Self> + std::fmt::Debug;
-    type DispatchFut<'a, R>: Future<Output = bool> + 'a
-    where
-        Self: 'a,
-        R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
-    /// Return the server context singleton.
-    fn server_context(&self) -> &Self::ServerContext;
-
     /// Send a message to the client.
     fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
         &'a self,
@@ -172,6 +161,32 @@ pub trait Client: Sized + crate::events::EventMux + 'static {
 
     /// Flush connection
     fn flush(&self) -> Self::Flush<'_>;
+}
+
+/// A client connection
+pub trait Client: Sized + crate::events::EventMux + 'static {
+    type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
+    type ObjectStore: Objects<Self::Object>;
+    type Connection: WriteMessage + Clone + 'static;
+    type Object: Object<Self> + std::fmt::Debug;
+    type DispatchFut<'a, R>: Future<Output = bool> + 'a
+    where
+        Self: 'a,
+        R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+    /// Return the server context singleton.
+    fn server_context(&self) -> &Self::ServerContext;
+    fn connection(&self) -> &Self::Connection;
+    /// Split a reference to the client into its components.
+    fn split_mut(
+        &mut self,
+    ) -> (
+        &mut Self::ServerContext,
+        &mut Self::Connection,
+        &mut Self::ObjectStore,
+    );
+    /// Ditto
+    fn split(&self) -> (&Self::ServerContext, &Self::Connection, &Self::ObjectStore);
+
     fn objects(&self) -> &RefCell<Self::ObjectStore>;
     /// Spawn a client dependent task from the context. When the client is
     /// disconnected, the task should be cancelled, otherwise the task
@@ -213,9 +228,9 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::Objects;
+                use $crate::connection::{Objects, WriteMessage};
                 let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
-                                    let _ = self.send(DISPLAY_ID, wl_display::events::Error {
+                                    let _ = self.connection().send(DISPLAY_ID, wl_display::events::Error {
                                         object_id: wl_types::Object(object_id),
                                         code: 0,
                                         message: wl_types::str!("Invalid object ID"),
@@ -244,6 +259,7 @@ macro_rules! impl_dispatch {
                     // We are going to disconnect the client so we don't care about the
                     // error.
                     fatal |= self
+                        .connection()
                         .send(DISPLAY_ID, wl_display::events::Error {
                             object_id: wl_types::Object(object_id),
                             code:      error_code,
@@ -351,6 +367,43 @@ pub fn flush_to(
     Flush { conn }
 }
 
+#[derive(Derivative)]
+#[derivative(Debug, Clone(bound = ""))]
+pub struct Connection<C> {
+    conn: Rc<RefCell<C>>,
+}
+
+impl<C> Connection<C> {
+    pub fn new(conn: C) -> Self {
+        Connection {
+            conn: Rc::new(RefCell::new(conn)),
+        }
+    }
+}
+
+impl<C: AsyncBufWriteWithFd + Unpin> WriteMessage for Connection<C> {
+    type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a where C: 'a;
+    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where
+        C: 'a,
+        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
+
+    fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+        &'a self,
+        object_id: u32,
+        msg: M,
+    ) -> Self::Send<'c, M>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
+        send_to(&self.conn, object_id, msg)
+    }
+
+    fn flush(&self) -> Self::Flush<'_> {
+        flush_to(&self.conn)
+    }
+}
+
 #[derive(Debug)]
 pub struct EventSerial<D> {
     serials:     HashMap<u32, (D, std::time::Instant)>,
@@ -445,8 +498,8 @@ macro_rules! impl_state_any_for {
             fn state<'a>(&mut self) -> (&Self, &T) {
                 // Safety: We are doing this to bypass the borrow checker, we make it forget
                 // that this &T came from a &mut self, so we will be able to return a &self
-                // later. This is safe because after this we never use self mutably again after the
-                // trick.
+                // later. This is safe because after this we never use self mutably again after
+                // the trick.
                 unsafe {
                     let t = &*(self.$member.get_or_default::<T>() as *const _);
                     (self, t)

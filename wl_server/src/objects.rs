@@ -88,11 +88,12 @@ where
         callback: wl_types::NewId,
     ) -> Self::SyncFut<'a> {
         async move {
+            use crate::connection::WriteMessage;
             debug!("wl_display.sync {}", callback);
             if ctx.objects().borrow().get(callback.0).is_some() {
                 return Err(crate::error::Error::IdExists(callback.0))
             }
-            ctx.send(
+            ctx.connection().send(
                 callback.0,
                 wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
                     // TODO: setup event serial
@@ -100,7 +101,7 @@ where
                 }),
             )
             .await?;
-            ctx.send(
+            ctx.connection().send(
                 DISPLAY_ID,
                 wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
             )
@@ -270,7 +271,8 @@ impl<Ctx> Object<Ctx> for Callback {
 
 impl Callback {
     pub async fn fire(object_id: u32, data: u32, ctx: &impl Client) -> std::io::Result<()> {
-        ctx.send(
+        use crate::connection::WriteMessage;
+        ctx.connection().send(
             object_id,
             wl_protocol::wayland::wl_callback::v1::events::Done {
                 callback_data: data,
@@ -280,10 +282,10 @@ impl Callback {
         let callback = ctx.objects().borrow().get(object_id).unwrap().clone();
         let interface = callback.interface();
         let Some(_): Option<&Self> = callback.cast() else {
-            panic!("object is not callback, it's {}", interface)
+            panic!("object is not callback, it's {interface}")
         };
         ctx.objects().borrow_mut().remove(object_id).unwrap();
-        ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+        ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
             .await?;
         Ok(())
     }

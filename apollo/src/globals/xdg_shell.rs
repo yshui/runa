@@ -9,7 +9,8 @@ use wl_server::{
     connection::{Client, State},
     events::{DispatchTo, EventHandler},
     globals::{Bind, MaybeConstInit},
-    objects::Object, impl_global_for,
+    impl_global_for,
+    objects::Object,
 };
 
 use crate::shell::{xdg::Layout, HasShell};
@@ -53,6 +54,7 @@ where
             let mut pending_configure = state.pending_configure.replace(scratch_buffer);
             // Avoid holding Ref across await
             for (surface, layout) in pending_configure.drain() {
+                use wl_server::connection::WriteMessage;
                 let surface = ctx.objects().borrow().get(surface).unwrap().clone();
                 // Send role specific configure event
                 let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<<Ctx::ServerContext as HasShell>::Shell>>() {
@@ -63,7 +65,7 @@ where
                             .unwrap()
                             .object_id;
                         if let Some(size) = layout.extent {
-                            ctx.send(role_object_id, xdg_toplevel::events::Configure {
+                            ctx.connection().send(role_object_id, xdg_toplevel::events::Configure {
                                 height: size.h as i32,
                                 width:  size.w as i32,
                                 states: &[],
@@ -84,10 +86,11 @@ where
                     role.pending_serial.push_back(serial);
                     (serial, role.object_id)
                 };
-                ctx.send(role_object_id, xdg_surface::events::Configure {
-                    serial: serial.get(),
-                })
-                .await?;
+                ctx.connection()
+                    .send(role_object_id, xdg_surface::events::Configure {
+                        serial: serial.get(),
+                    })
+                    .await?;
             }
             // retain allocated buffer
             let state = ctx.state_mut();

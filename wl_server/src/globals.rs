@@ -153,7 +153,7 @@ where
 
     type Fut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn invoke<'a>(ctx: &'a mut Ctx) -> Self::Fut<'a> {
+    fn invoke(ctx: &mut Ctx) -> Self::Fut<'_> {
         // Allocation: Global addition and removal should be rare.
         use crate::server::Globals;
         let (ro_ctx, state) = ctx.state();
@@ -198,9 +198,10 @@ where
             None
         };
         async move {
+            use crate::connection::WriteMessage;
             for registry_id in registry_objects.into_iter() {
                 for (id, interface, version, _) in added.iter() {
-                    ctx.send(registry_id, wl_registry::events::Global {
+                    ctx.connection().send(registry_id, wl_registry::events::Global {
                         name:      *id,
                         interface: wl_types::Str(interface.as_c_str()),
                         version:   *version,
@@ -208,7 +209,7 @@ where
                     .await?;
                 }
                 for (id, _) in deleted.iter() {
-                    ctx.send(registry_id, wl_registry::events::GlobalRemove { name: *id })
+                    ctx.connection().send(registry_id, wl_registry::events::GlobalRemove { name: *id })
                         .await?;
                 }
             }
@@ -217,7 +218,7 @@ where
                     for (id, global) in known_globals.iter() {
                         let global = global.upgrade().unwrap();
                         let interface = std::ffi::CString::new(global.interface()).unwrap();
-                        ctx.send(registry_id, wl_registry::events::Global {
+                        ctx.connection().send(registry_id, wl_registry::events::Global {
                             name:      *id,
                             interface: wl_types::Str(interface.as_c_str()),
                             version:   global.version(),

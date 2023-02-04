@@ -16,7 +16,7 @@ use smol::{LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
-    connection::{self, Client as _, Store},
+    connection::{self, Client as _, Store, Connection},
     events::EventMux,
     impl_state_any_for,
     objects::Object,
@@ -109,7 +109,7 @@ impl wl_server::server::Server for Crescent {
         self.0
             .executor
             .spawn(async move {
-                use wl_server::connection::Objects as _;
+                use wl_server::connection::{Objects as _, WriteMessage as _};
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
                     store: RefCell::new(Store::default()),
@@ -117,7 +117,7 @@ impl wl_server::server::Server for Crescent {
                     event_flags: Default::default(),
                     state,
                     tasks: Default::default(),
-                    tx: Rc::new(RefCell::new(BufWriterWithFd::new(tx))),
+                    tx: Connection::new(BufWriterWithFd::new(tx)),
                 };
                 client_ctx
                     .objects()
@@ -128,7 +128,7 @@ impl wl_server::server::Server for Crescent {
                 let _span = tracing::debug_span!("main loop").entered();
                 loop {
                     // Flush output before we start waiting.
-                    client_ctx.flush().await?;
+                    client_ctx.connection().flush().await?;
                     futures_util::select! {
                         _ = Pin::new(&mut read).next_message().fuse() => {
                             if client_ctx.dispatch(Pin::new(&mut read)).await {
@@ -141,7 +141,7 @@ impl wl_server::server::Server for Crescent {
                         }
                     }
                 }
-                client_ctx.flush().await?;
+                client_ctx.connection().flush().await?;
                 Ok::<(), wl_server::error::Error>(())
             })
             .detach();
@@ -174,7 +174,7 @@ pub struct CrescentClient {
     event_flags: wl_server::events::EventFlags,
     state:       Crescent,
     tasks:       RefCell<Vec<Task<()>>>,
-    tx:          Rc<RefCell<BufWriterWithFd<wl_io::WriteWithFd>>>,
+    tx:          Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
 }
 
 impl Drop for CrescentClient {
@@ -197,11 +197,7 @@ impl connection::Client for CrescentClient {
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
-
-    type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a;
-    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a
-    where
-        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
+    type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
 
     wl_server::impl_dispatch!();
 
@@ -209,20 +205,24 @@ impl connection::Client for CrescentClient {
         &self.state
     }
 
-    fn send<'a, 'b, 'c, M: wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-        &'a self,
-        object_id: u32,
-        msg: M,
-    ) -> Self::Send<'c, M>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        connection::send_to(&self.tx, object_id, msg)
+    fn connection(&self) -> &Self::Connection {
+        &self.tx
     }
 
-    fn flush(&self) -> Self::Flush<'_> {
-        connection::flush_to(&self.tx)
+    fn split(&self) -> (&Self::ServerContext, &Self::Connection, &Self::ObjectStore) {
+        todo!()
+        //(&self.state, &self.tx, &self.store)
+    }
+
+    fn split_mut(
+            &mut self,
+        ) -> (
+            &mut Self::ServerContext,
+            &mut Self::Connection,
+            &mut Self::ObjectStore,
+        ) {
+        todo!()
+        //(&mut self.state, &mut self.tx, &mut self.store)
     }
 
     fn objects(&self) -> &RefCell<Self::ObjectStore> {

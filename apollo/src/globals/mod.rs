@@ -157,19 +157,21 @@ where
 
             // Send enter/leave events.
             for (output_object_id, surface_object_id, added) in output_changed_buffer.drain(..) {
-                ctx.send(
-                    surface_object_id,
-                    if added {
-                        wl_surface::Event::Enter(wl_surface::events::Enter {
-                            output: wl_types::Object(output_object_id),
-                        })
-                    } else {
-                        wl_surface::Event::Leave(wl_surface::events::Leave {
-                            output: wl_types::Object(output_object_id),
-                        })
-                    },
-                )
-                .await?;
+                use wl_server::connection::WriteMessage;
+                ctx.connection()
+                    .send(
+                        surface_object_id,
+                        if added {
+                            wl_surface::Event::Enter(wl_surface::events::Enter {
+                                output: wl_types::Object(output_object_id),
+                            })
+                        } else {
+                            wl_surface::Event::Leave(wl_surface::events::Leave {
+                                output: wl_types::Object(output_object_id),
+                            })
+                        },
+                    )
+                    .await?;
             }
 
             // Put the buffer back so we can reuse it next time.
@@ -232,9 +234,11 @@ where
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         let formats = client.server_context().formats();
         async move {
+            use wl_server::connection::WriteMessage;
             // Send known buffer formats
             for format in formats {
                 client
+                    .connection()
                     .send(
                         object_id,
                         wl_shm::Event::Format(wl_shm::events::Format { format }),
@@ -372,8 +376,10 @@ where
                 output_global.send_all(ro_ctx, *object_id).await?;
                 // Send enter for surfaces already on the output
                 for (surface_id, surface_outputs) in &state.surfaces {
+                    use wl_server::connection::WriteMessage;
                     if surface_outputs.contains(weak_output) {
                         ro_ctx
+                            .connection()
                             .send(*surface_id, wl_surface::events::Enter {
                                 output: wl_types::Object(*object_id),
                             })

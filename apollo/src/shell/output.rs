@@ -5,7 +5,7 @@ use std::{
 };
 
 use hashbrown::HashMap;
-use wl_server::events::EventHandle;
+use wl_server::{events::EventHandle, connection::WriteMessage};
 
 use crate::utils::{
     geometry::{coords, Extent, Point, Rectangle, Scale, Transform},
@@ -200,6 +200,7 @@ impl Output {
         let geometry = self.geometry();
         let physical_size = self.physical_size();
         client
+            .connection()
             .send(
                 object_id,
                 wl_output::Event::Geometry(wl_output::events::Geometry {
@@ -224,6 +225,7 @@ impl Output {
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
+            .connection()
             .send(
                 object_id,
                 wl_output::Event::Name(wl_output::events::Name {
@@ -240,6 +242,7 @@ impl Output {
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
+            .connection()
             .send(object_id, wl_output::events::Scale {
                 factor: (self.scale.get().x / 120) as i32,
             })
@@ -253,6 +256,7 @@ impl Output {
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
+            .connection()
             .send(
                 object_id,
                 wl_output::Event::Done(wl_output::events::Done {}),

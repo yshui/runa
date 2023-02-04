@@ -169,8 +169,9 @@ where
     ) -> Self::CreatePoolFut<'a> {
         tracing::debug!("creating shm_pool with size {}", size);
         async move {
+            use wl_server::connection::WriteMessage;
             if size <= 0 {
-                ctx.send(DISPLAY_ID, wl_display::events::Error {
+                ctx.connection().send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_shm::enums::Error::InvalidStride as u32,
                     object_id: object_id.into(),
                     message:   wl_types::str!("invalid size"),
@@ -210,7 +211,7 @@ where
                 })),
             };
             if ctx.objects().borrow_mut().insert(id.0, pool).is_err() {
-                ctx.send(DISPLAY_ID, wl_display::events::Error {
+                ctx.connection().send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_display::enums::Error::InvalidObject as u32,
                     object_id: object_id.into(),
                     message:   wl_types::str!("id already in use"),
@@ -338,8 +339,9 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
+            use wl_server::connection::WriteMessage;
             ctx.objects().borrow_mut().remove(object_id).unwrap();
-            ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

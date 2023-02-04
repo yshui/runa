@@ -90,7 +90,7 @@ pub fn wayland_listener(
     use rustix::fd::AsFd;
     let xdg_dirs = xdg::BaseDirectories::new()?;
     let path = xdg_dirs.place_runtime_file(display)?;
-    let lock_path = xdg_dirs.place_runtime_file(format!("{}.lock", display))?;
+    let lock_path = xdg_dirs.place_runtime_file(format!("{display}.lock"))?;
     let lock = rustix::fs::openat(
         rustix::fs::cwd(),
         lock_path,
@@ -114,7 +114,7 @@ pub fn wayland_listener_auto(
     const MAX_DISPLAYNO: u32 = 32;
     let mut last_err = None;
     for i in 0..MAX_DISPLAYNO {
-        let display = format!("wayland-{}", i);
+        let display = format!("wayland-{i}");
         match wayland_listener(&display) {
             Ok((listener, guard)) => return Ok((listener, guard)),
             e @ Err(_) => {

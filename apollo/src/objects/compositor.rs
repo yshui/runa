@@ -208,6 +208,7 @@ where
     fn commit<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::CommitFut<'a> {
         async move {
             use crate::shell::buffers::Buffer;
+            use wl_server::connection::WriteMessage;
             let server_context = ctx.server_context().clone();
             let released_buffer = {
                 let mut shell = server_context.shell().borrow_mut();
@@ -231,7 +232,7 @@ where
                 }
             };
             if let Some(released_buffer) = released_buffer {
-                ctx.send(released_buffer, wl_buffer::events::Release {})
+                ctx.connection().send(released_buffer, wl_buffer::events::Release {})
                     .await?;
             }
             Ok(())
@@ -290,6 +291,7 @@ where
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         async move {
+            use wl_server::connection::WriteMessage;
             let server_context = ctx.server_context().clone();
             let state = ctx.state_mut();
             if state.surfaces.remove(&object_id).is_none() {
@@ -307,7 +309,7 @@ where
                 &mut state.commit_scratch_buffer,
             );
 
-            ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

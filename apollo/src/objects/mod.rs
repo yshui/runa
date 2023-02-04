@@ -31,9 +31,10 @@ where
     type DestroyFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+        use wl_server::connection::WriteMessage;
         ctx.objects().borrow_mut().remove(object_id);
         async move {
-            ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -77,7 +78,8 @@ where
             .new_bindings
             .retain(|(new_object_id, _)| *new_object_id != object_id);
         async move {
-            ctx.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            use wl_server::connection::WriteMessage;
+            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

@@ -112,7 +112,7 @@ impl wl_server::server::Server for Crescent {
                 use wl_server::connection::{Objects as _, WriteMessage as _};
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
-                    store: RefCell::new(Store::default()),
+                    store: Store::default(),
                     per_client: Default::default(),
                     event_flags: Default::default(),
                     state,
@@ -121,7 +121,6 @@ impl wl_server::server::Server for Crescent {
                 };
                 client_ctx
                     .objects()
-                    .borrow_mut()
                     .insert(1, wl_server::objects::Display)
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
@@ -169,7 +168,7 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:       RefCell<connection::Store<AnyObject>>,
+    store:       connection::Store<AnyObject>,
     per_client:  wl_server::utils::UnboundedAggregate,
     event_flags: wl_server::events::EventFlags,
     state:       Crescent,
@@ -179,8 +178,7 @@ pub struct CrescentClient {
 
 impl Drop for CrescentClient {
     fn drop(&mut self) {
-        let empty_store = Default::default();
-        let mut store = self.store.replace(empty_store);
+        let store = self.store.clone();
         store.clear_for_disconnect(self)
     }
 }
@@ -209,23 +207,7 @@ impl connection::Client for CrescentClient {
         &self.tx
     }
 
-    fn split(&self) -> (&Self::ServerContext, &Self::Connection, &Self::ObjectStore) {
-        todo!()
-        //(&self.state, &self.tx, &self.store)
-    }
-
-    fn split_mut(
-            &mut self,
-        ) -> (
-            &mut Self::ServerContext,
-            &mut Self::Connection,
-            &mut Self::ObjectStore,
-        ) {
-        todo!()
-        //(&mut self.state, &mut self.tx, &mut self.store)
-    }
-
-    fn objects(&self) -> &RefCell<Self::ObjectStore> {
+    fn objects(&self) -> &Self::ObjectStore {
         &self.store
     }
 

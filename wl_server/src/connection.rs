@@ -3,7 +3,13 @@
 //!
 //! Here are also some default implementations of these traits.
 
-use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::ready};
+use std::{
+    cell::{Cell, Ref, RefCell, RefMut},
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    task::ready,
+};
 
 use derivative::Derivative;
 use hashbrown::{hash_map, HashMap};
@@ -13,131 +19,130 @@ use crate::objects::Object;
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
-/// Per client mapping from object ID to objects. This is the reference
-/// implementation of [`Objects`].
-#[derive(Debug, Derivative)]
-#[derivative(Default(bound = ""))]
-pub struct Store<Object> {
-    map:     HashMap<u32, Rc<Object>>,
-    #[derivative(Default(value = "Some(CLIENT_MAX_ID + 1)"))]
-    next_id: Option<u32>,
-    id_used: u32,
-}
-
-pub trait Entry<'a, Object>: Sized {
-    fn is_vacant(&self) -> bool;
-    fn or_insert(self, v: impl Into<Object>) -> &'a mut Object;
-}
-
-impl<'a, Object> Entry<'a, Object> for StoreEntry<'a, Object> {
-    fn is_vacant(&self) -> bool {
-        match self {
-            hash_map::Entry::Vacant(_) => true,
-            hash_map::Entry::Occupied(_) => false,
-        }
-    }
-
-    fn or_insert(self, v: impl Into<Object>) -> &'a mut Object {
-        let r = hash_map::Entry::or_insert(self, Rc::new(v.into()));
-        // Safety: we just created the Rc, so it must have only one reference
-        unsafe { Rc::get_mut(r).unwrap_unchecked() }
-    }
-}
-
 /// A bundle of objects.
 ///
-/// Usually this is the set of objects a client has bound to.
-pub trait Objects<O> {
-    type Entry<'a>: Entry<'a, O>
+/// Usually this is the set of objects a client has bound to. When cloned, the
+/// result should reference to the same bundle of objects.
+///
+/// Although all the methods are callable with a shared reference, if you are holding the value
+/// returned by a `get(...)` call, you should not try to modify the store, using methods like
+/// `insert`, `remove`, etc., which may cause a panic. Drop the `ObjectRef` first.
+pub trait Objects<O>: Clone {
+    type ObjectRef<'a>: std::ops::Deref<Target = O>
     where
-        Self: 'a,
-        O: 'a;
+        O: 'a,
+        Self: 'a;
     /// Insert object into the store with the given ID. Returns Ok(()) if
     /// successful, Err(T) if the ID is already in use.
-    fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+    fn insert<T: Into<O>>(&self, id: u32, object: T) -> Result<(), T>;
     /// Allocate a new ID for the client, associate `object` for it.
     /// According to the wayland spec, the ID must start from 0xff000000
-    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
-    fn remove(&mut self, id: u32) -> Option<Rc<O>>;
+    fn allocate<T: Into<O>>(&self, object: T) -> Result<u32, T>;
+    fn remove(&self, id: u32) -> Option<O>;
     /// Get an object from the store.
-    ///
-    /// Why does this return a `Rc`? Because we need mutable access to the
-    /// client context while holding a reference to the object, which would
-    /// in turn borrow the client context if it's not a Rc.
-    fn get(&self, id: u32) -> Option<&Rc<O>>;
-    fn entry(&mut self, id: u32) -> Self::Entry<'_>;
+    fn get(&self, id: u32) -> Option<Self::ObjectRef<'_>>;
+    fn try_insert_with(&self, id: u32, f: impl FnOnce() -> O) -> bool;
 }
 impl<O> Store<O> {
     /// Remove all objects from the store. MUST be called before the store is
     /// dropped, to ensure on_disconnect is called for all objects.
-    pub fn clear_for_disconnect<Ctx>(&mut self, ctx: &mut Ctx)
+    pub fn clear_for_disconnect<Ctx>(&self, ctx: &mut Ctx)
     where
         O: Object<Ctx>,
     {
-        for (_, ref mut obj) in self.map.drain() {
-            Rc::get_mut(obj).unwrap().on_disconnect(ctx);
+        for (_, ref mut obj) in self.map.borrow_mut().drain() {
+            obj.on_disconnect(ctx);
         }
     }
 }
+
+/// Per client mapping from object ID to objects. This is the reference
+/// implementation of [`Objects`].
+#[derive(Debug, Derivative)]
+#[derivative(Default(bound = ""), Clone(bound = ""))]
+pub struct Store<Object> {
+    map:     Rc<RefCell<HashMap<u32, Object>>>,
+    #[derivative(Default(value = "Rc::new(Some(CLIENT_MAX_ID + 1).into())"))]
+    next_id: Rc<Cell<Option<u32>>>,
+    id_used: Rc<Cell<u32>>,
+}
+
 impl<Object> Drop for Store<Object> {
     fn drop(&mut self) {
-        assert!(self.map.is_empty(), "Store not cleared before drop");
+        assert!(
+            self.map.borrow().is_empty() || Rc::strong_count(&self.map) > 1,
+            "Store not cleared before drop"
+        );
     }
 }
 
-pub type StoreEntry<'a, O> = hash_map::Entry<'a, u32, Rc<O>, hash_map::DefaultHashBuilder>;
+pub type StoreEntry<'a, O> = RefMut<'a, hash_map::Entry<'a, u32, Rc<O>, hash_map::DefaultHashBuilder>>;
 impl<O> Objects<O> for Store<O> {
-    type Entry<'a> = StoreEntry<'a, O> where O: 'a;
+    type ObjectRef<'a> = Ref<'a, O> where O: 'a, Self: 'a;
 
     #[inline]
-    fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
+    fn insert<T: Into<O>>(&self, object_id: u32, object: T) -> Result<(), T> {
         if object_id > CLIENT_MAX_ID {
             return Err(object)
         }
 
-        match self.map.entry(object_id) {
+        match self.map.borrow_mut().entry(object_id) {
             hash_map::Entry::Occupied(_) => Err(object),
             hash_map::Entry::Vacant(v) => {
-                v.insert(Rc::new(object.into()));
+                v.insert(object.into());
                 Ok(())
             },
         }
     }
 
     #[inline]
-    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T> {
-        let Some(id) = self.next_id else { return Err(object) };
-        self.id_used += 1;
+    fn allocate<T: Into<O>>(&self, object: T) -> Result<u32, T> {
+        let Some(id) = self.next_id.get() else { return Err(object) };
+        self.id_used.set(self.id_used.get() + 1);
 
-        self.next_id = if self.id_used >= u32::MAX - CLIENT_MAX_ID {
-            None
-        } else {
-            let mut curr = id;
-            // Find the next unused id
-            loop {
-                curr = curr.wrapping_add(1);
-                if !self.map.contains_key(&curr) {
-                    break
+        self.next_id
+            .set(if self.id_used.get() >= u32::MAX - CLIENT_MAX_ID {
+                None
+            } else {
+                let mut curr = id;
+                let map = self.map.borrow();
+                // Find the next unused id
+                loop {
+                    curr = curr.wrapping_add(1);
+                    if !map.contains_key(&curr) {
+                        break
+                    }
                 }
-            }
-            Some(curr)
-        };
+                Some(curr)
+            });
 
-        let inserted = self.map.insert(id, Rc::new(object.into()));
+        let inserted = self.map.borrow_mut().insert(id, object.into());
         assert!(inserted.is_none());
         Ok(id)
     }
 
-    fn remove(&mut self, object_id: u32) -> Option<Rc<O>> {
-        self.map.remove(&object_id)
+    fn remove(&self, object_id: u32) -> Option<O> {
+        self.map.borrow_mut().remove(&object_id)
     }
 
-    fn get(&self, object_id: u32) -> Option<&Rc<O>> {
-        self.map.get(&object_id)
+    fn get(&self, object_id: u32) -> Option<Self::ObjectRef<'_>> {
+        if self.map.borrow().contains_key(&object_id) {
+            Some(Ref::map(self.map.borrow(), |r| r.get(&object_id).unwrap()))
+        } else {
+            None
+        }
     }
 
-    fn entry(&mut self, id: u32) -> Self::Entry<'_> {
-        self.map.entry(id)
+    fn try_insert_with(&self, id: u32, f: impl FnOnce() -> O) -> bool {
+        let mut map = self.map.borrow_mut();
+        let entry = map.entry(id);
+        match entry {
+            hash_map::Entry::Occupied(_) => false,
+            hash_map::Entry::Vacant(v) => {
+                v.insert(f());
+                true
+            },
+        }
     }
 }
 
@@ -176,18 +181,7 @@ pub trait Client: Sized + crate::events::EventMux + 'static {
     /// Return the server context singleton.
     fn server_context(&self) -> &Self::ServerContext;
     fn connection(&self) -> &Self::Connection;
-    /// Split a reference to the client into its components.
-    fn split_mut(
-        &mut self,
-    ) -> (
-        &mut Self::ServerContext,
-        &mut Self::Connection,
-        &mut Self::ObjectStore,
-    );
-    /// Ditto
-    fn split(&self) -> (&Self::ServerContext, &Self::Connection, &Self::ObjectStore);
-
-    fn objects(&self) -> &RefCell<Self::ObjectStore>;
+    fn objects(&self) -> &Self::ObjectStore;
     /// Spawn a client dependent task from the context. When the client is
     /// disconnected, the task should be cancelled, otherwise the task
     /// should keep running.
@@ -229,18 +223,10 @@ macro_rules! impl_dispatch {
                     Err(e) => return true,
                 };
                 use $crate::connection::{Objects, WriteMessage};
-                let Some(obj) = self.objects().borrow().get(object_id).map(Rc::clone) else {
-                                    let _ = self.connection().send(DISPLAY_ID, wl_display::events::Error {
-                                        object_id: wl_types::Object(object_id),
-                                        code: 0,
-                                        message: wl_types::str!("Invalid object ID"),
-                                    }).await; // don't care about the error.
-                                    return true;
-                                };
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::Client>::Object as $crate::objects::Object<
                         Self,
-                    >>::dispatch(obj.as_ref(), self, object_id, (buf, fd))
+                    >>::dispatch(self, object_id, (buf, fd))
                     .await;
                 let (mut fatal, error) = match ret {
                     Ok(_) => (false, None),
@@ -276,7 +262,7 @@ macro_rules! impl_dispatch {
                         tracing::error!(
                             "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
                              {}@{object_id}, opcode: {opcode}",
-                            obj.interface()
+                            self.objects().get(object_id).unwrap().interface()
                         );
                         fatal = true;
                     }

@@ -3,14 +3,13 @@
 //! well as a `InterfaceMeta` trait to provide information about the interface,
 //! and allowing them to be cast into trait objects and stored together.
 
-use std::future::Future;
+use std::{convert::Infallible, future::Future};
 
-pub use wl_macros::{wayland_object, Object};
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
 use tracing::debug;
-use std::convert::Infallible;
+pub use wl_macros::{wayland_object, Object};
 
 use crate::{
     connection::{Client, Objects, State},
@@ -32,7 +31,7 @@ pub trait Object<Ctx> {
     where
         Ctx: 'a,
         Self: 'a;
-    type Error;
+    type Error: wl_protocol::ProtocolError;
     type Fut<'a>: Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
     where
         Ctx: 'a,
@@ -52,11 +51,11 @@ pub trait Object<Ctx> {
     {
         (self as &dyn std::any::Any).downcast_ref()
     }
-    /// Dispatch requests to the interface implementation. Returns a future, that resolves
-    /// to (Result, usize, usize), which are the result of the request, the number of bytes
-    /// and file descriptors in the message, respectively.
+    /// Dispatch requests to the interface implementation. Returns a future,
+    /// that resolves to (Result, usize, usize), which are the result of the
+    /// request, the number of bytes and file descriptors in the message,
+    /// respectively.
     fn dispatch<'a>(
-        &'a self,
         ctx: &'a mut Ctx,
         object_id: u32,
         msg: Self::Request<'a>,
@@ -82,7 +81,6 @@ where
     type SyncFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a, Self: 'a;
 
     fn sync<'a>(
-        &'a self,
         ctx: &'a mut Ctx,
         _object_id: u32,
         callback: wl_types::NewId,
@@ -90,28 +88,29 @@ where
         async move {
             use crate::connection::WriteMessage;
             debug!("wl_display.sync {}", callback);
-            if ctx.objects().borrow().get(callback.0).is_some() {
+            if ctx.objects().get(callback.0).is_some() {
                 return Err(crate::error::Error::IdExists(callback.0))
             }
-            ctx.connection().send(
-                callback.0,
-                wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
-                    // TODO: setup event serial
-                    callback_data: 0,
-                }),
-            )
-            .await?;
-            ctx.connection().send(
-                DISPLAY_ID,
-                wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
-            )
-            .await?;
+            ctx.connection()
+                .send(
+                    callback.0,
+                    wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
+                        // TODO: setup event serial
+                        callback_data: 0,
+                    }),
+                )
+                .await?;
+            ctx.connection()
+                .send(
+                    DISPLAY_ID,
+                    wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
+                )
+                .await?;
             Ok(())
         }
     }
 
     fn get_registry<'a>(
-        &'a self,
         ctx: &'a mut Ctx,
         _object_id: u32,
         registry: wl_types::NewId,
@@ -119,7 +118,8 @@ where
         async move {
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
-            if ctx.objects().borrow().get(registry.0).is_none() {
+            let exists = ctx.objects().get(registry.0).is_some();
+            if !exists {
                 let global = {
                     let server_context = ctx.server_context();
                     let globals = server_context.globals().borrow();
@@ -138,7 +138,6 @@ where
                 };
                 let object = global.bind(ctx, registry.0).await?;
                 ctx.objects()
-                    .borrow_mut()
                     .insert(registry.0, object)
                     .unwrap();
                 Ok(())
@@ -211,7 +210,6 @@ where
     type BindFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn bind<'a>(
-        &'a self,
         ctx: &'a mut Ctx,
         _object_id: u32,
         name: u32,
@@ -232,13 +230,13 @@ where
             // was reused.
             let (ro_ctx, state) = ctx.state();
             let known_globals = &state.known_globals;
-            if ro_ctx.objects().borrow().get(id.0).is_some() {
+            if ro_ctx.objects().get(id.0).is_some() {
                 return Err(crate::error::Error::IdExists(id.0))
             }
             let global = known_globals.get(&name).and_then(|g| g.upgrade());
             if let Some(global) = global {
                 let object = global.bind(ctx, id.0).await?;
-                ctx.objects().borrow_mut().insert(id.0, object).unwrap(); // can't fail
+                ctx.objects().insert(id.0, object).unwrap(); // can't fail
                 Ok(())
             } else {
                 Err(crate::error::Error::UnknownGlobal(name))
@@ -260,7 +258,6 @@ impl<Ctx> Object<Ctx> for Callback {
     }
 
     fn dispatch<'a>(
-        &'a self,
         _ctx: &'a mut Ctx,
         _object_id: u32,
         msg: Self::Request<'a>,
@@ -279,12 +276,14 @@ impl Callback {
             },
         )
         .await?;
-        let callback = ctx.objects().borrow().get(object_id).unwrap().clone();
-        let interface = callback.interface();
-        let Some(_): Option<&Self> = callback.cast() else {
+        {
+            let callback = ctx.objects().get(object_id).unwrap();
+            let interface = callback.interface();
+            let Some(_): Option<&Self> = callback.cast() else {
             panic!("object is not callback, it's {interface}")
         };
-        ctx.objects().borrow_mut().remove(object_id).unwrap();
+        }
+        ctx.objects().remove(object_id).unwrap();
         ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
             .await?;
         Ok(())

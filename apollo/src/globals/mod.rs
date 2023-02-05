@@ -87,12 +87,14 @@ where
             let surfaces = &state.surfaces;
             let time = crate::time::elapsed().as_millis() as u32;
             for (surface, _) in surfaces {
-                let surface = ro_ctx.objects().borrow().get(*surface).unwrap().clone(); // don't hold
-                                                                                        // the Ref
-                let surface: &SurfaceObject<ShellOf<Ctx::ServerContext>> = surface.cast().unwrap();
+                let surface = crate::objects::compositor::get_surface_from_ctx::<
+                    _,
+                    SurfaceObject<ShellOf<Ctx::ServerContext>>,
+                >(ro_ctx, *surface)
+                .unwrap();
                 {
                     let mut shell = ro_ctx.server_context().shell().borrow_mut();
-                    let current = surface.0.current_mut(&mut shell);
+                    let current = surface.current_mut(&mut shell);
                     std::mem::swap(&mut current.frame_callback, &mut tmp_frame_callback_buffer);
                 }
                 let fired = tmp_frame_callback_buffer.len();
@@ -101,7 +103,7 @@ where
                 }
                 // Remove fired callbacks from pending state
                 let mut shell = ro_ctx.server_context().shell().borrow_mut();
-                let pending = surface.0.pending_mut(&mut shell);
+                let pending = surface.pending_mut(&mut shell);
                 for _ in 0..fired {
                     pending.frame_callback.pop_front();
                 }

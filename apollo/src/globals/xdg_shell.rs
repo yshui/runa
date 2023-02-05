@@ -10,7 +10,6 @@ use wl_server::{
     events::{DispatchTo, EventHandler},
     globals::{Bind, MaybeConstInit},
     impl_global_for,
-    objects::Object,
 };
 
 use crate::shell::{xdg::Layout, HasShell};
@@ -54,8 +53,8 @@ where
             let mut pending_configure = state.pending_configure.replace(scratch_buffer);
             // Avoid holding Ref across await
             for (surface, layout) in pending_configure.drain() {
-                use wl_server::connection::WriteMessage;
-                let surface = ctx.objects().borrow().get(surface).unwrap().clone();
+                use wl_server::{connection::WriteMessage, objects::Object};
+                let surface = ctx.objects().get(surface).unwrap();
                 // Send role specific configure event
                 let surface = match surface.cast::<crate::objects::xdg_shell::TopLevel<<Ctx::ServerContext as HasShell>::Shell>>() {
                     Some(toplevel) => {

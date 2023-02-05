@@ -9,7 +9,10 @@ use wl_server::{
     objects::{wayland_object, DISPLAY_ID},
 };
 
-use crate::{shell::{buffers::HasBuffer, output::Output as ShellOutput, HasShell}, utils::WeakPtr};
+use crate::{
+    shell::{buffers::HasBuffer, output::Output as ShellOutput, HasShell},
+    utils::WeakPtr,
+};
 
 pub mod compositor;
 pub mod shm;
@@ -30,11 +33,12 @@ where
 
     type DestroyFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn destroy<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+    fn destroy<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
         use wl_server::connection::WriteMessage;
-        ctx.objects().borrow_mut().remove(object_id);
+        ctx.objects().remove(object_id);
         async move {
-            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection()
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -56,9 +60,11 @@ where
 
     type ReleaseFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn release<'a>(&'a self, ctx: &'a mut Ctx, object_id: u32) -> Self::ReleaseFut<'a> {
-        ctx.objects().borrow_mut().remove(object_id);
-        if let Some(output) = self.0.upgrade() {
+    fn release<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::ReleaseFut<'a> {
+        use wl_server::objects::Object;
+        let this = ctx.objects().remove(object_id).unwrap();
+        let this: &Self = this.cast().unwrap();
+        if let Some(output) = this.0.upgrade() {
             let handle = (
                 ctx.event_handle(),
                 <Ctx as DispatchTo<crate::globals::Output>>::SLOT,
@@ -67,7 +73,7 @@ where
         }
         // Remove this binding from recorded binding in the state
         let state = ctx.state_mut();
-        let weak_output: WeakPtr<_> = self.0.clone().into();
+        let weak_output: WeakPtr<_> = this.0.clone().into();
         let removed = state
             .output_bindings
             .get_mut(&weak_output)
@@ -79,7 +85,8 @@ where
             .retain(|(new_object_id, _)| *new_object_id != object_id);
         async move {
             use wl_server::connection::WriteMessage;
-            ctx.connection().send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection()
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

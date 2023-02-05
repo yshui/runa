@@ -96,10 +96,10 @@ impl Parse for DispatchImpl {
             match item {
                 syn::ImplItem::Method(method) => {
                     let mut args = Vec::new();
-                    for arg in method.sig.inputs.iter().skip(3) {
+                    for arg in method.sig.inputs.iter().skip(2) {
                         // Ignore the first 3 arguments: self, ctx, object_id
                         match arg {
-                            syn::FnArg::Receiver(_) => die!(&arg => "multiple receivers"),
+                            syn::FnArg::Receiver(_) => die!(&arg => "Unexpected receivers"),
                             syn::FnArg::Typed(patty) => {
                                 if let syn::Pat::Ident(pat) = &*patty.pat {
                                     args.push(pat.ident.clone());
@@ -283,9 +283,12 @@ pub fn wayland_object(
                 .into(),
         syn::PathArguments::AngleBracketed(ref args) => {
             if args.args.len() != 1 {
-                return syn::Error::new_spanned(last_seg_args, "Trait must have a single type parameter")
-                    .to_compile_error()
-                    .into()
+                return syn::Error::new_spanned(
+                    last_seg_args,
+                    "Trait must have a single type parameter",
+                )
+                .to_compile_error()
+                .into()
             }
             match args.args[0] {
                 syn::GenericArgument::Type(syn::Type::Path(ref path)) => path.path.clone(),
@@ -315,7 +318,7 @@ pub fn wayland_object(
         });
         quote! {
             #message_ty::#var(msg) => {
-                (#trait_::#ident(self, ctx, object_id, #(msg.#args),*).await, bytes, fds)
+                (<Self as #trait_>::#ident(ctx, object_id, #(msg.#args),*).await, bytes, fds)
             }
         }
     });
@@ -361,7 +364,7 @@ pub fn wayland_object(
                 }
 
                 #[inline]
-                fn dispatch<'a>(&'a self, ctx: &'a mut #ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a> {
+                fn dispatch<'a>(ctx: &'a mut #ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a> {
                     let (bytes, fds) = (
                         <#message_ty as #crate_::__private::Serialize>::len(&msg) as usize,
                         <#message_ty as #crate_::__private::Serialize>::nfds(&msg) as usize,
@@ -476,13 +479,14 @@ pub fn interface_message_dispatch_for_enum(
             let ty_ = &fields.unnamed.first().unwrap().ty;
             let ident = &v.ident;
             quote! {
-                Self::#ident(f) => {
+                Self::#ident(_) => {
+                    drop(object);
                     let msg = match #crate_::__private::Deserialize::deserialize(msg.0, msg.1) {
                         Ok(msg) => msg,
                         Err(e) => return (Err(e.into()), 0, 0),
                     };
                     let (res, bytes_read, fds_read) =
-                        <#ty_ as #crate_::objects::Object<#context_param>>::dispatch(f, ctx, object_id, msg).await;
+                        <#ty_ as #crate_::objects::Object<#context_param>>::dispatch(ctx, object_id, msg).await;
                     (res.map_err(Into::into), bytes_read, fds_read)
                 }
             }
@@ -592,13 +596,22 @@ pub fn interface_message_dispatch_for_enum(
                 }
             }
             fn dispatch<'a>(
-                &'a self,
                 ctx: &'a mut #context_param,
                 object_id: u32,
                 msg: Self::Request<'a>,
             ) -> Self::Fut<'a> {
                 async move {
-                    match self {
+                    use #crate_::connection::Objects;
+                    let object = ctx.objects().get(object_id);
+                    if object.is_none() {
+                        return (Err(#crate_::error::Error::InvalidObject(object_id).into()), 0, 0);
+                    }
+                    // We are doing this weird dance here because if we do `if let Some(object) = object`
+                    // then `object` will be dropped too late, and the borrow checker complains we are
+                    // still borrowing `ctx`.
+                    // SAFETY: we just checked that the object is not None
+                    let object = unsafe { object.unwrap_unchecked() };
+                    match &*object {
                         #(#var2),*
                     }
                 }

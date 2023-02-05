@@ -519,7 +519,6 @@ fn generate_dispatch_trait(
             quote! {
                 #doc_comment
                 fn #name<'a>(
-                    &'a self,
                     ctx: &'a mut Ctx,
                     object_id: u32,
                     #(#args),*

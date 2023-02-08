@@ -29,9 +29,7 @@ pub mod io {
         let len_aligned = (len + 3) & !3;
         assert!(
             blen >= len_aligned,
-            "Not enough bytes in buffer, has {}, asking for {}",
-            blen,
-            len_aligned
+            "Not enough bytes in buffer, has {blen}, asking for {len_aligned}"
         );
         let ptr = bytes.as_ptr();
         // Safety: we checked that the slice is long enough

@@ -8,13 +8,19 @@ use std::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
+use wl_protocol::{
+    stable::xdg_shell::{xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel},
+    wayland::{wl_output::v4 as wl_output, wl_surface::v5 as wl_surface},
+};
 use wl_server::{
-    events::EventHandle,
+    connection::{LockedObjects, WriteMessage},
+    events::{single_state, BroadcastEventSource, EventSource},
+    objects::ObjectMeta,
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
 
-use super::{output::Output, Shell};
+use super::{output::Output, xdg::Layout, Shell};
 use crate::utils::{
     geometry::{coords, Point},
     WeakPtr,
@@ -704,18 +710,115 @@ impl<S: Shell> SurfaceState<S> {
 }
 
 pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
-pub(crate) type SurfaceOutputChanged = Rc<RefCell<HashMap<u32, OutputSet>>>;
+
+#[derive(Clone, Debug)]
+pub struct OutputEvent(pub(crate) OutputSet);
+
+impl OutputEvent {
+    pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static>(
+        self,
+        object_id: u32,
+        objects: &mut impl LockedObjects<'a, Obj>,
+        conn: &impl WriteMessage,
+        current_outputs: &mut HashSet<WeakPtr<super::output::Output>>,
+        buffers: &mut crate::objects::compositor::SharedSurfaceBuffers,
+    ) {
+        // Update list of bound output objects.
+        for (id, output_obj) in objects.by_interface(wl_output::NAME) {
+            let Some(output_obj) = output_obj.cast::<crate::objects::Output>() else { continue };
+            // Skip "incomplete" output objects for which we haven't sent the initial enter
+            // events yet.
+            let Some(output) = output_obj.output.clone() else { continue };
+            buffers.bound_outputs.insert(output, id);
+        }
+        buffers.new_outputs.extend(self.0.borrow().iter().cloned());
+        for deleted in current_outputs.difference(&buffers.new_outputs) {
+            if let Some(id) = buffers.bound_outputs.get(deleted) {
+                conn.send(object_id, wl_surface::events::Leave {
+                    output: wl_types::Object(*id),
+                })
+                .await
+                .unwrap();
+            }
+        }
+        for added in buffers.new_outputs.difference(current_outputs) {
+            if let Some(id) = buffers.bound_outputs.get(added) {
+                conn.send(object_id, wl_surface::events::Enter {
+                    output: wl_types::Object(*id),
+                })
+                .await
+                .unwrap();
+            }
+        }
+        current_outputs.clear();
+        current_outputs.extend(buffers.new_outputs.iter().cloned());
+        buffers.new_outputs.clear();
+        buffers.bound_outputs.clear();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LayoutEvent(pub(crate) Layout);
+impl LayoutEvent {
+    pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static, Sh: super::xdg::XdgShell>(
+        self,
+        object_id: u32,
+        objects: &impl LockedObjects<'a, Obj>,
+        conn: &impl WriteMessage,
+    ) {
+        use super::xdg::Surface as XdgSurface;
+        let surface = objects.get(object_id).unwrap();
+        let surface = surface
+            .cast::<crate::objects::compositor::Surface<Sh>>()
+            .unwrap();
+        if let Some(size) = self.0.extent {
+            if let Some(role_object_id) = surface
+                .inner
+                .role::<super::xdg::TopLevel>()
+                .map(|r| r.object_id)
+            {
+                conn.send(role_object_id, xdg_toplevel::events::Configure {
+                    height: size.h as i32,
+                    width:  size.w as i32,
+                    states: &[],
+                })
+                .await
+                .unwrap();
+            } else {
+                // TODO: handle PopUp role
+                unimplemented!()
+            }
+        }
+        // Send xdg_surface.configure event
+        let (serial, role_object_id) = {
+            let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
+            let serial = role.serial;
+            role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
+            role.pending_serial.push_back(serial);
+            (serial, role.object_id)
+        };
+        conn.send(role_object_id, xdg_surface::events::Configure {
+            serial: serial.get(),
+        })
+        .await
+        .unwrap();
+    }
+}
+
 pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
-    current:                 Cell<Option<S::Token>>,
+    current:             Cell<Option<S::Token>>,
     /// The pending state of the surface, this will be moved to [`current`] when
     /// commit is called
-    pending:                 Cell<Option<S::Token>>,
-    role:                    RefCell<Option<Box<dyn Role<S>>>>,
-    outputs:                 OutputSet,
-    output_change_listeners: RefCell<HashMap<(EventHandle, usize), SurfaceOutputChanged>>,
-    object_id:               u32,
+    pending:             Cell<Option<S::Token>>,
+    /// Set of all states associated with this surface
+    states:              RefCell<HashSet<S::Token>>,
+    role:                RefCell<Option<Box<dyn Role<S>>>>,
+    outputs:             OutputSet,
+    output_change_event: single_state::Sender<OutputEvent>,
+    layout_change_event: single_state::Sender<LayoutEvent>,
+    object_id:           u32,
 }
 
 impl<S: Shell> std::fmt::Debug for Surface<S> {
@@ -723,6 +826,7 @@ impl<S: Shell> std::fmt::Debug for Surface<S> {
         f.debug_struct("Surface")
             .field("current", &self.current)
             .field("pending", &self.pending)
+            .field("states", &self.states)
             .field("object_id", &self.object_id)
             .finish()
     }
@@ -741,12 +845,14 @@ impl<S: Shell> Surface<S> {
     #[must_use]
     pub fn new(object_id: wl_types::NewId) -> Self {
         Self {
-            current:                 Cell::new(None),
-            pending:                 Cell::new(None),
-            role:                    Default::default(),
-            outputs:                 Default::default(),
-            output_change_listeners: Default::default(),
-            object_id:               object_id.0,
+            current:             Cell::new(None),
+            pending:             Cell::new(None),
+            states:              Default::default(),
+            role:                Default::default(),
+            outputs:             Default::default(),
+            output_change_event: Default::default(),
+            layout_change_event: Default::default(),
+            object_id:           object_id.0,
         }
     }
 }
@@ -877,6 +983,13 @@ impl<S: Shell> Surface<S> {
         for &token in &scratch_buffer[..] {
             let state = shell.get(token);
             if state.parent().is_none() {
+                state
+                    .surface
+                    .upgrade()
+                    .expect("surface state attached to dead surface")
+                    .states
+                    .borrow_mut()
+                    .remove(&token);
                 shell.destroy(token);
             }
         }
@@ -896,6 +1009,14 @@ impl<S: Shell> Surface<S> {
 
     pub fn set_pending(&self, key: S::Token) {
         self.pending.set(Some(key));
+    }
+
+    pub fn add_state(&self, state: S::Token) {
+        self.states.borrow_mut().insert(state);
+    }
+
+    pub fn states(&self) -> Ref<'_, HashSet<S::Token>> {
+        self.states.borrow()
     }
 
     pub fn pending_key(&self) -> S::Token {
@@ -930,6 +1051,7 @@ impl<S: Shell> Surface<S> {
                 .unwrap()
                 .token = new_pending_key;
             self.set_pending(new_pending_key);
+            self.add_state(new_pending_key);
         }
         shell.get_mut(self.pending_key())
     }
@@ -982,6 +1104,13 @@ impl<S: Shell> Surface<S> {
         for &token in scratch_buffer.iter() {
             let state = shell.get(token);
             if state.parent().is_none() {
+                state
+                    .surface
+                    .upgrade()
+                    .expect("surface state attached to dead surface")
+                    .states
+                    .borrow_mut()
+                    .remove(&token);
                 shell.destroy(token);
             }
         }
@@ -1021,6 +1150,7 @@ impl<S: Shell> Surface<S> {
         shell.destroy(current_key);
         self.pending.set(None);
         self.current.set(None);
+        self.states.borrow_mut().clear();
     }
 
     pub fn deactivate_role(&self, shell: &mut S) {
@@ -1043,22 +1173,8 @@ impl<S: Shell> Surface<S> {
         shell.role_added(self.current_key(), role_name);
     }
 
-    pub fn outputs(&self) -> Ref<'_, HashSet<WeakPtr<Output>>> {
+    pub fn outputs(&self) -> impl std::ops::Deref<Target = HashSet<WeakPtr<Output>>> + '_ {
         self.outputs.borrow()
-    }
-
-    pub fn add_output_change_listener(
-        &self,
-        handle: (EventHandle, usize),
-        changes: SurfaceOutputChanged,
-    ) {
-        self.output_change_listeners
-            .borrow_mut()
-            .insert(handle, changes);
-    }
-
-    pub fn remove_output_change_listener(&self, handle: (EventHandle, usize)) {
-        self.output_change_listeners.borrow_mut().remove(&handle);
     }
 
     pub fn outputs_mut(&self) -> RefMut<'_, HashSet<WeakPtr<Output>>> {
@@ -1066,11 +1182,27 @@ impl<S: Shell> Surface<S> {
     }
 
     pub fn notify_output_changed(&self) {
-        for (handle, changes) in &*self.output_change_listeners.borrow() {
-            changes
-                .borrow_mut()
-                .insert(self.object_id, self.outputs.clone());
-            handle.0.set(handle.1);
-        }
+        self.output_change_event
+            .send(OutputEvent(self.outputs.clone()));
+    }
+
+    pub fn notify_layout_changed(&self, layout: Layout) {
+        self.layout_change_event.send(LayoutEvent(layout));
+    }
+}
+
+impl<S: Shell> EventSource<OutputEvent> for Surface<S> {
+    type Source = single_state::Receiver<OutputEvent>;
+
+    fn subscribe(&self) -> Self::Source {
+        self.output_change_event.new_receiver()
+    }
+}
+
+impl<S: Shell> EventSource<LayoutEvent> for Surface<S> {
+    type Source = single_state::Receiver<LayoutEvent>;
+
+    fn subscribe(&self) -> Self::Source {
+        self.layout_change_event.new_receiver()
     }
 }

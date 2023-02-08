@@ -1,5 +1,7 @@
 extern crate proc_macro;
 
+use std::collections::HashMap;
+
 use darling::{FromDeriveInput, FromMeta};
 use proc_macro_error::ResultExt;
 use quote::{quote, ToTokens};
@@ -181,6 +183,151 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
     path
 }
 
+/// Remove unconstrained type parameters from a generics, where clause is not
+/// supported and will be removed.
+fn filter_generics(generics: &syn::Generics, ty: &syn::Type) -> Result<syn::Generics, syn::Error> {
+    use syn::Type::*;
+    let mut idents_used = HashMap::new();
+    let mut lifetimes_used = HashMap::new();
+    let mut consts_used = HashMap::new();
+    for param in &generics.params {
+        match param {
+            syn::GenericParam::Type(type_param) => {
+                idents_used.insert(type_param.ident.clone(), false);
+            },
+            syn::GenericParam::Lifetime(lifetime_param) => {
+                lifetimes_used.insert(lifetime_param.lifetime.clone(), false);
+            },
+            syn::GenericParam::Const(const_param) => {
+                consts_used.insert(const_param.ident.clone(), false);
+            },
+        }
+    }
+    fn scan_type(
+        ty: &syn::Type,
+        ident_used: &mut HashMap<syn::Ident, bool>,
+        lifetimes_used: &mut HashMap<syn::Lifetime, bool>,
+        consts_used: &mut HashMap<syn::Ident, bool>,
+    ) -> Result<(), syn::Error> {
+        match ty {
+            Path(type_path) =>
+                if let Some(qself) = &type_path.qself {
+                    scan_type(&qself.ty, ident_used, lifetimes_used, consts_used)?;
+                } else {
+                    // Only the first segment ident can be a type parameter
+                    let first = type_path.path.segments.first().unwrap();
+                    if let Some(used) = ident_used.get_mut(&first.ident) {
+                        *used = true;
+                    }
+                    // Scan path arguments
+                    for segment in &type_path.path.segments {
+                        match &segment.arguments {
+                            syn::PathArguments::None => (),
+                            syn::PathArguments::Parenthesized(p) => {
+                                for arg in &p.inputs {
+                                    scan_type(arg, ident_used, lifetimes_used, consts_used)?;
+                                }
+                                if let syn::ReturnType::Type(_, ty) = &p.output {
+                                    scan_type(ty, ident_used, lifetimes_used, consts_used)?;
+                                }
+                            },
+                            syn::PathArguments::AngleBracketed(ref args) =>
+                                for arg in &args.args {
+                                    match arg {
+                                        syn::GenericArgument::Type(type_) => {
+                                            scan_type(
+                                                type_,
+                                                ident_used,
+                                                lifetimes_used,
+                                                consts_used,
+                                            )?;
+                                        },
+                                        syn::GenericArgument::Lifetime(lt) => {
+                                            if let Some(used) = lifetimes_used.get_mut(lt) {
+                                                *used = true;
+                                            }
+                                        },
+                                        syn::GenericArgument::Binding(b) => {
+                                            scan_type(
+                                                &b.ty,
+                                                ident_used,
+                                                lifetimes_used,
+                                                consts_used,
+                                            )?;
+                                        },
+                                        syn::GenericArgument::Constraint(_) =>
+                                            return Err(syn::Error::new_spanned(
+                                                arg,
+                                                "Constraints are not supported",
+                                            )),
+                                        syn::GenericArgument::Const(expr) =>
+                                            if let syn::Expr::Path(expr_path) = expr {
+                                                if let Some(ident) = expr_path.path.get_ident() {
+                                                    if let Some(used) = consts_used.get_mut(ident) {
+                                                        *used = true;
+                                                    }
+                                                }
+                                            },
+                                    }
+                                },
+                        }
+                    }
+                },
+            Reference(type_ref) => {
+                scan_type(&type_ref.elem, ident_used, lifetimes_used, consts_used)?;
+            },
+            Tuple(type_tuple) =>
+                for elem in &type_tuple.elems {
+                    scan_type(elem, ident_used, lifetimes_used, consts_used)?;
+                },
+            Slice(type_slice) => {
+                scan_type(&type_slice.elem, ident_used, lifetimes_used, consts_used)?;
+            },
+            Array(type_array) => {
+                scan_type(&type_array.elem, ident_used, lifetimes_used, consts_used)?;
+                if let syn::Expr::Path(expr_path) = &type_array.len {
+                    if let Some(ident) = expr_path.path.get_ident() {
+                        if let Some(used) = consts_used.get_mut(ident) {
+                            *used = true;
+                        }
+                    }
+                }
+            },
+            Ptr(type_ptr) => {
+                scan_type(&type_ptr.elem, ident_used, lifetimes_used, consts_used)?;
+            },
+            Paren(type_paren) => {
+                scan_type(&type_paren.elem, ident_used, lifetimes_used, consts_used)?;
+            },
+            Group(type_group) => {
+                scan_type(&type_group.elem, ident_used, lifetimes_used, consts_used)?;
+            },
+            _ => Err(syn::Error::new_spanned(ty, "Unexpected type"))?,
+        }
+        Ok(())
+    }
+    scan_type(ty, &mut idents_used, &mut lifetimes_used, &mut consts_used)?;
+    //eprintln!("Used idents: {:?}", idents_used);
+    //eprintln!("Used lifetimes: {:?}", lifetimes_used);
+    //eprintln!("Used consts: {:?}", consts_used);
+    let new_generics = syn::Generics {
+        params: generics
+            .params
+            .clone()
+            .into_iter()
+            .filter(|param| match param {
+                syn::GenericParam::Type(type_param) => *idents_used.get(&type_param.ident).unwrap(),
+                syn::GenericParam::Lifetime(lifetime_param) =>
+                    *lifetimes_used.get(&lifetime_param.lifetime).unwrap(),
+                syn::GenericParam::Const(const_param) =>
+                    *consts_used.get(&const_param.ident).unwrap(),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    Ok(new_generics)
+}
+
 /// Generate `Object` impls for types that implement `RequestDispatch` for a
 /// certain interface. Should be attached to `RequestDispatch` impls.
 ///
@@ -348,20 +495,24 @@ pub fn wayland_object(
         quote! {}
     };
 
+    let filtered_generics = match filter_generics(&generics, &self_ty) {
+        Err(e) => return e.to_compile_error().into(),
+        Ok(g) => g,
+    };
     quote! {
         #orig_item
         const _: () = {
-            impl #generics #our_trait for #self_ty #where_clause {
-                type Request<'a> = #message_ty #message_lifetime where #ctx: 'a, Self: 'a;
-                type Error = #error;
-                type Fut<'a> = impl ::std::future::Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
-                where
-                    Self: 'a,
-                    #ctx: 'a;
-
+            impl #filtered_generics #crate_::objects::ObjectMeta for #self_ty {
                 fn interface(&self) -> &'static str {
                     #interface_tokens
                 }
+            }
+            impl #generics #our_trait for #self_ty #where_clause {
+                type Request<'a> = #message_ty #message_lifetime where #ctx: 'a;
+                type Error = #error;
+                type Fut<'a> = impl ::std::future::Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
+                where
+                    #ctx: 'a;
 
                 #[inline]
                 fn dispatch<'a>(ctx: &'a mut #ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a> {
@@ -480,7 +631,7 @@ pub fn interface_message_dispatch_for_enum(
             let ident = &v.ident;
             quote! {
                 Self::#ident(_) => {
-                    drop(object);
+                    drop(objects);
                     let msg = match #crate_::__private::Deserialize::deserialize(msg.0, msg.1) {
                         Ok(msg) => msg,
                         Err(e) => return (Err(e.into()), 0, 0),
@@ -511,7 +662,15 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            #ident::#v(f) => <#ty_ as #crate_::objects::Object<#context_param>>::cast(f)
+            #ident::#v(f) => <#ty_ as #crate_::objects::ObjectMeta>::cast(f)
+        }
+    });
+    let cast_muts = body.iter().map(|v| {
+        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
+        let ty_ = &fields.unnamed.first().unwrap().ty;
+        let v = &v.ident;
+        quote! {
+            #ident::#v(f) => <#ty_ as #crate_::objects::ObjectMeta>::cast_mut(f)
         }
     });
     let interfaces = body.iter().map(|v| {
@@ -519,7 +678,7 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(f) => <#ty_ as #crate_::objects::Object<#context_param>>::interface(f),
+            Self::#v(f) => <#ty_ as #crate_::objects::ObjectMeta>::interface(f),
         }
     });
     let disconnects = body.iter().map(|v| {
@@ -571,22 +730,11 @@ pub fn interface_message_dispatch_for_enum(
         quote! { Ctx: 'a }
     };
     quote! {
-        impl #impl_generics #crate_::objects::Object<#context_param> for #ident #ty_generics #where_clause2 {
-            type Error = <#first_var as #crate_::objects::Object<#context_param>>::Error; // TODO
-            type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
-            where
-                Self: 'a, #ctx_lifetime_bound;
-            type Request<'a> = (&'a [u8], &'a [::std::os::unix::io::RawFd]) where Self: 'a, #ctx_lifetime_bound;
+        impl #impl_generics #crate_::objects::ObjectMeta for #ident #ty_generics #where_clause2 {
             #[inline]
             fn interface(&self) -> &'static str {
                 match self {
                     #(#interfaces)*
-                }
-            }
-            #[inline]
-            fn on_disconnect(&mut self, ctx: &mut #context_param) {
-                match self {
-                    #(#disconnects)*
                 }
             }
             #[inline]
@@ -595,14 +743,34 @@ pub fn interface_message_dispatch_for_enum(
                     #(#casts),*
                 }
             }
+            #[inline]
+            fn cast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+                match self {
+                    #(#cast_muts),*
+                }
+            }
+        }
+        impl #impl_generics #crate_::objects::Object<#context_param> for #ident #ty_generics #where_clause2 {
+            type Error = <#first_var as #crate_::objects::Object<#context_param>>::Error; // TODO
+            type Fut<'a> = impl ::std::future::Future<Output = (::std::result::Result<(), Self::Error>, usize, usize)> + 'a
+            where
+                #ctx_lifetime_bound;
+            type Request<'a> = (&'a [u8], &'a [::std::os::unix::io::RawFd]) where Self: 'a, #ctx_lifetime_bound;
+            #[inline]
+            fn on_disconnect(&mut self, ctx: &mut #context_param) {
+                match self {
+                    #(#disconnects)*
+                }
+            }
             fn dispatch<'a>(
                 ctx: &'a mut #context_param,
                 object_id: u32,
                 msg: Self::Request<'a>,
             ) -> Self::Fut<'a> {
                 async move {
-                    use #crate_::connection::Objects;
-                    let object = ctx.objects().get(object_id);
+                    use #crate_::connection::{LockedObjects, Objects};
+                    let objects = ctx.objects().lock().await;
+                    let object = objects.get(object_id);
                     if object.is_none() {
                         return (Err(#crate_::error::Error::InvalidObject(object_id).into()), 0, 0);
                     }

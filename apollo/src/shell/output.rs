@@ -1,11 +1,14 @@
 use std::{
     cell::{Cell, RefCell},
     ffi::{CStr, CString},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use hashbrown::HashMap;
-use wl_server::{events::EventHandle, connection::WriteMessage};
+use wl_server::{
+    connection::WriteMessage,
+    events::{BroadcastEventSource, EventSource},
+};
 
 use crate::utils::{
     geometry::{coords, Extent, Point, Rectangle, Scale, Transform},
@@ -13,7 +16,7 @@ use crate::utils::{
 };
 
 pub type OutputChanges = Rc<RefCell<HashMap<WeakPtr<Output>, OutputChange>>>;
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Output {
     /// Resolution of the output, in pixels
     size:             Cell<Extent<u32, coords::Screen>>,
@@ -33,7 +36,7 @@ pub struct Output {
     /// See the fractional_scale_v1::preferred_scale for why 120.
     scale:            Cell<Scale<u32>>,
     global_id:        u32,
-    listeners:        RefCell<HashMap<(EventHandle, usize), OutputChanges>>,
+    change_event:     BroadcastEventSource<OutputChangeEvent>,
 }
 
 bitflags::bitflags! {
@@ -50,11 +53,16 @@ impl Default for OutputChange {
     }
 }
 
-#[allow(clippy::derive_hash_xor_eq)]
 impl std::hash::Hash for Output {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.global_id.hash(state);
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct OutputChangeEvent {
+    pub(crate) output: Weak<Output>,
+    pub(crate) change: OutputChange,
 }
 
 impl Output {
@@ -62,22 +70,13 @@ impl Output {
         self.logical_geometry().overlaps(other)
     }
 
-    pub fn add_change_listener(&self, handle: (EventHandle, usize), changes_map: OutputChanges) {
-        let old = self.listeners.borrow_mut().insert(handle, changes_map);
-        assert!(old.is_none());
-    }
-
-    pub fn remove_change_listener(&self, handle: &(EventHandle, usize)) {
-        self.listeners.borrow_mut().remove(handle);
-    }
-
-    pub fn notify_change(self: &Rc<Self>, change: OutputChange) {
-        for changes_map in self.listeners.borrow().values() {
-            *changes_map
-                .borrow_mut()
-                .entry(Rc::downgrade(self).into())
-                .or_default() |= change;
-        }
+    pub async fn notify_change(self: &Rc<Self>, change: OutputChange) {
+        self.change_event
+            .broadcast(OutputChangeEvent {
+                output: Rc::downgrade(self),
+                change,
+            })
+            .await;
     }
 
     pub fn new(
@@ -98,7 +97,7 @@ impl Output {
             transform: Default::default(),
             scale: Scale::new(1, 1).into(),
             global_id,
-            listeners: HashMap::new().into(),
+            change_event: Default::default(),
         }
     }
 
@@ -123,16 +122,21 @@ impl Output {
         &self.name
     }
 
-    /// Scale invariant logical size of the output. This is used to determine where a window is
-    /// placed, so that it is not dependent on the scale of the window. To avoid a dependency
-    /// circle: window scale -> window placement -> window scale.
+    /// Scale invariant logical size of the output. This is used to determine
+    /// where a window is placed, so that it is not dependent on the scale
+    /// of the window. To avoid a dependency circle: window scale -> window
+    /// placement -> window scale.
     ///
-    /// Currently this is calculated as the size of the output divided by its scale.
+    /// Currently this is calculated as the size of the output divided by its
+    /// scale.
     pub fn logical_geometry(&self) -> Rectangle<i32, coords::ScreenNormalized> {
         use crate::utils::geometry::coords::Map;
         let transform = self.transform.get();
         let scale = self.scale_f32();
-        let logical_size = self.size.get().map(|x| transform.transform_size(x.to() / scale).floor().to());
+        let logical_size = self
+            .size
+            .get()
+            .map(|x| transform.transform_size(x.to() / scale).floor().to());
         let logical_position = self.logical_position.get();
         Rectangle::from_loc_and_size(logical_position, logical_size.to())
     }
@@ -191,7 +195,7 @@ impl Output {
     }
 
     /// Send a wl_output::geometry event to the client
-    pub(crate) async fn send_geometry<T: wl_server::connection::Client>(
+    pub(crate) async fn send_geometry<T: WriteMessage>(
         &self,
         client: &T,
         object_id: u32,
@@ -200,7 +204,6 @@ impl Output {
         let geometry = self.geometry();
         let physical_size = self.physical_size();
         client
-            .connection()
             .send(
                 object_id,
                 wl_output::Event::Geometry(wl_output::events::Geometry {
@@ -218,14 +221,13 @@ impl Output {
     }
 
     /// Send a wl_output::name event to the client
-    pub(crate) async fn send_name<T: wl_server::connection::Client>(
+    pub(crate) async fn send_name<T: WriteMessage>(
         &self,
         client: &T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
-            .connection()
             .send(
                 object_id,
                 wl_output::Event::Name(wl_output::events::Name {
@@ -235,14 +237,13 @@ impl Output {
             .await
     }
 
-    pub(crate) async fn send_scale<T: wl_server::connection::Client>(
+    pub(crate) async fn send_scale<T: WriteMessage>(
         &self,
         client: &T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
-            .connection()
             .send(object_id, wl_output::events::Scale {
                 factor: (self.scale.get().x / 120) as i32,
             })
@@ -250,13 +251,12 @@ impl Output {
     }
 
     /// Send a wl_output::done event to the client
-    pub(crate) async fn send_done<T: wl_server::connection::Client>(
+    pub(crate) async fn send_done<T: WriteMessage>(
         client: &T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
         client
-            .connection()
             .send(
                 object_id,
                 wl_output::Event::Done(wl_output::events::Done {}),
@@ -265,7 +265,7 @@ impl Output {
     }
 
     /// Send all information about this output to the client.
-    pub(crate) async fn send_all<T: wl_server::connection::Client>(
+    pub(crate) async fn send_all<T: wl_server::connection::WriteMessage>(
         &self,
         client: &T,
         object_id: u32,
@@ -274,6 +274,15 @@ impl Output {
         self.send_name(client, object_id).await?;
         self.send_scale(client, object_id).await?;
         Self::send_done(client, object_id).await
+    }
+}
+
+impl EventSource<OutputChangeEvent> for Output {
+    type Source =
+        <BroadcastEventSource<OutputChangeEvent> as EventSource<OutputChangeEvent>>::Source;
+
+    fn subscribe(&self) -> Self::Source {
+        self.change_event.subscribe()
     }
 }
 

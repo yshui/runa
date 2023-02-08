@@ -789,10 +789,11 @@ impl<N> Rectangle<N, Buffer> {
     // to given scale factor
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Default)]
 /// Possible transformations to two-dimensional planes
 pub enum Transform {
     /// Identity transformation (plane is unaltered when applied)
+    #[default]
     Normal,
     /// Plane is rotated by 90 degrees
     _90,
@@ -808,12 +809,6 @@ pub enum Transform {
     Flipped180,
     /// Plane is flipped vertically and rotated by 270 degrees
     Flipped270,
-}
-
-impl Default for Transform {
-    fn default() -> Transform {
-        Transform::Normal
-    }
 }
 
 /// Coordinate system is irrelevant to other types, but it does affect how

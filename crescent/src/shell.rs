@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, cell::RefCell};
 
 use apollo::{
     shell::{
@@ -6,7 +6,7 @@ use apollo::{
         output::OutputChange,
         surface::{self, roles::subsurface_iter},
         xdg::{Layout, XdgShell},
-        Shell,
+        Shell, ShellEvent,
     },
     utils::{
         geometry::{coords, Extent, Point, Rectangle, Scale},
@@ -16,13 +16,14 @@ use apollo::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use slotmap::{DefaultKey, SlotMap};
+use wl_server::events::{BroadcastEventSource, EventSource};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct DefaultShell<S: buffers::Buffer> {
     storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     stack:           VecList<Window>,
-    listeners:       wl_server::events::Listeners,
+    shell_event:     BroadcastEventSource<ShellEvent>,
     position_offset: Point<i32, coords::Screen>,
     screen:          apollo::shell::output::Screen,
 }
@@ -32,7 +33,7 @@ impl<B: buffers::Buffer> DefaultShell<B> {
         Self {
             storage:         Default::default(),
             stack:           Default::default(),
-            listeners:       Default::default(),
+            shell_event:     Default::default(),
             position_offset: Point::new(1000, 1000),
             screen:          apollo::shell::output::Screen::new_single_output(output),
         }
@@ -71,12 +72,12 @@ impl<B: buffers::Buffer> DefaultShell<B> {
 
     /// Notify the listeners that surfaces in this shell has been rendered.
     /// Should be called by your renderer implementation.
-    pub fn notify_render(&self) {
-        self.listeners.notify();
+    pub fn notify_render(&self) -> impl std::future::Future<Output = ()> {
+        self.shell_event.broadcast(ShellEvent::Render)
     }
 
     fn update_subtree_outputs(
-        &mut self,
+        &self,
         root: DefaultKey,
         root_position: Point<i32, coords::ScreenNormalized>,
     ) {
@@ -146,21 +147,22 @@ impl<B: buffers::Buffer> DefaultShell<B> {
     }
 
     /// Change the size of the only output in this shell.
-    pub fn update_size(&mut self, size: Extent<u32, coords::Screen>) {
-        let output = self.screen.outputs.get_mut(0).unwrap().clone();
+    pub async fn update_size(this: &RefCell<Self>, size: Extent<u32, coords::Screen>) {
+        let output = this.borrow().screen.outputs.get(0).unwrap().clone();
         if size != output.size() {
             tracing::debug!("Updating output size to {:?}", size);
             output.set_size(size);
-            output.notify_change(OutputChange::GEOMETRY);
+            output.notify_change(OutputChange::GEOMETRY).await;
         }
 
         // Take the stack out to avoid borrowing self.
-        let stack = std::mem::take(&mut self.stack);
+        let mut this = this.borrow_mut();
+        let stack = std::mem::take(&mut this.stack);
         for window in stack.iter() {
-            self.update_subtree_outputs(window.surface_state, window.normalized_position(&output))
+            this.update_subtree_outputs(window.surface_state, window.normalized_position(&output))
         }
         // Put the stack back.
-        let _ = std::mem::replace(&mut self.stack, stack);
+        let _ = std::mem::replace(&mut this.stack, stack);
     }
 
     pub fn scale_f32(&self) -> Scale<f32> {
@@ -185,15 +187,21 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
     fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self> {
         // This unwrap cannot fail, unless there is a bug in this implementation to
         // cause it to return an invalid token.
-        self.storage.get(key).map(|v| &v.0).unwrap()
+        self.storage.get(key).map(|v| &v.0).unwrap_or_else(|| panic!("Invalid token: {:?}", key))
     }
 
     fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {
         self.storage.get_mut(key).map(|v| &mut v.0).unwrap()
     }
 
-    fn get_disjoint_mut<const N: usize>(&mut self, keys: [Self::Token; N]) -> [&mut surface::SurfaceState<Self>; N] {
-        self.storage.get_disjoint_mut(keys).unwrap().map(|v| &mut v.0)
+    fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        keys: [Self::Token; N],
+    ) -> [&mut surface::SurfaceState<Self>; N] {
+        self.storage
+            .get_disjoint_mut(keys)
+            .unwrap()
+            .map(|v| &mut v.0)
     }
 
     fn role_added(&mut self, key: Self::Token, role: &'static str) {
@@ -263,18 +271,18 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
             }
         }
     }
+}
 
-    fn add_render_listener(&self, listener: (wl_server::events::EventHandle, usize)) {
-        self.listeners.add_listener(listener);
-    }
+impl<S: buffers::Buffer> EventSource<ShellEvent> for DefaultShell<S> {
+    type Source = <BroadcastEventSource<ShellEvent> as EventSource<ShellEvent>>::Source;
 
-    fn remove_render_listener(&self, listener: (wl_server::events::EventHandle, usize)) -> bool {
-        self.listeners.remove_listener(listener)
+    fn subscribe(&self) -> Self::Source {
+        self.shell_event.subscribe()
     }
 }
 
-impl<B: apollo::shell::buffers::Buffer> XdgShell for super::DefaultShell<B> {
-    fn layout(&self, _key: &Self::Token) -> Layout {
+impl<B: buffers::Buffer> XdgShell for super::DefaultShell<B> {
+    fn layout(&self, _key: Self::Token) -> Layout {
         Layout {
             position: None,
             extent:   Some(Extent::new(400, 300)),

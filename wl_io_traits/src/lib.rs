@@ -152,11 +152,11 @@ pub mod de {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Error::InvalidIntEnum(v, name) =>
-                    write!(f, "int {} is not a valid value for {}", v, name),
+                    write!(f, "int {v} is not a valid value for {name}"),
                 Error::InvalidUintEnum(v, name) =>
-                    write!(f, "uint {} is not a valid value for {}", v, name),
+                    write!(f, "uint {v} is not a valid value for {name}"),
                 Error::UnknownOpcode(v, name) =>
-                    write!(f, "opcode {} is not valid for {}", v, name),
+                    write!(f, "opcode {v} is not valid for {name}"),
                 Error::TrailingData(expected, got) => write!(
                     f,
                     "message trailing bytes, expected {expected} bytes, got {got} bytes"

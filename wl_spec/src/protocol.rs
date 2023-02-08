@@ -27,8 +27,8 @@ pub struct Interface {
     pub enums:       Vec<Enum>,
 }
 
-impl Interface {
-    pub fn new() -> Interface {
+impl Default for Interface {
+    fn default() -> Interface {
         Interface {
             name:        String::new(),
             version:     1,
@@ -40,6 +40,12 @@ impl Interface {
     }
 }
 
+impl Interface {
+    pub fn new() -> Interface {
+        Interface::default()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Message {
     pub name:        String,
@@ -48,9 +54,8 @@ pub struct Message {
     pub description: Option<(String, String)>,
     pub args:        Vec<Arg>,
 }
-
-impl Message {
-    pub fn new() -> Message {
+impl Default for Message {
+    fn default() -> Self {
         Message {
             name:        String::new(),
             typ:         None,
@@ -58,6 +63,12 @@ impl Message {
             description: None,
             args:        Vec::new(),
         }
+    }
+}
+
+impl Message {
+    pub fn new() -> Message {
+        Message::default()
     }
 
     pub fn all_null(&self) -> bool {
@@ -78,8 +89,8 @@ pub struct Arg {
     pub enum_:       Option<String>,
 }
 
-impl Arg {
-    pub fn new() -> Arg {
+impl Default for Arg {
+    fn default() -> Arg {
         Arg {
             name:        String::new(),
             typ:         Type::Object,
@@ -92,6 +103,12 @@ impl Arg {
     }
 }
 
+impl Arg {
+    pub fn new() -> Arg {
+        Arg::default()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Enum {
     pub name:        String,
@@ -101,8 +118,8 @@ pub struct Enum {
     pub bitfield:    bool,
 }
 
-impl Enum {
-    pub fn new() -> Enum {
+impl Default for Enum {
+    fn default() -> Enum {
         Enum {
             name:        String::new(),
             since:       1,
@@ -110,6 +127,12 @@ impl Enum {
             entries:     Vec::new(),
             bitfield:    false,
         }
+    }
+}
+
+impl Enum {
+    pub fn new() -> Enum {
+        Enum::default()
     }
 }
 
@@ -122,8 +145,8 @@ pub struct Entry {
     pub summary:     Option<String>,
 }
 
-impl Entry {
-    pub fn new() -> Entry {
+impl Default for Entry {
+    fn default() -> Entry {
         Entry {
             name:        String::new(),
             value:       0,
@@ -131,6 +154,11 @@ impl Entry {
             description: None,
             summary:     None,
         }
+    }
+}
+impl Entry {
+    pub fn new() -> Entry {
+        Entry::default()
     }
 }
 

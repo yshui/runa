@@ -121,7 +121,7 @@ unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
             // post condition from the if above: buf.len() >= len + pos_data
             // combined: filled_data < buf.len()
             let buf = unsafe { &mut this.buf.get_unchecked_mut(*this.filled_data..) };
-            let mut fd_buf = [0; crate::SCM_MAX_FD as usize];
+            let mut fd_buf = [0; crate::SCM_MAX_FD];
             let (bytes, nfds) = ready!(this.inner.poll_read_with_fds(cx, buf, &mut fd_buf[..]))?;
             if bytes == 0 && nfds == 0 {
                 // We hit EOF while the buffer is not filled
@@ -358,7 +358,7 @@ impl<T: AsyncWriteWithFd> AsyncWriteWithFd for BufWriterWithFd<T> {
     ) -> Poll<std::io::Result<usize>> {
         // Flush if we don't have capacity for the data and file descriptors.
         // We can take any amount of data, but we have to take all file descriptors
-        if (self.buf.len() >= self.buf.capacity() && buf.len() != 0) ||
+        if (self.buf.len() >= self.buf.capacity() && !buf.is_empty()) ||
             self.fd_buf.len() + fds.len() >= self.fd_buf.capacity()
         {
             ready!(self.as_mut().poll_flush_buf(cx))?;
@@ -378,7 +378,7 @@ impl<T: AsyncWriteWithFd> AsyncWriteWithFd for BufWriterWithFd<T> {
 #[cfg(test)]
 mod test {
     use std::{
-        os::fd::{AsRawFd, IntoRawFd},
+        os::fd::{AsRawFd},
         pin::Pin,
     };
 
@@ -389,7 +389,7 @@ mod test {
 
     use crate::{
         traits::buf::{AsyncBufReadWithFd, AsyncBufWriteWithFd, AsyncBufWriteWithFdExt},
-        BufReaderWithFd, BufWriterWithFd, ReadWithFd, WriteWithFd,
+        BufReaderWithFd, BufWriterWithFd,
     };
     async fn buf_roundtrip_seeded(raw: &[u8], executor: &smol::LocalExecutor<'_>) {
         let mut source = arbitrary::Unstructured::new(raw);

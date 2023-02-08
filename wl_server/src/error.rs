@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::objects::DISPLAY_ID;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Deserialization error: {0}")]
@@ -49,13 +51,13 @@ impl wl_protocol::ProtocolError for Error {
     fn wayland_error(&self) -> Option<(u32, u32)> {
         use wl_protocol::wayland::wl_display::v1::enums::Error::*;
         match self {
-            Self::Deserialization(_) => Some((1, InvalidMethod as u32)),
-            Self::IdExists(_) => Some((1, InvalidObject as u32)),
-            Self::UnknownGlobal(_) => Some((1, InvalidObject as u32)),
-            Self::UnknownObject(_) => Some((1, InvalidObject as u32)),
-            Self::InvalidObject(_) => Some((1, InvalidObject as u32)),
-            Self::UnknownError(_) => Some((1, Implementation as u32)),
-            Self::UnknownFatalError(_) => Some((1, Implementation as u32)),
+            Self::Deserialization(_) => Some((DISPLAY_ID, InvalidMethod as u32)),
+            Self::IdExists(_) => Some((DISPLAY_ID, InvalidObject as u32)),
+            Self::UnknownGlobal(_) => Some((DISPLAY_ID, InvalidObject as u32)),
+            Self::UnknownObject(_) => Some((DISPLAY_ID, InvalidObject as u32)),
+            Self::InvalidObject(_) => Some((DISPLAY_ID, InvalidObject as u32)),
+            Self::UnknownError(_) => Some((DISPLAY_ID, Implementation as u32)),
+            Self::UnknownFatalError(_) => Some((DISPLAY_ID, Implementation as u32)),
             Self::Custom {
                 object_id_and_code, ..
             } => *object_id_and_code,

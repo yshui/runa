@@ -1,55 +1,62 @@
-use std::any::Any;
-
-use hashbrown::HashMap;
-/// A collection of arbitrary typed values. Can be set and retrieved by
-/// their type.
-#[derive(Default, Debug)]
-pub struct UnboundedAggregate {
-    data: HashMap<std::any::TypeId, Box<dyn Any>>,
+/// Why does `Item` look like this? why not using GAT? This comes from a
+/// limitation similar to the one outlined in: https://sabrinajewson.org/blog/the-better-alternative-to-lifetime-gats/
+///
+/// Quickly summarizing, while `AsIterator` is fine on its own, if in another
+/// trait we want to express that a method returns something that implements
+/// `AsIterator`, and yields `&u32`, we might have to write something like:
+///
+/// ```ignore
+/// trait Foo {
+///     type AsIter<'a>: AsIterator<Item<'a> = &'a u32> + 'a;
+///     fn bar<'a>(&'a self) -> Self::AsIter<'a>;
+/// }
+/// pub trait AsIterator {
+///     type Item<'a> where Self: 'a;
+///     type Iter<'a>: Iterator<Item = Self::Item<'a>> + 'a
+///     where
+///         Self: 'a;
+///     fn as_iter(&self) -> Self::Iter<'_>;
+/// }
+/// ```
+///
+/// Then when calling `bar` with `&'a Self`, the returned `AsIter<'a>` has to
+/// outlive `'a` because of the `where Self: 'a` requirement on `Item<'a>`,
+/// which without knowing the variance of `Self: Foo`, would borrow `self` for
+/// its whole lifetime. Besides this also seems to trigger a bug in the borrow
+/// checker.
+///
+/// Another way is to write:
+///
+/// ```ignore
+/// trait Foo {
+///     type AsIter<'a>: for<'b> AsIterator<Item<'b> = &'a u32> + 'a;
+/// }
+/// ```
+///
+/// Which is somewhat fine, but this requires `AsIter<'a>: 'static` again
+/// because of the `where Self: 'a` bound.
+///
+/// We really would like a `type Item<'a>` that is totally detached from `Self`,
+/// so we can put a bound on it without affecting the lifetime of `Self`. One
+/// trick that can be used is to emulate lifetime GAT with a HRTB trait object,
+/// which is what we are using.
+///
+/// ```rust
+/// trait Foo {
+///     type AsIter<'a>: AsIterator<Item = dyn for<'b> AsIteratorItem<'b, Item = &'b u32>> + 'a;
+/// }
+/// ```
+///
+/// When you implement `AsIterator` for a type, you should use `dyn for<'a>
+/// AsIteratorItem<'a, Item = T>` as the `Item` type.
+pub trait AsIteratorItem<'a> {
+    type Item;
 }
 
-impl UnboundedAggregate {
-    /// Safety: if `key` is `TypeId::of::<T>`, then `value` must be of type
-    /// `Box<T>`.
-    #[inline]
-    unsafe fn insert(&mut self, key: std::any::TypeId, value: Box<dyn Any>) {
-        self.data.insert(key, value);
-    }
-}
-
-impl UnboundedAggregate {
-    #[inline]
-    pub fn get<T: Any>(&self) -> Option<&T> {
-        self.data
-            .get(&std::any::TypeId::of::<T>())
-            // Safety: `set` ensures that the type is correct
-            .map(|d| unsafe { &*(d.as_ref() as *const _ as *const _) })
-    }
-
-    #[inline]
-    pub fn get_mut<T: Any>(&mut self) -> Option<&mut T> {
-        self.data
-            .get_mut(&std::any::TypeId::of::<T>())
-            // Safety: `set` ensures that the type is correct
-            .map(|d| unsafe { &mut *(d.as_mut() as *mut _ as *mut _) })
-    }
-
-    #[inline]
-    pub fn get_or_default<T: Any + Default>(&mut self) -> &mut T {
-        // Safety: see `get_or_default`
-        unsafe {
-            self.data
-                .entry(std::any::TypeId::of::<T>())
-                .or_insert_with(|| Box::<T>::default() as Box<dyn Any>)
-                .downcast_mut()
-                .unwrap_unchecked()
-        }
-    }
-
-    #[inline]
-    pub fn set<T: Any>(&mut self, data: T) {
-        // Safety: we make sure entry of `TypeId::of::<T>` definitely has type
-        // `T::Data`.
-        unsafe { self.insert(std::any::TypeId::of::<T>(), Box::new(data)) }
-    }
+pub trait AsIterator {
+    type Item: ?Sized + for<'a> AsIteratorItem<'a>;
+    type Iter<'a>: Iterator<Item = <Self::Item as AsIteratorItem<'a>>::Item> + 'a
+    where
+        Self: 'a;
+    fn as_iter(&self) -> Self::Iter<'_>;
 }

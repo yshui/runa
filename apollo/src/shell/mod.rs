@@ -4,7 +4,14 @@ pub mod surface;
 pub mod xdg;
 use std::cell::RefCell;
 
-pub trait Shell: Sized + 'static {
+use wl_server::events::EventSource;
+
+#[derive(Clone, Debug)]
+pub enum ShellEvent {
+    Render,
+}
+
+pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     /// A token to surfaces.
     ///
     /// Eq and PartialEq should compare if the keys point to the same surface
@@ -15,7 +22,7 @@ pub trait Shell: Sized + 'static {
     ///
     /// A token must be released, impls of Shell can choose to panic
     /// if it was dropped it without being released.
-    type Token: std::fmt::Debug + Copy + PartialEq + Eq;
+    type Token: std::fmt::Debug + Copy + PartialEq + Eq + std::hash::Hash;
 
     /// A buffer type. We allow a user supplied buffer type instead of `dyn
     /// Buffer` to avoid virutal call overhead, and allow for a more
@@ -40,8 +47,12 @@ pub trait Shell: Sized + 'static {
     ///
     /// # Panic
     ///
-    /// Panics if any of the keys are invalid, or if any two of the keys are equal.
-    fn get_disjoint_mut<const N: usize>(&mut self, keys: [Self::Token; N]) -> [&mut surface::SurfaceState<Self>; N];
+    /// Panics if any of the keys are invalid, or if any two of the keys are
+    /// equal.
+    fn get_disjoint_mut<const N: usize>(
+        &mut self,
+        keys: [Self::Token; N],
+    ) -> [&mut surface::SurfaceState<Self>; N];
 
     /// Callback which is called when a role is added to a surface corresponds
     /// to the given surface state. A role can be attached using a committed
@@ -69,11 +80,6 @@ pub trait Shell: Sized + 'static {
     /// This function is allowed to panic if either handle is invalid. Or if
     /// `old` has never been committed before.
     fn post_commit(&mut self, old: Option<Self::Token>, new: Self::Token);
-
-    /// Add a listener to be notified when the shell has been rendered.
-    /// TODO: change to per-surface listener, like for the configure event
-    fn add_render_listener(&self, listener: (wl_server::events::EventHandle, usize));
-    fn remove_render_listener(&self, listener: (wl_server::events::EventHandle, usize)) -> bool;
 }
 
 pub trait HasShell: buffers::HasBuffer {

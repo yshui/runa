@@ -23,3 +23,5 @@ spin = { version = "0.9.4", default-features = false, features = ["mutex", "tick
 libc = "0.2.137"
 hashbrown.workspace = true
 num-traits = "0.2.15"
+async-lock = "2.6.0"
+futures-core = "0.3.26"

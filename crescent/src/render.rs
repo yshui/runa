@@ -341,7 +341,7 @@ impl Renderer {
                                     ),
                                     // TODO: reject 0 height
                                     rows_per_image: Some(
-                                        NonZeroU32::new(raw_dimensions.h as u32).unwrap(),
+                                        NonZeroU32::new(raw_dimensions.h).unwrap(),
                                     ),
                                 },
                                 wgpu::Extent3d {
@@ -457,7 +457,7 @@ impl Renderer {
                     let (surface, output) = texture_result.unwrap();
                     if let Some(new_size) = pending_size {
                         if new_size != self.size {
-                            self.shell.borrow_mut().update_size(Extent::new(new_size.width, new_size.height));
+                            DefaultShell::update_size(&self.shell, Extent::new(new_size.width, new_size.height)).await;
                             drop(output);
                             // size changed, reconfigure surface
                             surface.configure(&self.device, &wgpu::SurfaceConfiguration {
@@ -476,7 +476,10 @@ impl Renderer {
                         }
                     } else {
                         self.render(output);
-                        self.shell.borrow().notify_render();
+                        // name the future before awaiting so self.shell isn't borrowed
+                        // across the await
+                        let fut = self.shell.borrow().notify_render();
+                        fut.await;
                     }
                     tx.try_send(surface).unwrap();
                 }
@@ -489,10 +492,15 @@ impl Renderer {
                                 WindowEvent::Resized(new_size) => {
                                     pending_size = Some(new_size);
                                 }
-                                _ => {}
+                                _ => {
+                                    tracing::debug!("Unhandled window event: {:?}", event);
+                                }
                             }
                         }
-                        _ => (),
+                        _ => {
+                            tracing::debug!("Unhandled event: {:?}", event);
+                            // todo
+                        },
                     }
                 }
             }

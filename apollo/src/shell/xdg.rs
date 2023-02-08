@@ -1,16 +1,10 @@
-use std::{
-    cell::{RefCell, RefMut},
-    collections::VecDeque,
-    num::NonZeroU32,
-    rc::Rc,
-};
+use std::{collections::VecDeque, num::NonZeroU32};
 
 use derivative::Derivative;
-use hashbrown::HashMap;
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };
-use wl_server::{events::EventHandle, provide_any::Demand};
+use wl_server::provide_any::Demand;
 
 use super::Shell;
 use crate::utils::geometry::{coords, Extent, Point, Rectangle};
@@ -22,55 +16,38 @@ pub struct Layout {
 }
 
 pub trait XdgShell: Shell {
-    fn layout(&self, key: &Self::Token) -> Layout {
+    fn layout(&self, key: Self::Token) -> Layout {
         Layout::default()
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ConfigureListener {
-    handle:            EventHandle,
-    slot:              usize,
-    pending_configure: Rc<RefCell<HashMap<u32, Layout>>>,
 }
 
 /// xdg_surface role
 #[derive(Debug, Clone)]
 pub struct Surface {
-    active:                        bool,
-    geometry:                      Option<Rectangle<i32, coords::Surface>>,
-    pub(crate) pending_geometry:   Option<Rectangle<i32, coords::Surface>>,
+    active:                      bool,
+    geometry:                    Option<Rectangle<i32, coords::Surface>>,
+    pub(crate) pending_geometry: Option<Rectangle<i32, coords::Surface>>,
     /// Pending configure events that haven't been ACK'd, associated with a
     /// oneshot channel which will be notified once the client ACK the
     /// configure event.
-    pub(crate) pending_serial:     VecDeque<NonZeroU32>,
+    pub(crate) pending_serial:   VecDeque<NonZeroU32>,
     /// The serial in the last ack_configure request.
-    pub(crate) last_ack:           Option<NonZeroU32>,
-    pub(crate) serial:             NonZeroU32,
-    pub(crate) configure_listener: ConfigureListener,
-    pub(crate) object_id:          u32,
+    pub(crate) last_ack:         Option<NonZeroU32>,
+    pub(crate) serial:           NonZeroU32,
+    pub(crate) object_id:        u32,
 }
 
 impl Surface {
     #[inline]
-    pub fn new(
-        object_id: wl_types::NewId,
-        listener: (EventHandle, usize),
-        pending_list: &Rc<RefCell<HashMap<u32, Layout>>>,
-    ) -> Self {
+    pub fn new(object_id: wl_types::NewId) -> Self {
         Self {
-            active:             false,
-            geometry:           None,
-            pending_geometry:   None,
-            pending_serial:     VecDeque::new(),
-            last_ack:           None,
-            serial:             NonZeroU32::new(1).unwrap(),
-            configure_listener: ConfigureListener {
-                handle:            listener.0,
-                slot:              listener.1,
-                pending_configure: pending_list.clone(),
-            },
-            object_id:          object_id.0,
+            active:           false,
+            geometry:         None,
+            pending_geometry: None,
+            pending_serial:   VecDeque::new(),
+            last_ack:         None,
+            serial:           NonZeroU32::new(1).unwrap(),
+            object_id:        object_id.0,
         }
     }
 
@@ -88,15 +65,7 @@ impl Surface {
             // We haven't sent out the first configure event yet.
             // notify the configure listener which will send out the configure event.
             tracing::debug!("sending initial configure event");
-            let alive = self
-                .configure_listener
-                .handle
-                .set(self.configure_listener.slot);
-            assert!(alive, "Surface not destructed after client disconnected");
-            self.configure_listener
-                .pending_configure
-                .borrow_mut()
-                .insert(object_id, shell.layout(&surface.current_key()));
+            surface.notify_layout_changed(shell.layout(surface.current_key()));
         }
         self.geometry = self.pending_geometry;
 

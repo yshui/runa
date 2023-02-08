@@ -12,13 +12,11 @@ use apollo::{
     utils::geometry::{Extent, Point},
 };
 use futures_util::{FutureExt, TryStreamExt};
-use smol::{LocalExecutor, Task};
+use smol::{block_on, LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
-    connection::{self, Client as _, Store, Connection},
-    events::EventMux,
-    impl_state_any_for,
+    connection::{self, Client as _, Connection, Store},
     objects::Object,
     renderer_capability::RendererCapability,
     server::Globals,
@@ -48,17 +46,6 @@ wl_server::globals! {
         Shm(apollo::globals::Shm),
         WmBase(apollo::globals::xdg_shell::WmBase),
     }
-}
-
-wl_server::event_multiplexer! {
-    ctx: CrescentClient,
-    error: wl_server::error::Error,
-    receivers: [
-        wl_server::globals::Registry,
-        apollo::globals::Compositor,
-        apollo::globals::xdg_shell::WmBase,
-        apollo::globals::Output
-    ],
 }
 
 type Shell = <Crescent as HasShell>::Shell;
@@ -109,38 +96,43 @@ impl wl_server::server::Server for Crescent {
         self.0
             .executor
             .spawn(async move {
-                use wl_server::connection::{Objects as _, WriteMessage as _};
+                use wl_server::connection::{LockedObjects as _, Objects as _, WriteMessage as _};
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
-                    store: Store::default(),
-                    per_client: Default::default(),
-                    event_flags: Default::default(),
+                    store: Some(Store::default()),
                     state,
                     tasks: Default::default(),
                     tx: Connection::new(BufWriterWithFd::new(tx)),
                 };
                 client_ctx
                     .objects()
+                    .lock()
+                    .await
                     .insert(1, wl_server::objects::Display)
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
                 loop {
                     // Flush output before we start waiting.
-                    client_ctx.connection().flush().await?;
-                    futures_util::select! {
-                        _ = Pin::new(&mut read).next_message().fuse() => {
+                    if let Err(e) = client_ctx.connection().flush().await {
+                        tracing::trace!("Error while flushing connection {e}");
+                        break
+                    }
+                    match Pin::new(&mut read).next_message().await {
+                        Ok(_) =>
                             if client_ctx.dispatch(Pin::new(&mut read)).await {
-                                break;
-                            }
+                                break
+                            },
+                        Err(e) => {
+                            tracing::trace!("Error while reading message: {e}");
+                            break
                         },
-                        flags = client_ctx.event_flags.listen().fuse() => {
-                            tracing::trace!("got events");
-                            client_ctx.dispatch_events(flags).await?;
-                        }
                     }
                 }
-                client_ctx.connection().flush().await?;
+                // Try to flush the connection, ok if it fails, as the connection could have
+                // been broken at this point.
+                client_ctx.connection().flush().await.ok();
+                client_ctx.disconnect().await;
                 Ok::<(), wl_server::error::Error>(())
             })
             .detach();
@@ -168,34 +160,28 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:       connection::Store<AnyObject>,
-    per_client:  wl_server::utils::UnboundedAggregate,
-    event_flags: wl_server::events::EventFlags,
+    store:       Option<connection::Store<AnyObject>>,
     state:       Crescent,
     tasks:       RefCell<Vec<Task<()>>>,
     tx:          Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
 }
 
-impl Drop for CrescentClient {
-    fn drop(&mut self) {
-        let store = self.store.clone();
-        store.clear_for_disconnect(self)
-    }
-}
-
-impl_state_any_for!(CrescentClient, per_client);
-
-impl EventMux for CrescentClient {
-    fn event_handle(&self) -> wl_server::events::EventHandle {
-        self.event_flags.as_handle()
+impl CrescentClient {
+    /// Finalize the client context after the client has disconnected.
+    async fn disconnect(&mut self) {
+        if let Some(store) = self.store.take() {
+            use wl_server::connection::Objects;
+            let mut store = store.lock().await;
+            store.clear_for_disconnect(self);
+        }
     }
 }
 
 impl connection::Client for CrescentClient {
+    type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
-    type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
 
     wl_server::impl_dispatch!();
 
@@ -208,7 +194,7 @@ impl connection::Client for CrescentClient {
     }
 
     fn objects(&self) -> &Self::ObjectStore {
-        &self.store
+        self.store.as_ref().unwrap()
     }
 
     fn spawn(&self, fut: impl Future<Output = ()> + 'static) {
@@ -262,11 +248,13 @@ fn main() -> Result<()> {
     // Add output global and make sure its id is what we expect.
     tracing::debug!("globals {:?}", server.0.globals.borrow());
     assert_eq!(
-        server
-            .0
-            .globals
-            .borrow_mut()
-            .insert(apollo::globals::Output::new(output)),
+        block_on(
+            server
+                .0
+                .globals
+                .borrow_mut()
+                .insert(apollo::globals::Output::new(output))
+        ),
         output_global_id
     );
     let shell2 = server.0.shell.clone();

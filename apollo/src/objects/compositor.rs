@@ -13,53 +13,54 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{future::Future, rc::Rc};
+use std::{cell::RefCell, future::Future, rc::Rc};
 
+use async_lock::Mutex;
 use derivative::Derivative;
+use futures_util::{pin_mut, FutureExt};
+use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
     wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{Client, State},
+    connection::{Client, LockedObjects, Objects, WriteMessage},
     error,
-    events::DispatchTo,
-    objects::{wayland_object, Object, DISPLAY_ID},
+    events::EventSource,
+    objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };
 
 use crate::{
-    globals::OutputAndCompositorState,
-    shell::{self, buffers::HasBuffer, surface::roles, HasShell, Shell, ShellOf},
-    utils::geometry::Point,
+    shell::{
+        self,
+        buffers::HasBuffer,
+        surface::{roles, OutputEvent},
+        HasShell, Shell, ShellOf,
+    },
+    utils::{geometry::Point, AutoAbort, WeakPtr},
 };
 
-/// Trait for objects that contains a surface reference
-pub(crate) trait SurfaceObject<S: Shell> {
-    fn surface(&self) -> &Rc<crate::shell::surface::Surface<S>>;
-}
-
-pub(crate) fn get_surface_from_ctx<Ctx: Client, Obj: SurfaceObject<ShellOf<Ctx::ServerContext>> + 'static>(
-    ctx: &Ctx,
-    id: u32,
-) -> Option<Rc<crate::shell::surface::Surface<<Ctx::ServerContext as HasShell>::Shell>>>
-where
-    Ctx::ServerContext: HasShell,
-{
-    use wl_server::{connection::Objects, objects::Object};
-    let obj = ctx.objects().get(id)?;
-    let obj: &Obj = obj.cast()?;
-    Some(obj.surface().clone())
+/// A set of buffers that are shared among all the surfaces of a client, used by
+/// the event handling tasks.
+#[derive(Debug, Default)]
+pub(crate) struct SharedSurfaceBuffers {
+    /// The set of outputs that overlap with the surface, used by the
+    /// output_changed event handler.
+    pub(crate) new_outputs:   HashSet<WeakPtr<shell::output::Output>>,
+    /// The set of outputs that are bound to the client, used by The
+    /// output_changed event handler.
+    pub(crate) bound_outputs: HashMap<WeakPtr<shell::output::Output>, u32>,
 }
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct Surface<Shell: shell::Shell>(pub(crate) Rc<crate::shell::surface::Surface<Shell>>);
-
-impl<S: Shell> SurfaceObject<S> for Surface<S> {
-    fn surface(&self) -> &Rc<crate::shell::surface::Surface<S>> {
-        &self.0
-    }
+pub struct Surface<Shell: shell::Shell> {
+    pub(crate) inner: Rc<crate::shell::surface::Surface<Shell>>,
+    /// A queue of surface state tokens used for surface commits and
+    /// destructions.
+    scratch_buffer:   Rc<RefCell<Vec<Shell::Token>>>,
+    event_task:       AutoAbort,
 }
 
 fn deallocate_surface<Ctx: Client>(
@@ -67,25 +68,11 @@ fn deallocate_surface<Ctx: Client>(
     ctx: &mut Ctx,
 ) where
     Ctx::ServerContext: HasShell,
-    Ctx: State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     let server_context = ctx.server_context().clone();
     let mut shell = server_context.shell().borrow_mut();
-    this.0
-        .destroy(&mut shell, &mut ctx.state_mut().commit_scratch_buffer);
-}
-
-#[derive(Debug)]
-enum SurfaceErrorKind {
-    InvalidOffset,
-}
-
-impl std::fmt::Display for SurfaceErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidOffset => write!(f, "invalid offset"),
-        }
-    }
+    this.inner
+        .destroy(&mut shell, &mut this.scratch_buffer.borrow_mut());
 }
 
 #[derive(Debug)]
@@ -124,7 +111,6 @@ impl wl_protocol::ProtocolError for SurfaceError {
 impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
-    Ctx: State<OutputAndCompositorState<S>>,
     Ctx::Object: From<wl_server::objects::Callback>,
 {
     type Error = error::Error;
@@ -141,15 +127,18 @@ where
     type SetInputRegionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
     type SetOpaqueRegionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
 
-    fn frame<'a>(
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        callback: wl_types::NewId,
-    ) -> Self::FrameFut<'a> {
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
+    fn frame(ctx: &mut Ctx, object_id: u32, callback: wl_types::NewId) -> Self::FrameFut<'_> {
         async move {
-            use wl_server::connection::Objects;
+            use wl_server::connection::{LockedObjects, Objects};
             let objects = ctx.objects();
+            let mut objects = objects.lock().await;
+            let surface = objects
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap()
+                .inner
+                .clone();
             let inserted = objects.try_insert_with(callback.0, || {
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 let state = surface.pending_mut(&mut shell);
@@ -164,15 +153,14 @@ where
         }
     }
 
-    fn attach<'a>(
-        ctx: &'a mut Ctx,
+    fn attach(
+        ctx: &mut Ctx,
         object_id: u32,
         buffer: wl_types::Object,
         x: i32,
         y: i32,
-    ) -> Self::AttachFut<'a> {
-        use wl_server::connection::Objects;
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
+    ) -> Self::AttachFut<'_> {
+        use wl_server::connection::{LockedObjects, Objects};
         async move {
             if x != 0 || y != 0 {
                 return Err(error::Error::custom(SurfaceError {
@@ -181,13 +169,15 @@ where
                 }))
             }
             let objects = ctx.objects();
+            let objects = objects.lock().await;
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
             let buffer_id = buffer.0;
             let Some(buffer) = objects.get(buffer.0) else { return Err(error::Error::UnknownObject(buffer_id)); };
             if buffer.interface() != wl_buffer::NAME {
                 return Err(error::Error::InvalidObject(buffer_id))
             }
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = surface.pending_mut(&mut shell);
+            let state = this.inner.pending_mut(&mut shell);
             let buffer = buffer
                 .cast::<crate::objects::Buffer<<Ctx::ServerContext as HasBuffer>::Buffer>>()
                 .unwrap();
@@ -196,55 +186,61 @@ where
         }
     }
 
-    fn damage<'a>(
-        ctx: &'a mut Ctx,
+    fn damage(
+        ctx: &mut Ctx,
         object_id: u32,
         x: i32,
         y: i32,
         width: i32,
         height: i32,
-    ) -> Self::DamageFut<'a> {
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
+    ) -> Self::DamageFut<'_> {
         async move {
+            let objects = ctx.objects();
+            let objects = objects.lock().await;
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = surface.pending_mut(&mut shell);
+            let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
             Ok(())
         }
     }
 
-    fn damage_buffer<'a>(
-        ctx: &'a mut Ctx,
+    fn damage_buffer(
+        ctx: &mut Ctx,
         object_id: u32,
         x: i32,
         y: i32,
         width: i32,
         height: i32,
-    ) -> Self::DamageBufferFut<'a> {
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
+    ) -> Self::DamageBufferFut<'_> {
         async move {
+            let objects = ctx.objects();
+            let objects = objects.lock().await;
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = surface.pending_mut(&mut shell);
+            let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
             Ok(())
         }
     }
 
-    fn commit<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::CommitFut<'a> {
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
+    fn commit(ctx: &mut Ctx, object_id: u32) -> Self::CommitFut<'_> {
         async move {
+            let objects = ctx.objects();
+            let objects = objects.lock().await;
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
             use wl_server::connection::WriteMessage;
 
             use crate::shell::buffers::Buffer;
             let server_context = ctx.server_context().clone();
             let released_buffer = {
                 let mut shell = server_context.shell().borrow_mut();
-                let old_buffer = surface.current(&shell).buffer().cloned();
-                surface
-                    .commit(&mut shell, &mut ctx.state_mut().commit_scratch_buffer)
+                let old_buffer = this.inner.current(&shell).buffer().cloned();
+                this.inner
+                    .commit(&mut shell, &mut this.scratch_buffer.borrow_mut())
                     .map_err(wl_server::error::Error::UnknownFatalError)?;
 
-                let new_buffer = surface.current(&shell).buffer().cloned();
+                let new_buffer = this.inner.current(&shell).buffer().cloned();
                 drop(shell);
 
                 // TODO: this released_buffer calculation is wrong.
@@ -267,67 +263,59 @@ where
         }
     }
 
-    fn set_buffer_scale<'a>(
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        scale: i32,
-    ) -> Self::SetBufferScaleFut<'a> {
-        let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
-        let mut shell = ctx.server_context().shell().borrow_mut();
-        let pending_mut = surface.pending_mut(&mut shell);
+    fn set_buffer_scale(ctx: &mut Ctx, object_id: u32, scale: i32) -> Self::SetBufferScaleFut<'_> {
+        async move {
+            let objects = ctx.objects();
+            let objects = objects.lock().await;
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let mut shell = ctx.server_context().shell().borrow_mut();
+            let pending_mut = this.inner.pending_mut(&mut shell);
 
-        pending_mut.set_buffer_scale(scale as u32 * 120);
-        futures_util::future::ok(())
+            pending_mut.set_buffer_scale(scale as u32 * 120);
+            Ok(())
+        }
     }
 
-    fn set_input_region<'a>(
-        ctx: &'a mut Ctx,
+    fn set_input_region(
+        ctx: &mut Ctx,
         object_id: u32,
         region: wl_types::Object,
-    ) -> Self::SetInputRegionFut<'a> {
+    ) -> Self::SetInputRegionFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn set_opaque_region<'a>(
-        ctx: &'a mut Ctx,
+    fn set_opaque_region(
+        ctx: &mut Ctx,
         object_id: u32,
         region: wl_types::Object,
-    ) -> Self::SetOpaqueRegionFut<'a> {
+    ) -> Self::SetOpaqueRegionFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn set_buffer_transform<'a>(
-        ctx: &'a mut Ctx,
+    fn set_buffer_transform(
+        ctx: &mut Ctx,
         object_id: u32,
         transform: wl_output::enums::Transform,
-    ) -> Self::SetBufferTransformFut<'a> {
+    ) -> Self::SetBufferTransformFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn offset<'a>(ctx: &'a mut Ctx, object_id: u32, x: i32, y: i32) -> Self::OffsetFut<'a> {
+    fn offset(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::OffsetFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn destroy<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+    fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
-            use wl_server::connection::{WriteMessage, Objects};
+            use wl_server::connection::{LockedObjects, Objects, WriteMessage};
             let server_context = ctx.server_context().clone();
-            let this = ctx.objects().remove(object_id).unwrap();
+            let objects = ctx.objects();
+            let mut objects = objects.lock().await;
+            let this = objects.remove(object_id).unwrap();
             let this: &Self = this.cast().unwrap();
-            let state = ctx.state_mut();
-            if state.surfaces.remove(&object_id).is_none() {
-                panic!("Incosistent compositor state, surface {object_id} not found");
-            }
-            // Remove the surface from surface with output changed.
-            state
-                .output_changed
-                .write_end()
-                .borrow_mut()
-                .remove(&object_id);
 
-            this.0.destroy(
+            this.inner.destroy(
                 &mut server_context.shell().borrow_mut(),
-                &mut state.commit_scratch_buffer,
+                &mut this.scratch_buffer.borrow_mut(),
             );
 
             ctx.connection()
@@ -338,17 +326,37 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+struct CompositorInner {
+    _event_task:            Rc<AutoAbort>,
+    shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
+}
+
 /// The reference implementation of wl_compositor
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
-pub struct Compositor;
+#[derive(Debug, Default, Clone)]
+pub struct Compositor {
+    inner: Option<CompositorInner>,
+}
+
+impl Compositor {
+    pub fn new(handle: futures_util::future::AbortHandle) -> Self {
+        Self {
+            inner: Some(CompositorInner {
+                _event_task:            Rc::new(AutoAbort::new(handle)),
+                shared_surface_buffers: Default::default(),
+            }),
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.inner.is_some()
+    }
+}
 
 #[wayland_object]
 impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell,
-    Ctx: State<OutputAndCompositorState<<Ctx::ServerContext as HasShell>::Shell>>
-        + DispatchTo<crate::globals::Compositor>,
     Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
 {
     type Error = error::Error;
@@ -356,53 +364,122 @@ where
     type CreateRegionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
     type CreateSurfaceFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
 
-    fn create_surface<'a>(
-        ctx: &'a mut Ctx,
+    fn create_surface(
+        ctx: &mut Ctx,
         object_id: u32,
         id: wl_types::NewId,
-    ) -> Self::CreateSurfaceFut<'a> {
-        use futures_util::future::ready;
+    ) -> Self::CreateSurfaceFut<'_> {
         use wl_server::connection::Objects;
 
         use crate::shell::surface;
-        if ctx.objects().get(id.0).is_none() {
-            // Add the id to the list of surfaces
-            ctx.state_mut().surfaces.insert(id.0, Default::default());
-            let (ctx, state) = ctx.state();
+
+        async fn handle_surface_output_event<Obj: ObjectMeta + 'static>(
+            object_id: u32,
+            objects: impl Objects<Obj>,
+            conn: impl WriteMessage,
+            shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
+            rx: impl futures_util::Stream<Item = OutputEvent>,
+        ) {
+            use futures_util::StreamExt;
+            let mut current_outputs: HashSet<WeakPtr<crate::shell::output::Output>> =
+                HashSet::new();
+            pin_mut!(rx);
+            while let Some(event) = rx.next().await {
+                // Lock order: object store -> surface buffers
+                let mut objects = objects.lock().await;
+                let mut buffers = shared_surface_buffers.lock().await;
+
+                event
+                    .handle(
+                        object_id,
+                        &mut objects,
+                        &conn,
+                        &mut current_outputs,
+                        &mut buffers,
+                    )
+                    .await;
+            }
+        }
+        async move {
             let objects = ctx.objects();
-            let shell = ctx.server_context().shell();
-            let mut shell = shell.borrow_mut();
-            let surface = Rc::new(surface::Surface::new(id));
-            let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
-            let current_state = shell.get_mut(current);
-            current_state.stack_index = Some(current_state.stack_mut().push_back(
-                crate::shell::surface::SurfaceStackEntry {
-                    token:    current,
-                    position: Point::new(0, 0),
-                },
-            ));
-            surface.set_current(current);
-            surface.set_pending(current);
-            shell.post_commit(None, current);
+            let mut objects = objects.lock().await;
+            if objects.get(id.0).is_none() {
+                // Add the id to the list of surfaces
+                let shell = ctx.server_context().shell();
+                let mut shell = shell.borrow_mut();
+                let surface = Rc::new(surface::Surface::new(id));
+                let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
+                let current_state = shell.get_mut(current);
+                current_state.stack_index = Some(current_state.stack_mut().push_back(
+                    crate::shell::surface::SurfaceStackEntry {
+                        token:    current,
+                        position: Point::new(0, 0),
+                    },
+                ));
+                surface.set_current(current);
+                surface.set_pending(current);
+                surface.add_state(current);
+                shell.post_commit(None, current);
 
-            // Listen for output change events
-            let handle = ctx.event_handle();
-            let slot = <Ctx as DispatchTo<crate::globals::Compositor>>::SLOT;
-            surface.add_output_change_listener((handle, slot), state.output_changed.write_end());
+                // TODO: Listen for output change events
+                //let handle = ctx.event_handle();
+                //let slot = <Ctx as DispatchTo<crate::globals::Compositor>>::SLOT;
+                //surface
+                //    .add_output_change_listener((handle, slot),
+                // state.output_changed.write_end());
 
-            tracing::debug!("id {} is surface {:p}", id.0, surface);
-            objects.insert(id.0, Surface(surface)).unwrap();
-            ready(Ok(()))
-        } else {
-            ready(Err(error::Error::IdExists(id.0)))
+                // Copy the shared scratch_buffer from an existing surface object
+                let scratch_buffer = if let Some(surface) = objects
+                    .by_interface("wl_surface")
+                    .filter_map(|(_, s)| s.cast::<Surface<ShellOf<Ctx::ServerContext>>>())
+                    .next()
+                {
+                    surface.scratch_buffer.clone()
+                } else {
+                    Default::default()
+                };
+                let shared_surface_buffers = objects
+                    .get(object_id)
+                    .unwrap()
+                    .cast::<Self>()
+                    .unwrap()
+                    .inner
+                    .as_ref()
+                    .unwrap()
+                    .shared_surface_buffers
+                    .clone();
+                let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
+                let conn = ctx.connection().clone();
+                let objects2 = ctx.objects().clone();
+                let (fut, handle) = futures_util::future::abortable(handle_surface_output_event(
+                    id.0,
+                    objects2,
+                    conn,
+                    shared_surface_buffers,
+                    rx,
+                ));
+                tracing::debug!("id {} is surface {:p}", id.0, surface);
+                objects
+                    .insert(id.0, Surface {
+                        inner: surface,
+                        scratch_buffer,
+                        event_task: AutoAbort::new(handle),
+                    })
+                    .unwrap();
+                drop(objects); // unlock
+                ctx.spawn(fut.map(|_| ()));
+                Ok(())
+            } else {
+                Err(error::Error::IdExists(id.0))
+            }
         }
     }
 
-    fn create_region<'a>(
-        ctx: &'a mut Ctx,
+    fn create_region(
+        ctx: &mut Ctx,
         object_id: u32,
         id: wl_types::NewId,
-    ) -> Self::CreateRegionFut<'a> {
+    ) -> Self::CreateRegionFut<'_> {
         async { unimplemented!() }
     }
 }
@@ -410,11 +487,6 @@ where
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Subsurface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
-impl<S: Shell> SurfaceObject<S> for Subsurface<S> {
-    fn surface(&self) -> &Rc<crate::shell::surface::Surface<S>> {
-        &self.0
-    }
-}
 
 #[wayland_object]
 impl<Ctx: Client, S: Shell> wl_subsurface::RequestDispatch<Ctx> for Subsurface<S>
@@ -430,44 +502,41 @@ where
     type SetPositionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type SetSyncFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn set_sync<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::SetSyncFut<'a> {
+    fn set_sync(ctx: &mut Ctx, object_id: u32) -> Self::SetSyncFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn set_desync<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::SetDesyncFut<'a> {
+    fn set_desync(ctx: &mut Ctx, object_id: u32) -> Self::SetDesyncFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn destroy<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+    fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn place_above<'a>(
-        ctx: &'a mut Ctx,
+    fn place_above(
+        ctx: &mut Ctx,
         object_id: u32,
         sibling: wl_types::Object,
-    ) -> Self::PlaceAboveFut<'a> {
+    ) -> Self::PlaceAboveFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn place_below<'a>(
-        ctx: &'a mut Ctx,
+    fn place_below(
+        ctx: &mut Ctx,
         object_id: u32,
         sibling: wl_types::Object,
-    ) -> Self::PlaceBelowFut<'a> {
+    ) -> Self::PlaceBelowFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn set_position<'a>(
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        x: i32,
-        y: i32,
-    ) -> Self::SetPositionFut<'a> {
+    fn set_position(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::SetPositionFut<'_> {
         async move {
+            let objects = ctx.objects().lock().await;
             let mut shell = ctx.server_context().shell().borrow_mut();
-            let surface = get_surface_from_ctx::<_, Self>(ctx, object_id).unwrap();
-            let role = surface
+            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let role = this
+                .0
                 .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
             let parent = role.parent().upgrade().unwrap().pending_mut(&mut shell);
@@ -531,17 +600,17 @@ where
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type GetSubsurfaceFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn destroy<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+    fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn get_subsurface<'a>(
-        ctx: &'a mut Ctx,
+    fn get_subsurface(
+        ctx: &mut Ctx,
         object_id: u32,
         id: wl_types::NewId,
         surface: wl_types::Object,
         parent: wl_types::Object,
-    ) -> Self::GetSubsurfaceFut<'a> {
+    ) -> Self::GetSubsurfaceFut<'_> {
         use wl_server::connection::Objects;
         tracing::debug!(
             "get_subsurface, id: {:?}, surface: {:?}, parent: {:?}",
@@ -552,13 +621,14 @@ where
         async move {
             let shell = ctx.server_context().shell();
             let objects = ctx.objects();
+            let mut objects = objects.lock().await;
             let mut shell = shell.borrow_mut();
             let surface_id = surface.0;
             let surface = objects
                 .get(surface.0)
                 .and_then(|r| {
                     r.cast()
-                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.0.clone())
+                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.inner.clone())
                 })
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
@@ -570,7 +640,7 @@ where
                 .get(parent.0)
                 .and_then(|r| {
                     r.cast()
-                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.0.clone())
+                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.inner.clone())
                 })
                 .ok_or_else(|| {
                     Self::Error::custom(Error::BadSurface {
@@ -589,7 +659,7 @@ where
                         subsurface_object: object_id,
                     }))
                 } else {
-                    objects.insert(id.0, Subsurface(surface));
+                    objects.insert(id.0, Subsurface(surface)).unwrap();
                     Ok(())
                 }
             } else {

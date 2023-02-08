@@ -11,9 +11,9 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::{Client, Objects},
+    connection::{Client, LockedObjects, Objects},
     error,
-    objects::{wayland_object, DISPLAY_ID},
+    objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };
 
 use crate::{
@@ -159,16 +159,16 @@ where
 
     type CreatePoolFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn create_pool<'a>(
-        ctx: &'a mut Ctx,
+    fn create_pool(
+        ctx: &mut Ctx,
         object_id: u32,
         id: wl_types::NewId,
         mut fd: wl_types::Fd,
         size: i32,
-    ) -> Self::CreatePoolFut<'a> {
+    ) -> Self::CreatePoolFut<'_> {
         tracing::debug!("creating shm_pool with size {}", size);
         async move {
-            use wl_server::connection::WriteMessage;
+            use wl_server::connection::{LockedObjects, WriteMessage};
             if size <= 0 {
                 ctx.connection()
                     .send(DISPLAY_ID, wl_display::events::Error {
@@ -210,7 +210,7 @@ where
                     }),
                 })),
             };
-            if ctx.objects().insert(id.0, pool).is_err() {
+            if ctx.objects().lock().await.insert(id.0, pool).is_err() {
                 ctx.connection()
                     .send(DISPLAY_ID, wl_display::events::Error {
                         code:      wl_display::enums::Error::InvalidObject as u32,
@@ -299,8 +299,8 @@ where
     type DestroyFut<'a> = impl Future<Output = Result<(), error::Error>> + 'a where Ctx: 'a;
     type ResizeFut<'a> = impl Future<Output = Result<(), error::Error>> + 'a where Ctx: 'a;
 
-    fn create_buffer<'a>(
-        ctx: &'a mut Ctx,
+    fn create_buffer(
+        ctx: &mut Ctx,
         object_id: u32,
         id: wl_types::NewId,
         offset: i32,
@@ -308,17 +308,18 @@ where
         height: i32,
         stride: i32,
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
-    ) -> Self::CreateBufferFut<'a> {
+    ) -> Self::CreateBufferFut<'_> {
         async move {
-            use wl_server::connection::Objects;
+            use wl_server::connection::{LockedObjects, Objects};
+            let mut objects = ctx.objects().lock().await;
             let pool = {
-                use wl_server::objects::Object;
-                let this = ctx.objects().get(object_id).unwrap();
-                let this: &Self = this.cast().unwrap();
+                use wl_server::objects::ObjectMeta;
+                let this = objects.get(object_id).unwrap();
+                let this = this.cast::<Self>().unwrap();
                 this.inner.clone()
             };
 
-            let inserted = ctx.objects().try_insert_with(id.0, || {
+            let inserted = objects.try_insert_with(id.0, || {
                 let buffer: BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer> = BufferObj {
                     buffer: Rc::new(
                         Buffer {
@@ -343,10 +344,11 @@ where
         }
     }
 
-    fn destroy<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::DestroyFut<'a> {
+    fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
-            use wl_server::connection::WriteMessage;
-            ctx.objects().remove(object_id).unwrap();
+            use wl_server::connection::{LockedObjects, WriteMessage};
+            let mut objects = ctx.objects().lock().await;
+            objects.remove(object_id).unwrap();
             ctx.connection()
                 .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
@@ -354,12 +356,12 @@ where
         }
     }
 
-    fn resize<'a>(ctx: &'a mut Ctx, object_id: u32, size: i32) -> Self::ResizeFut<'a> {
+    fn resize(ctx: &mut Ctx, object_id: u32, size: i32) -> Self::ResizeFut<'_> {
         async move {
             let len = size as usize;
             let pool = {
-                use wl_server::objects::Object;
-                let this = ctx.objects().get(object_id).unwrap();
+                let objects = ctx.objects().lock().await;
+                let this = objects.get(object_id).unwrap();
                 let this: &Self = this.cast().unwrap();
                 this.inner.clone()
             };

@@ -2,7 +2,7 @@
 #![feature(type_alias_impl_trait, trait_upcasting)]
 
 use futures_lite::stream::StreamExt;
-use hashbrown::{HashMap, hash_map};
+use hashbrown::{hash_map, HashMap};
 use thiserror::Error;
 
 pub mod connection;
@@ -134,9 +134,10 @@ pub fn wayland_listener_auto(
 /// old serial numbers.
 pub trait Serial {
     type Data;
-    type Iter<'a>: Iterator<Item = (u32, &'a Self::Data)> + 'a
+    type Iter<'a>: Iterator<Item = (u32, &'a Self::Data)>
     where
-        Self: 'a;
+        Self: 'a,
+        Self::Data: 'a;
     /// Get the next serial number in sequence. A piece of data can be attached
     /// to each serial, storing, for example, what this event is about.
     fn next_serial(&mut self, data: Self::Data) -> u32;
@@ -179,12 +180,7 @@ impl<D> std::fmt::Debug for IdAlloc<D> {
 
 impl<D> Serial for IdAlloc<D> {
     type Data = D;
-
-    type Iter<'a> = impl Iterator<Item = (u32, &'a Self::Data)> + 'a where Self: 'a;
-
-    fn iter(&self) -> Self::Iter<'_> {
-        self.data.iter().map(|(k, v)| (*k, v))
-    }
+    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
 
     fn next_serial(&mut self, data: Self::Data) -> u32 {
         loop {
@@ -210,6 +206,20 @@ impl<D> Serial for IdAlloc<D> {
 
     fn expire(&mut self, serial: u32) -> bool {
         self.data.remove(&serial).is_some()
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.into_iter()
+    }
+}
+
+impl<'a, D: 'a> IntoIterator for &'a IdAlloc<D> {
+    type Item = (u32, &'a D);
+
+    type IntoIter = impl Iterator<Item = Self::Item> + 'a where Self: 'a;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.iter().map(|(k, v)| (*k, v))
     }
 }
 
@@ -258,24 +268,34 @@ macro_rules! globals {
                 }
             }
         )*
-        impl $crate::globals::Bind<$ctx> for $N {
-            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<<$ctx as $crate::connection::Client>::Object>> + 'a
-            where
-                Self: 'a;
+        impl $crate::globals::GlobalMeta for $N {
+            type Object = <$ctx as $crate::connection::Client>::Object;
             fn interface(&self) -> &'static str {
                 match self {
                     $(
-                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::interface(f),
+                        $N::$var(f) => <$f as $crate::globals::GlobalMeta>::interface(f),
                     )*
                 }
             }
             fn version(&self) -> u32 {
                 match self {
                     $(
-                        $N::$var(f) => <$f as $crate::globals::Bind<$ctx>>::version(f),
+                        $N::$var(f) => <$f as $crate::globals::GlobalMeta>::version(f),
                     )*
                 }
             }
+            fn new_object(&self) -> Self::Object {
+                match self {
+                    $(
+                        $N::$var(f) => <$f as $crate::globals::GlobalMeta>::new_object(f).into(),
+                    )*
+                }
+            }
+        }
+        impl $crate::globals::Bind<$ctx> for $N {
+            type BindFut<'a> = impl std::future::Future<Output = std::io::Result<()>> + 'a
+            where
+                Self: 'a;
             fn bind<'a>(&'a self, client: &'a mut $ctx, object_id: u32) -> Self::BindFut<'a> {
                 async move {
                     Ok(match self {$(

@@ -104,7 +104,7 @@ fn enum_type_name(enum_: &str, iface_version: &HashMap<&str, u32>) -> syn::Path 
             [
                 "__generated_root",
                 iface,
-                &format!("v{}", version),
+                &format!("v{version}"),
                 "enums",
                 &name.to_pascal_case(),
             ],
@@ -534,7 +534,7 @@ fn generate_dispatch_trait(
             type Error: ::wl_scanner_support::ProtocolError;
             #(
                 type #futs<'a>: ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
-                    where Ctx: 'a, Self: 'a;
+                    where Ctx: 'a;
             )*
             #(#methods)*
         }
@@ -735,7 +735,7 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
             })
             .collect();
         let desc = desc
-            .split("\n")
+            .split('\n')
             .filter_map(|s| {
                 let s = s.trim();
                 if let Some(m) = LINKREF_REGEX.find(s) {
@@ -749,9 +749,7 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
                         let refnum = m.get(1).unwrap().as_str().parse::<u32>().unwrap();
                         let link = link_refs.get(&refnum).unwrap();
                         format!(
-                            "<a href={link}><sup>{refnum}</sup></a>",
-                            refnum = refnum,
-                            link = link
+                            "<a href={link}><sup>{refnum}</sup></a>"
                         )
                     })
                     .into_owned();
@@ -941,6 +939,7 @@ pub fn generate_protocol(proto: &Protocol) -> Result<TokenStream> {
         .map(|v| generate_interface(v, &iface_version, &enum_info));
     let name = format_ident!("{}", proto.name);
     Ok(quote! {
+        #[allow(clippy::needless_lifetimes)]
         pub mod #name {
             use super::#name as __generated_root;
             #(#interfaces)*

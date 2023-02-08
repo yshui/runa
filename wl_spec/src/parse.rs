@@ -40,7 +40,7 @@ fn extract_end_tag<R: BufRead>(reader: &mut Reader<R>, tag: &[u8]) -> Result<()>
                         .into_owned(),
                 })
             },
-        other => return Err(Error::UnexpectedToken(format!("{:?}", other))),
+        other => return Err(Error::UnexpectedToken(format!("{other:?}"))),
     }
     Ok(())
 }
@@ -69,7 +69,7 @@ fn parse_protocol<R: BufRead>(mut reader: Reader<R>) -> Result<Protocol> {
                 return Err(Error::NoName)
             }
         },
-        other => return Err(Error::UnexpectedToken(format!("{:?}", other))),
+        other => return Err(Error::UnexpectedToken(format!("{other:?}"))),
     };
 
     loop {
@@ -115,7 +115,7 @@ fn parse_protocol<R: BufRead>(mut reader: Reader<R>) -> Result<Protocol> {
             },
             // ignore comments
             Ok(Event::Comment(_)) => {},
-            e => return Err(Error::UnexpectedToken(format!("{:?}", e))),
+            e => return Err(Error::UnexpectedToken(format!("{e:?}"))),
         }
     }
 
@@ -191,7 +191,7 @@ fn parse_description<R: BufRead>(
             Ok(Event::End(bytes)) if bytes.local_name().as_ref() == b"description" => break,
             Ok(Event::Comment(_)) => {},
             Err(e) => return Err(e.into()),
-            e => return Err(Error::UnexpectedToken(format!("{:?}", e))),
+            e => return Err(Error::UnexpectedToken(format!("{e:?}"))),
         }
     }
 

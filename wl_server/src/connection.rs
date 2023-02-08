@@ -3,55 +3,113 @@
 //!
 //! Here are also some default implementations of these traits.
 
-use std::{
-    cell::{Cell, Ref, RefCell, RefMut},
-    future::Future,
-    pin::Pin,
-    rc::Rc,
-    task::ready,
-};
+use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::ready};
 
+use async_lock::{Mutex, MutexGuard};
 use derivative::Derivative;
-use hashbrown::{hash_map, HashMap};
+use hashbrown::{
+    hash_map::{self, OccupiedError},
+    HashMap, HashSet,
+};
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
-use crate::objects::Object;
+use crate::objects::{Object, ObjectMeta};
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
+
+pub trait LockedObjects<'this, O>
+where
+    Self: 'this,
+{
+    /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
+    type IfaceIter<'a>: Iterator<Item = (u32, &'a O)> + 'a
+    where
+        O: 'a,
+        Self: 'a;
+    /// Insert object into the store with the given ID. Returns Ok(()) if
+    /// successful, Err(T) if the ID is already in use.
+    fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+    /// Allocate a new ID for the client, associate `object` for it.
+    /// According to the wayland spec, the ID must start from 0xff000000
+    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
+    fn remove(&mut self, id: u32) -> Option<O>;
+    /// Get an object from the store.
+    fn get(&self, id: u32) -> Option<&O>;
+    fn get_mut(&mut self, id: u32) -> Option<&mut O>;
+    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool;
+    /// Return an `AsIterator` for all objects in the store with a specific
+    /// interface An `Iterator` can be obtain from an `AsIterator` by
+    /// calling `as_iter()`
+    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a>;
+}
 
 /// A bundle of objects.
 ///
 /// Usually this is the set of objects a client has bound to. When cloned, the
 /// result should reference to the same bundle of objects.
 ///
-/// Although all the methods are callable with a shared reference, if you are holding the value
-/// returned by a `get(...)` call, you should not try to modify the store, using methods like
-/// `insert`, `remove`, etc., which may cause a panic. Drop the `ObjectRef` first.
+/// Although all the methods are callable with a shared reference, if you are
+/// holding the value returned by a `get(...)` call, you should not try to
+/// modify the store, using methods like `insert`, `remove`, etc., which may
+/// cause a panic. Drop the `ObjectRef` first.
 pub trait Objects<O>: Clone {
-    type ObjectRef<'a>: std::ops::Deref<Target = O>
+    type LockedObjects<'a>: LockedObjects<'a, O> + 'a
     where
         O: 'a,
         Self: 'a;
-    /// Insert object into the store with the given ID. Returns Ok(()) if
-    /// successful, Err(T) if the ID is already in use.
-    fn insert<T: Into<O>>(&self, id: u32, object: T) -> Result<(), T>;
-    /// Allocate a new ID for the client, associate `object` for it.
-    /// According to the wayland spec, the ID must start from 0xff000000
-    fn allocate<T: Into<O>>(&self, object: T) -> Result<u32, T>;
-    fn remove(&self, id: u32) -> Option<O>;
-    /// Get an object from the store.
-    fn get(&self, id: u32) -> Option<Self::ObjectRef<'_>>;
-    fn try_insert_with(&self, id: u32, f: impl FnOnce() -> O) -> bool;
-}
-impl<O> Store<O> {
-    /// Remove all objects from the store. MUST be called before the store is
-    /// dropped, to ensure on_disconnect is called for all objects.
-    pub fn clear_for_disconnect<Ctx>(&self, ctx: &mut Ctx)
+    type LockFut<'a>: Future<Output = Self::LockedObjects<'a>> + 'a
     where
-        O: Object<Ctx>,
-    {
-        for (_, ref mut obj) in self.map.borrow_mut().drain() {
-            obj.on_disconnect(ctx);
+        O: 'a,
+        Self: 'a;
+    /// Lock the store for read/write accesses.
+    fn lock(&self) -> Self::LockFut<'_>;
+}
+
+#[derive(Debug, Derivative)]
+#[derivative(Default(bound = ""))]
+struct StoreInner<Object> {
+    map:          HashMap<u32, Object>,
+    by_interface: HashMap<&'static str, HashSet<u32>>,
+    /// Next ID to use for server side object allocation
+    #[derivative(Default(value = "CLIENT_MAX_ID + 1"))]
+    next_id:      u32,
+    /// Number of server side IDs left
+    #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
+    ids_left:     u32,
+}
+
+impl<Object: crate::objects::ObjectMeta> StoreInner<Object> {
+    #[inline]
+    fn insert(&mut self, id: u32, object: Object) -> Result<(), Object> {
+        let interface = object.interface();
+        if let Err(OccupiedError { value, .. }) = self.map.try_insert(id, object) {
+            Err(value)
+        } else {
+            self.by_interface.entry(interface).or_default().insert(id);
+            Ok(())
+        }
+    }
+
+    #[inline]
+    fn remove(&mut self, id: u32) -> Option<Object> {
+        let object = self.map.remove(&id)?;
+        let interface = object.interface();
+        self.by_interface.get_mut(interface).unwrap().remove(&id);
+        Some(object)
+    }
+
+    #[inline]
+    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> Object) -> bool {
+        let entry = self.map.entry(id);
+        match entry {
+            hash_map::Entry::Occupied(_) => false,
+            hash_map::Entry::Vacant(v) => {
+                let object = f();
+                let interface = object.interface();
+                v.insert(object);
+                self.by_interface.entry(interface).or_default().insert(id);
+                true
+            },
         }
     }
 }
@@ -61,88 +119,138 @@ impl<O> Store<O> {
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""), Clone(bound = ""))]
 pub struct Store<Object> {
-    map:     Rc<RefCell<HashMap<u32, Object>>>,
-    #[derivative(Default(value = "Rc::new(Some(CLIENT_MAX_ID + 1).into())"))]
-    next_id: Rc<Cell<Option<u32>>>,
-    id_used: Rc<Cell<u32>>,
+    inner: Rc<Mutex<StoreInner<Object>>>,
 }
 
-impl<Object> Drop for Store<Object> {
-    fn drop(&mut self) {
-        assert!(
-            self.map.borrow().is_empty() || Rc::strong_count(&self.map) > 1,
-            "Store not cleared before drop"
-        );
+impl<Object: ObjectMeta> Objects<Object> for Store<Object> {
+    type LockedObjects<'a> = LockedStore<'a, Object> where Object: 'a, Self: 'a;
+
+    type LockFut<'a> = impl Future<Output = Self::LockedObjects<'a>> + 'a
+    where
+        Object: 'a,
+        Self: 'a;
+
+    fn lock(&self) -> Self::LockFut<'_> {
+        async move {
+            LockedStore {
+                inner: self.inner.lock().await,
+            }
+        }
     }
 }
 
-pub type StoreEntry<'a, O> = RefMut<'a, hash_map::Entry<'a, u32, Rc<O>, hash_map::DefaultHashBuilder>>;
-impl<O> Objects<O> for Store<O> {
-    type ObjectRef<'a> = Ref<'a, O> where O: 'a, Self: 'a;
+pub struct LockedStore<'a, Object> {
+    inner: MutexGuard<'a, StoreInner<Object>>,
+}
+
+impl<'a, O> LockedStore<'a, O> {
+    /// Remove all objects from the store. MUST be called before the store is
+    /// dropped, to ensure on_disconnect is called for all objects.
+    pub fn clear_for_disconnect<Ctx>(&mut self, ctx: &mut Ctx)
+    where
+        O: Object<Ctx>,
+    {
+        tracing::debug!("Clearing store for disconnect");
+        for (_, ref mut obj) in self.inner.map.drain() {
+            tracing::debug!("Calling on_disconnect for {obj:p}");
+            obj.on_disconnect(ctx);
+        }
+        self.inner.ids_left = u32::MAX - CLIENT_MAX_ID;
+        self.inner.next_id = CLIENT_MAX_ID + 1;
+    }
+}
+
+impl<Object> Drop for StoreInner<Object> {
+    fn drop(&mut self) {
+        assert!(self.map.is_empty(), "Store not cleared before drop");
+    }
+}
+
+impl<'this, O: ObjectMeta> LockedObjects<'this, O> for LockedStore<'this, O> {
+    type IfaceIter<'a> = impl Iterator<Item = (u32, &'a O)> + 'a
+        where O: 'a, Self: 'a;
 
     #[inline]
-    fn insert<T: Into<O>>(&self, object_id: u32, object: T) -> Result<(), T> {
+    fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
         if object_id > CLIENT_MAX_ID {
             return Err(object)
         }
 
-        match self.map.borrow_mut().entry(object_id) {
-            hash_map::Entry::Occupied(_) => Err(object),
-            hash_map::Entry::Vacant(v) => {
-                v.insert(object.into());
-                Ok(())
-            },
+        let mut orig = Some(object);
+        self.inner
+            .try_insert_with(object_id, || orig.take().unwrap().into());
+        if let Some(orig) = orig {
+            Err(orig)
+        } else {
+            Ok(())
         }
     }
 
     #[inline]
-    fn allocate<T: Into<O>>(&self, object: T) -> Result<u32, T> {
-        let Some(id) = self.next_id.get() else { return Err(object) };
-        self.id_used.set(self.id_used.get() + 1);
+    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T> {
+        if self.inner.ids_left == 0 {
+            // Store full
+            return Err(object)
+        }
 
-        self.next_id
-            .set(if self.id_used.get() >= u32::MAX - CLIENT_MAX_ID {
-                None
+        let mut curr = self.inner.next_id;
+
+        // Find the next unused id
+        loop {
+            if !self.inner.map.contains_key(&curr) {
+                break
+            }
+            if curr == u32::MAX {
+                curr = CLIENT_MAX_ID + 1;
             } else {
-                let mut curr = id;
-                let map = self.map.borrow();
-                // Find the next unused id
-                loop {
-                    curr = curr.wrapping_add(1);
-                    if !map.contains_key(&curr) {
-                        break
-                    }
-                }
-                Some(curr)
-            });
+                curr += 1;
+            }
+        }
 
-        let inserted = self.map.borrow_mut().insert(id, object.into());
-        assert!(inserted.is_none());
-        Ok(id)
-    }
-
-    fn remove(&self, object_id: u32) -> Option<O> {
-        self.map.borrow_mut().remove(&object_id)
-    }
-
-    fn get(&self, object_id: u32) -> Option<Self::ObjectRef<'_>> {
-        if self.map.borrow().contains_key(&object_id) {
-            Some(Ref::map(self.map.borrow(), |r| r.get(&object_id).unwrap()))
+        self.inner.next_id = if curr == u32::MAX {
+            CLIENT_MAX_ID + 1
         } else {
-            None
-        }
+            curr + 1
+        };
+        self.inner.ids_left -= 1;
+
+        self.inner
+            .insert(curr, object.into())
+            .unwrap_or_else(|_| unreachable!());
+        Ok(curr)
     }
 
-    fn try_insert_with(&self, id: u32, f: impl FnOnce() -> O) -> bool {
-        let mut map = self.map.borrow_mut();
-        let entry = map.entry(id);
-        match entry {
-            hash_map::Entry::Occupied(_) => false,
-            hash_map::Entry::Vacant(v) => {
-                v.insert(f());
-                true
-            },
+    fn remove(&mut self, object_id: u32) -> Option<O> {
+        if object_id > CLIENT_MAX_ID {
+            self.inner.ids_left += 1;
         }
+        self.inner.remove(object_id)
+    }
+
+    fn get(&self, object_id: u32) -> Option<&O> {
+        self.inner.map.get(&object_id)
+    }
+
+    fn get_mut(&mut self, id: u32) -> Option<&mut O> {
+        self.inner.map.get_mut(&id)
+    }
+
+    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool {
+        if id > CLIENT_MAX_ID {
+            return false
+        }
+        self.inner.try_insert_with(id, f)
+    }
+
+    fn by_interface(&self, interface: &'static str) -> Self::IfaceIter<'_> {
+        self.inner
+            .by_interface
+            .get(interface)
+            .into_iter()
+            .flat_map(move |ids| {
+                ids.iter()
+                    .map(move |id| (*id, self.inner.map.get(id).unwrap()))
+            })
     }
 }
 
@@ -169,7 +277,7 @@ pub trait WriteMessage {
 }
 
 /// A client connection
-pub trait Client: Sized + crate::events::EventMux + 'static {
+pub trait Client: Sized + 'static {
     type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
     type ObjectStore: Objects<Self::Object>;
     type Connection: WriteMessage + Clone + 'static;
@@ -185,6 +293,10 @@ pub trait Client: Sized + crate::events::EventMux + 'static {
     /// Spawn a client dependent task from the context. When the client is
     /// disconnected, the task should be cancelled, otherwise the task
     /// should keep running.
+    ///
+    /// For simplicity's sake, we don't return a handle to the task. So if you
+    /// want to stop your task early, you can wrap it in
+    /// [`futures::future::Abortable`], or similar.
     fn spawn(&self, fut: impl Future<Output = ()> + 'static);
     fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
     where
@@ -201,9 +313,9 @@ macro_rules! impl_dispatch {
     // Neither of those are on clear paths to stabilization.
     () => {
         type DispatchFut<'a, R> = impl Future<Output = bool> + 'a
-                        where
-                            Self: 'a,
-                            R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+                                                where
+                                                    Self: 'a,
+                                                    R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
 
         fn dispatch<'a, R>(&'a mut self, mut reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
@@ -255,14 +367,14 @@ macro_rules! impl_dispatch {
                         .is_err();
                 }
                 if !fatal {
-                    use $crate::objects::Object;
+                    use $crate::{objects::ObjectMeta, connection::LockedObjects};
                     if bytes_read != len as usize {
                         let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
                         let opcode = len_opcode & 0xffff;
                         tracing::error!(
                             "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
                              {}@{object_id}, opcode: {opcode}",
-                            self.objects().get(object_id).unwrap().interface()
+                            self.objects().lock().await.get(object_id).map(|o| o.interface()).unwrap_or("unknown")
                         );
                         fatal = true;
                     }
@@ -416,8 +528,7 @@ impl<D> EventSerial<D> {
 
 impl<D: 'static> crate::Serial for EventSerial<D> {
     type Data = D;
-
-    type Iter<'a> = impl Iterator<Item = (u32, &'a D)> + 'a where Self: 'a;
+    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter;
 
     fn next_serial(&mut self, data: Self::Data) -> u32 {
         self.last_serial += 1;
@@ -453,48 +564,15 @@ impl<D: 'static> crate::Serial for EventSerial<D> {
     }
 
     fn iter(&self) -> Self::Iter<'_> {
-        self.serials.iter().map(|(k, (d, _))| (*k, d))
+        self.into_iter()
     }
 }
+impl<'a, D: 'a> IntoIterator for &'a EventSerial<D> {
+    type Item = (u32, &'a D);
 
-/// Allow storing per-client states in the client context.
-/// Your client context type must implement `State` for types that need this.
-/// Otherwise you will get compile errors stating unmet trait bounds.
-///
-/// See [`UnboundedAggregate`] which is a helper type which you can use to
-/// implement this generically for all `T: Any`. You can easily embed it in your
-/// own client context type and forward the methods to it.
-pub trait State<T: Default>: Sized {
-    /// Get a reference to the state of type `T`, if `state_mut` has not been
-    /// called before, this can return `None`.
-    fn state(&mut self) -> (&Self, &T);
-    /// Get a mutable reference to the state of type `T`.
-    fn state_mut(&mut self) -> &mut T;
-}
+    type IntoIter = impl Iterator<Item = Self::Item> + 'a where Self: 'a;
 
-/// A helper macro to implement `State` generically for all `T: Any + Default`.
-///
-/// Takes 2 arguments:
-///    - The type name to implement `State` for
-///    - The name of the field in the type that holds the `UnboundedAggregate`.
-#[macro_export]
-macro_rules! impl_state_any_for {
-    ($ty:ty, $member:ident) => {
-        impl<T: std::any::Any + Default> $crate::connection::State<T> for $ty {
-            fn state<'a>(&mut self) -> (&Self, &T) {
-                // Safety: We are doing this to bypass the borrow checker, we make it forget
-                // that this &T came from a &mut self, so we will be able to return a &self
-                // later. This is safe because after this we never use self mutably again after
-                // the trick.
-                unsafe {
-                    let t = &*(self.$member.get_or_default::<T>() as *const _);
-                    (self, t)
-                }
-            }
-
-            fn state_mut(&mut self) -> &mut T {
-                self.$member.get_or_default::<T>()
-            }
-        }
-    };
+    fn into_iter(self) -> Self::IntoIter {
+        self.serials.iter().map(|(k, (d, _))| (*k, d))
+    }
 }

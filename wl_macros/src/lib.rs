@@ -768,7 +768,7 @@ pub fn interface_message_dispatch_for_enum(
                 msg: Self::Request<'a>,
             ) -> Self::Fut<'a> {
                 async move {
-                    use #crate_::connection::{LockedObjects, Objects};
+                    use #crate_::connection::{traits::{LockableStore, Store}};
                     let objects = ctx.objects().lock().await;
                     let object = objects.get(object_id);
                     if object.is_none() {

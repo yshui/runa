@@ -4,7 +4,10 @@ use futures_util::{pin_mut, FutureExt};
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::{Client, LockedObjects, WriteMessage},
+    connection::{
+        traits::{LockableStore, Store},
+        Client, WriteMessage,
+    },
     events::EventSource,
     objects::ObjectMeta,
     server::{GlobalsUpdate, Server},
@@ -129,7 +132,6 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            use crate::connection::Objects;
             let rx = client.server_context().globals().borrow().subscribe();
             let (fut, handle) = futures_util::future::abortable(handle_registry_events(
                 object_id,

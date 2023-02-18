@@ -13,7 +13,7 @@ use wl_protocol::wayland::{
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{Client, Objects, WriteMessage},
+    connection::{Client, traits::{Store, LockableStore}, WriteMessage},
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
@@ -62,7 +62,6 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            use wl_server::connection::LockedObjects;
             let mut objects = client.objects().lock().await;
             // Check if we already have a compositor bound, and clone their render event
             // handler abort handle if so; otherwise start the event handler task.
@@ -108,13 +107,12 @@ where
 }
 
 async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
-    objects: impl Objects<Obj>,
+    objects: impl LockableStore<Obj>,
     server_context: impl Server + HasShell<Shell = S>,
     conn: impl WriteMessage,
     rx: impl Stream<Item = ShellEvent>,
 ) {
     use futures_util::StreamExt;
-    use wl_server::connection::LockedObjects;
     let mut callbacks_to_fire: HashSet<u32> = HashSet::new();
     pin_mut!(rx);
     while let Some(event) = rx.next().await {
@@ -161,7 +159,8 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
             }
         }
         for &callback in &callbacks_to_fire {
-            wl_server::objects::Callback::fire(callback, time, &mut objects, &conn)
+            use std::ops::DerefMut;
+            wl_server::objects::Callback::fire(callback, time, objects.deref_mut(), &conn)
                 .await
                 .unwrap();
         }
@@ -289,7 +288,6 @@ where
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
             use futures_util::FutureExt;
-            use wl_server::connection::LockedObjects;
             let rx = self.0.subscribe();
             let objects = client.objects();
             let mut objects = objects.lock().await;

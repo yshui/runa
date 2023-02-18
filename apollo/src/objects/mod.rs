@@ -4,7 +4,11 @@ use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_output::v4 as wl_output,
 };
 use wl_server::{
-    connection::{Client, Objects},
+    connection::{
+        traits::{LockableStore, Store},
+        Client,
+        WriteMessage,
+    },
     objects::{wayland_object, DISPLAY_ID},
 };
 
@@ -35,7 +39,6 @@ where
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
             let objects = ctx.objects();
-            use wl_server::connection::{LockedObjects, WriteMessage};
             let mut objects = objects.lock().await;
             objects.remove(object_id);
             ctx.connection()
@@ -71,7 +74,6 @@ where
 
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
-            use wl_server::connection::LockedObjects;
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
             let _ = objects.remove(object_id).unwrap();

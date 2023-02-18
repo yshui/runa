@@ -25,7 +25,10 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{Client, LockedObjects, Objects, WriteMessage},
+    connection::{
+        traits::{LockableStore, Store},
+        Client, WriteMessage,
+    },
     error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
@@ -129,7 +132,6 @@ where
 
     fn frame(ctx: &mut Ctx, object_id: u32, callback: wl_types::NewId) -> Self::FrameFut<'_> {
         async move {
-            use wl_server::connection::{LockedObjects, Objects};
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
             let surface = objects
@@ -160,7 +162,6 @@ where
         x: i32,
         y: i32,
     ) -> Self::AttachFut<'_> {
-        use wl_server::connection::{LockedObjects, Objects};
         async move {
             if x != 0 || y != 0 {
                 return Err(error::Error::custom(SurfaceError {
@@ -306,7 +307,6 @@ where
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
-            use wl_server::connection::{LockedObjects, Objects, WriteMessage};
             let server_context = ctx.server_context().clone();
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
@@ -377,18 +377,17 @@ where
         object_id: u32,
         id: wl_types::NewId,
     ) -> Self::CreateSurfaceFut<'_> {
-        use wl_server::connection::Objects;
-
         use crate::shell::surface;
 
         async fn handle_surface_output_event<Obj: ObjectMeta + 'static>(
             object_id: u32,
-            objects: impl Objects<Obj>,
+            objects: impl LockableStore<Obj>,
             conn: impl WriteMessage,
             shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
             rx: impl futures_util::Stream<Item = OutputEvent>,
         ) {
             use futures_util::StreamExt;
+            use std::ops::DerefMut;
             let mut current_outputs: HashSet<WeakPtr<crate::shell::output::Output>> =
                 HashSet::new();
             pin_mut!(rx);
@@ -400,7 +399,7 @@ where
                 event
                     .handle(
                         object_id,
-                        &mut objects,
+                        objects.deref_mut(),
                         &conn,
                         &mut current_outputs,
                         &mut buffers,
@@ -618,7 +617,6 @@ where
         surface: wl_types::Object,
         parent: wl_types::Object,
     ) -> Self::GetSubsurfaceFut<'_> {
-        use wl_server::connection::Objects;
         tracing::debug!(
             "get_subsurface, id: {:?}, surface: {:?}, parent: {:?}",
             id,

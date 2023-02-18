@@ -1,7 +1,6 @@
 use std::{
     any::Any,
     cell::{Cell, Ref, RefCell, RefMut},
-    collections::VecDeque,
     rc::{Rc, Weak},
 };
 
@@ -15,7 +14,7 @@ use wl_protocol::{
     wayland::{wl_output::v4 as wl_output, wl_surface::v5 as wl_surface},
 };
 use wl_server::{
-    connection::{LockedObjects, WriteMessage},
+    connection::{traits::Store, WriteMessage},
     events::{single_state, EventSource},
     objects::ObjectMeta,
     provide_any::{request_mut, request_ref, Demand, Provider},
@@ -739,7 +738,7 @@ impl OutputEvent {
     pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static>(
         self,
         object_id: u32,
-        objects: &mut impl LockedObjects<'a, Obj>,
+        objects: &mut impl Store<Obj>,
         conn: &impl WriteMessage,
         current_outputs: &mut HashSet<WeakPtr<super::output::Output>>,
         buffers: &mut crate::objects::compositor::SharedSurfaceBuffers,
@@ -784,7 +783,7 @@ impl LayoutEvent {
     pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static, Sh: super::xdg::XdgShell>(
         self,
         object_id: u32,
-        objects: &impl LockedObjects<'a, Obj>,
+        objects: &impl Store<Obj>,
         conn: &impl WriteMessage,
     ) {
         use super::xdg::Surface as XdgSurface;

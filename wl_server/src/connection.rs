@@ -17,57 +17,61 @@ use crate::objects::{Object, ObjectMeta};
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
-pub trait LockedObjects<'this, O>
-where
-    Self: 'this,
-{
-    /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
-    type IfaceIter<'a>: Iterator<Item = (u32, &'a O)> + 'a
-    where
-        O: 'a,
-        Self: 'a;
-    /// Insert object into the store with the given ID. Returns Ok(()) if
-    /// successful, Err(T) if the ID is already in use.
-    fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
-    /// Allocate a new ID for the client, associate `object` for it.
-    /// According to the wayland spec, the ID must start from 0xff000000
-    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
-    fn remove(&mut self, id: u32) -> Option<O>;
-    /// Get an object from the store.
-    fn get(&self, id: u32) -> Option<&O>;
-    fn get_mut(&mut self, id: u32) -> Option<&mut O>;
-    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool;
-    /// Return an `AsIterator` for all objects in the store with a specific
-    /// interface An `Iterator` can be obtain from an `AsIterator` by
-    /// calling `as_iter()`
-    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a>;
-}
+pub mod traits {
+    use futures_core::Future;
 
-/// A bundle of objects.
-///
-/// Usually this is the set of objects a client has bound to. When cloned, the
-/// result should reference to the same bundle of objects.
-///
-/// Although all the methods are callable with a shared reference, if you are
-/// holding the value returned by a `get(...)` call, you should not try to
-/// modify the store, using methods like `insert`, `remove`, etc., which may
-/// cause a panic. Drop the `ObjectRef` first.
-pub trait Objects<O>: Clone {
-    type LockedObjects<'a>: LockedObjects<'a, O> + 'a
-    where
-        O: 'a,
-        Self: 'a;
-    type LockFut<'a>: Future<Output = Self::LockedObjects<'a>> + 'a
-    where
-        O: 'a,
-        Self: 'a;
-    /// Lock the store for read/write accesses.
-    fn lock(&self) -> Self::LockFut<'_>;
+    use crate::objects::{ObjectMeta, StaticObjectMeta};
+
+    pub trait Store<O> {
+        /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
+        type IfaceIter<'a>: Iterator<Item = (u32, &'a O)> + 'a
+        where
+            O: 'a,
+            Self: 'a;
+        /// Insert object into the store with the given ID. Returns Ok(()) if
+        /// successful, Err(T) if the ID is already in use.
+        fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+        /// Allocate a new ID for the client, associate `object` for it.
+        /// According to the wayland spec, the ID must start from 0xff000000
+        fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
+        fn remove(&mut self, id: u32) -> Option<O>;
+        /// Get an object from the store.
+        fn get(&self, id: u32) -> Option<&O>;
+        fn get_mut(&mut self, id: u32) -> Option<&mut O>;
+        fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool;
+        /// Return an `AsIterator` for all objects in the store with a specific
+        /// interface An `Iterator` can be obtain from an `AsIterator` by
+        /// calling `as_iter()`
+        fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a>;
+    }
+
+    /// A bundle of objects.
+    ///
+    /// Usually this is the set of objects a client has bound to. When cloned,
+    /// the result should reference to the same bundle of objects.
+    ///
+    /// Although all the methods are callable with a shared reference, if you
+    /// are holding the value returned by a `get(...)` call, you should not
+    /// try to modify the store, using methods like `insert`, `remove`,
+    /// etc., which may cause a panic. Drop the `ObjectRef` first.
+    pub trait LockableStore<O>: Clone {
+        type LockedStore: Store<O>;
+        type Guard<'a>: std::ops::DerefMut<Target = Self::LockedStore> + 'a
+        where
+            Self: 'a,
+            O: 'a;
+        type LockFut<'a>: Future<Output = Self::Guard<'a>> + 'a
+        where
+            O: 'a,
+            Self: 'a;
+        /// Lock the store for read/write accesses.
+        fn lock(&self) -> Self::LockFut<'_>;
+    }
 }
 
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""))]
-struct StoreInner<Object> {
+pub struct Store<Object> {
     map:          HashMap<u32, Object>,
     by_interface: HashMap<&'static str, HashSet<u32>>,
     /// Next ID to use for server side object allocation
@@ -78,7 +82,7 @@ struct StoreInner<Object> {
     ids_left:     u32,
 }
 
-impl<Object: crate::objects::ObjectMeta> StoreInner<Object> {
+impl<Object: crate::objects::ObjectMeta> Store<Object> {
     #[inline]
     fn insert(&mut self, id: u32, object: Object) -> Result<(), Object> {
         let interface = object.interface();
@@ -118,32 +122,25 @@ impl<Object: crate::objects::ObjectMeta> StoreInner<Object> {
 /// implementation of [`Objects`].
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""), Clone(bound = ""))]
-pub struct Store<Object> {
-    inner: Rc<Mutex<StoreInner<Object>>>,
+pub struct LockableStore<Object> {
+    inner: Rc<Mutex<Store<Object>>>,
 }
 
-impl<Object: ObjectMeta> Objects<Object> for Store<Object> {
-    type LockedObjects<'a> = LockedStore<'a, Object> where Object: 'a, Self: 'a;
+impl<Object: ObjectMeta> traits::LockableStore<Object> for LockableStore<Object> {
+    type Guard<'a> = MutexGuard<'a, Store<Object>> where Object: 'a;
+    type LockedStore = Store<Object>;
 
-    type LockFut<'a> = impl Future<Output = Self::LockedObjects<'a>> + 'a
+    type LockFut<'a> = impl Future<Output = Self::Guard<'a>> + 'a
     where
         Object: 'a,
         Self: 'a;
 
     fn lock(&self) -> Self::LockFut<'_> {
-        async move {
-            LockedStore {
-                inner: self.inner.lock().await,
-            }
-        }
+        self.inner.lock()
     }
 }
 
-pub struct LockedStore<'a, Object> {
-    inner: MutexGuard<'a, StoreInner<Object>>,
-}
-
-impl<'a, O> LockedStore<'a, O> {
+impl<O> Store<O> {
     /// Remove all objects from the store. MUST be called before the store is
     /// dropped, to ensure on_disconnect is called for all objects.
     pub fn clear_for_disconnect<Ctx>(&mut self, ctx: &mut Ctx)
@@ -151,24 +148,23 @@ impl<'a, O> LockedStore<'a, O> {
         O: Object<Ctx>,
     {
         tracing::debug!("Clearing store for disconnect");
-        for (_, ref mut obj) in self.inner.map.drain() {
+        for (_, ref mut obj) in self.map.drain() {
             tracing::debug!("Calling on_disconnect for {obj:p}");
             obj.on_disconnect(ctx);
         }
-        self.inner.ids_left = u32::MAX - CLIENT_MAX_ID;
-        self.inner.next_id = CLIENT_MAX_ID + 1;
+        self.ids_left = u32::MAX - CLIENT_MAX_ID;
+        self.next_id = CLIENT_MAX_ID + 1;
     }
 }
 
-impl<Object> Drop for StoreInner<Object> {
+impl<Object> Drop for Store<Object> {
     fn drop(&mut self) {
         assert!(self.map.is_empty(), "Store not cleared before drop");
     }
 }
 
-impl<'this, O: ObjectMeta> LockedObjects<'this, O> for LockedStore<'this, O> {
-    type IfaceIter<'a> = impl Iterator<Item = (u32, &'a O)> + 'a
-        where O: 'a, Self: 'a;
+impl<O: ObjectMeta> traits::Store<O> for Store<O> {
+    type IfaceIter<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
 
     #[inline]
     fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
@@ -177,8 +173,7 @@ impl<'this, O: ObjectMeta> LockedObjects<'this, O> for LockedStore<'this, O> {
         }
 
         let mut orig = Some(object);
-        self.inner
-            .try_insert_with(object_id, || orig.take().unwrap().into());
+        Self::try_insert_with(self, object_id, || orig.take().unwrap().into());
         if let Some(orig) = orig {
             Err(orig)
         } else {
@@ -188,16 +183,16 @@ impl<'this, O: ObjectMeta> LockedObjects<'this, O> for LockedStore<'this, O> {
 
     #[inline]
     fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T> {
-        if self.inner.ids_left == 0 {
+        if self.ids_left == 0 {
             // Store full
             return Err(object)
         }
 
-        let mut curr = self.inner.next_id;
+        let mut curr = self.next_id;
 
         // Find the next unused id
         loop {
-            if !self.inner.map.contains_key(&curr) {
+            if !self.map.contains_key(&curr) {
                 break
             }
             if curr == u32::MAX {
@@ -207,50 +202,44 @@ impl<'this, O: ObjectMeta> LockedObjects<'this, O> for LockedStore<'this, O> {
             }
         }
 
-        self.inner.next_id = if curr == u32::MAX {
+        self.next_id = if curr == u32::MAX {
             CLIENT_MAX_ID + 1
         } else {
             curr + 1
         };
-        self.inner.ids_left -= 1;
+        self.ids_left -= 1;
 
-        self.inner
-            .insert(curr, object.into())
-            .unwrap_or_else(|_| unreachable!());
+        Self::insert(self, curr, object.into()).unwrap_or_else(|_| unreachable!());
         Ok(curr)
     }
 
     fn remove(&mut self, object_id: u32) -> Option<O> {
         if object_id > CLIENT_MAX_ID {
-            self.inner.ids_left += 1;
+            self.ids_left += 1;
         }
-        self.inner.remove(object_id)
+        Self::remove(self, object_id)
     }
 
     fn get(&self, object_id: u32) -> Option<&O> {
-        self.inner.map.get(&object_id)
+        self.map.get(&object_id)
     }
 
     fn get_mut(&mut self, id: u32) -> Option<&mut O> {
-        self.inner.map.get_mut(&id)
+        self.map.get_mut(&id)
     }
 
     fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool {
         if id > CLIENT_MAX_ID {
             return false
         }
-        self.inner.try_insert_with(id, f)
+        Self::try_insert_with(self, id, f)
     }
 
-    fn by_interface(&self, interface: &'static str) -> Self::IfaceIter<'_> {
-        self.inner
-            .by_interface
+    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a> {
+        self.by_interface
             .get(interface)
             .into_iter()
-            .flat_map(move |ids| {
-                ids.iter()
-                    .map(move |id| (*id, self.inner.map.get(id).unwrap()))
-            })
+            .flat_map(move |ids| ids.iter().map(move |id| (*id, self.map.get(id).unwrap())))
     }
 }
 
@@ -279,7 +268,7 @@ pub trait WriteMessage {
 /// A client connection
 pub trait Client: Sized + 'static {
     type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
-    type ObjectStore: Objects<Self::Object>;
+    type ObjectStore: traits::LockableStore<Self::Object>;
     type Connection: WriteMessage + Clone + 'static;
     type Object: Object<Self> + std::fmt::Debug;
     type DispatchFut<'a, R>: Future<Output = bool> + 'a
@@ -334,7 +323,7 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::{Objects, WriteMessage};
+                use $crate::connection::{traits::LockableStore, WriteMessage};
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::Client>::Object as $crate::objects::Object<
                         Self,
@@ -367,7 +356,7 @@ macro_rules! impl_dispatch {
                         .is_err();
                 }
                 if !fatal {
-                    use $crate::{objects::ObjectMeta, connection::LockedObjects};
+                    use $crate::{objects::ObjectMeta, connection::Store};
                     if bytes_read != len as usize {
                         let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
                         let opcode = len_opcode & 0xffff;

@@ -11,7 +11,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::{Client, LockedObjects, Objects},
+    connection::{Client, traits::{LockableStore, Store}, WriteMessage},
     error,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };
@@ -168,7 +168,6 @@ where
     ) -> Self::CreatePoolFut<'_> {
         tracing::debug!("creating shm_pool with size {}", size);
         async move {
-            use wl_server::connection::{LockedObjects, WriteMessage};
             if size <= 0 {
                 ctx.connection()
                     .send(DISPLAY_ID, wl_display::events::Error {
@@ -310,7 +309,6 @@ where
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
-            use wl_server::connection::{LockedObjects, Objects};
             let mut objects = ctx.objects().lock().await;
             let pool = {
                 use wl_server::objects::ObjectMeta;
@@ -346,7 +344,6 @@ where
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
-            use wl_server::connection::{LockedObjects, WriteMessage};
             let mut objects = ctx.objects().lock().await;
             objects.remove(object_id).unwrap();
             ctx.connection()

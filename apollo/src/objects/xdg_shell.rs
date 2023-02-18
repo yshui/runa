@@ -8,7 +8,7 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{Client, LockedObjects, Objects, WriteMessage},
+    connection::{Client, traits::{LockableStore, Store}, WriteMessage},
     error::Error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta},
@@ -59,7 +59,7 @@ where
         async move {
             async fn handle_layout_event<Object: ObjectMeta + 'static, Sh: XdgShell>(
                 object_id: u32,
-                objects: impl Objects<Object>,
+                objects: impl LockableStore<Object>,
                 conn: impl WriteMessage,
                 rx: impl Stream<Item = LayoutEvent>,
             ) {
@@ -67,11 +67,11 @@ where
 
                 pin_mut!(rx);
                 while let Some(event) = rx.next().await {
+                    use std::ops::Deref;
                     let objects = objects.lock().await;
-                    event.handle::<_, Sh>(object_id, &objects, &conn).await;
+                    event.handle::<_, Sh>(object_id, objects.deref(), &conn).await;
                 }
             }
-            use wl_server::connection::{LockedObjects, Objects};
             let mut objects = ctx.objects().lock().await;
             let surface_id = surface.0;
             let surface_obj = objects
@@ -164,7 +164,6 @@ where
         id: wl_types::NewId,
     ) -> Self::GetToplevelFut<'_> {
         async move {
-            use wl_server::connection::{LockedObjects, Objects};
             let mut objects = ctx.objects().lock().await;
             let surface = objects
                 .get(object_id)

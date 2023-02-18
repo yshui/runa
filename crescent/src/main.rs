@@ -11,12 +11,16 @@ use apollo::{
     },
     utils::geometry::{Extent, Point},
 };
-use futures_util::{FutureExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use smol::{block_on, LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
-    connection::{self, Client as _, Connection, Store},
+    connection::{
+        self,
+        traits::{LockableStore as _, Store as _},
+        Client as _, Connection, LockableStore, WriteMessage as _,
+    },
     objects::Object,
     renderer_capability::RendererCapability,
     server::Globals,
@@ -96,10 +100,10 @@ impl wl_server::server::Server for Crescent {
         self.0
             .executor
             .spawn(async move {
-                use wl_server::connection::{LockedObjects as _, Objects as _, WriteMessage as _};
+                use wl_server::connection::traits::*;
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
-                    store: Some(Store::default()),
+                    store: Some(Default::default()),
                     state,
                     tasks: Default::default(),
                     tx: Connection::new(BufWriterWithFd::new(tx)),
@@ -160,17 +164,16 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:       Option<connection::Store<AnyObject>>,
-    state:       Crescent,
-    tasks:       RefCell<Vec<Task<()>>>,
-    tx:          Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
+    store: Option<LockableStore<AnyObject>>,
+    state: Crescent,
+    tasks: RefCell<Vec<Task<()>>>,
+    tx:    Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
 }
 
 impl CrescentClient {
     /// Finalize the client context after the client has disconnected.
     async fn disconnect(&mut self) {
         if let Some(store) = self.store.take() {
-            use wl_server::connection::Objects;
             let mut store = store.lock().await;
             store.clear_for_disconnect(self);
         }
@@ -180,7 +183,7 @@ impl CrescentClient {
 impl connection::Client for CrescentClient {
     type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
     type Object = AnyObject;
-    type ObjectStore = Store<Self::Object>;
+    type ObjectStore = LockableStore<Self::Object>;
     type ServerContext = Crescent;
 
     wl_server::impl_dispatch!();

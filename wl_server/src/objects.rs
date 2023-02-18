@@ -12,7 +12,10 @@ use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
 
 use crate::{
-    connection::{Client, LockedObjects, Objects},
+    connection::{
+        traits::{LockableStore, Store},
+        Client, WriteMessage,
+    },
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -90,7 +93,6 @@ where
 
     fn sync(ctx: &mut Ctx, _object_id: u32, callback: wl_types::NewId) -> Self::SyncFut<'_> {
         async move {
-            use crate::connection::{LockedObjects, WriteMessage};
             debug!("wl_display.sync {}", callback);
             // Lock the object store to avoid races. e.g. an object with the same
             // ID being added between sending Done and DeleteId.
@@ -228,7 +230,7 @@ impl Callback {
     pub async fn fire<'a, O: ObjectMeta + 'static>(
         object_id: u32,
         data: u32,
-        objects: &mut impl LockedObjects<'a, O>,
+        objects: &mut impl Store<O>,
         conn: &impl crate::connection::WriteMessage,
     ) -> std::io::Result<()> {
         let obj = objects.get(object_id).unwrap();

@@ -386,26 +386,46 @@ where
             shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
             rx: impl futures_util::Stream<Item = OutputEvent>,
         ) {
-            use std::ops::DerefMut;
-
             use futures_util::StreamExt;
             let mut current_outputs: HashSet<WeakPtr<crate::shell::output::Output>> =
                 HashSet::new();
             pin_mut!(rx);
             while let Some(event) = rx.next().await {
                 // Lock order: object store -> surface buffers
-                let mut objects = objects.lock().await;
+                let objects = objects.lock().await;
                 let mut buffers = shared_surface_buffers.lock().await;
-
-                event
-                    .handle(
-                        object_id,
-                        objects.deref_mut(),
-                        &conn,
-                        &mut current_outputs,
-                        &mut buffers,
-                    )
-                    .await;
+                use wl_server::connection::traits::StoreExt;
+                // Update list of bound output objects.
+                for (id, output_obj) in objects.by_type::<crate::objects::Output>() {
+                    // Skip "incomplete" output objects for which we haven't sent the initial enter
+                    // events yet.
+                    let Some(output) = output_obj.output.clone() else { continue };
+                    buffers.bound_outputs.insert(output, id);
+                }
+                buffers.new_outputs.extend(event.0.borrow().iter().cloned());
+                for deleted in current_outputs.difference(&buffers.new_outputs) {
+                    if let Some(id) = buffers.bound_outputs.get(deleted) {
+                        conn.send(object_id, wl_surface::events::Leave {
+                            output: wl_types::Object(*id),
+                        })
+                        .await
+                        .unwrap();
+                    }
+                }
+                for added in buffers.new_outputs.difference(&current_outputs) {
+                    if let Some(id) = buffers.bound_outputs.get(added) {
+                        conn.send(object_id, wl_surface::events::Enter {
+                            output: wl_types::Object(*id),
+                        })
+                        .await
+                        .unwrap();
+                    }
+                }
+                current_outputs.clear();
+                current_outputs.extend(buffers.new_outputs.iter().cloned());
+                buffers.new_outputs.clear();
+                buffers.bound_outputs.clear();
+                conn.flush().await.unwrap();
             }
         }
         async move {

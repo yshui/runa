@@ -183,6 +183,7 @@ async fn handle_registry_events<SC: Server, C: WriteMessage>(
             .await
             .unwrap()
     }
+    connection.flush().await.unwrap();
     pin_mut!(rx);
     loop {
         match rx.next().await.unwrap() {
@@ -205,5 +206,6 @@ async fn handle_registry_events<SC: Server, C: WriteMessage>(
                     .unwrap();
             },
         }
+        connection.flush().await.unwrap();
     }
 }

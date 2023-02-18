@@ -8,7 +8,10 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{Client, traits::{LockableStore, Store}, WriteMessage},
+    connection::{
+        traits::{LockableStore, Store},
+        Client, WriteMessage,
+    },
     error::Error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta},
@@ -67,9 +70,44 @@ where
 
                 pin_mut!(rx);
                 while let Some(event) = rx.next().await {
-                    use std::ops::Deref;
                     let objects = objects.lock().await;
-                    event.handle::<_, Sh>(object_id, objects.deref(), &conn).await;
+                    use crate::shell::xdg::{Surface as XdgSurface, TopLevel};
+                    let surface = objects.get(object_id).unwrap();
+                    let surface = surface
+                        .cast::<crate::objects::compositor::Surface<Sh>>()
+                        .unwrap();
+                    if let Some(size) = event.0.extent {
+                        if let Some(role_object_id) = surface
+                            .inner
+                            .role::<TopLevel>()
+                            .map(|r| r.object_id)
+                        {
+                            conn.send(role_object_id, xdg_toplevel::events::Configure {
+                                height: size.h as i32,
+                                width:  size.w as i32,
+                                states: &[],
+                            })
+                            .await
+                            .unwrap();
+                        } else {
+                            // TODO: handle PopUp role
+                            unimplemented!()
+                        }
+                    }
+                    // Send xdg_surface.configure event
+                    let (serial, role_object_id) = {
+                        let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
+                        let serial = role.serial;
+                        role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
+                        role.pending_serial.push_back(serial);
+                        (serial, role.object_id)
+                    };
+                    conn.send(role_object_id, xdg_surface::events::Configure {
+                        serial: serial.get(),
+                    })
+                    .await
+                    .unwrap();
+                    conn.flush().await.unwrap();
                 }
             }
             let mut objects = ctx.objects().lock().await;

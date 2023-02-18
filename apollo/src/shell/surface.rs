@@ -9,14 +9,8 @@ use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
-use wl_protocol::{
-    stable::xdg_shell::{xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel},
-    wayland::wl_surface::v5 as wl_surface,
-};
 use wl_server::{
-    connection::{traits::Store, WriteMessage},
     events::{single_state, EventSource},
-    objects::ObjectMeta,
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
 
@@ -672,7 +666,6 @@ impl<S: Shell> SurfaceState<S> {
             .expect("adding frame callback to dead surface");
         surface.frame_callbacks.borrow_mut().push_back(callback);
         self.frame_callback_end += 1;
-        tracing::debug!("XX: {:?}", surface.frame_callbacks.borrow());
         debug_assert_eq!(
             self.frame_callback_end,
             surface.first_frame_callback_index.get() +
@@ -734,96 +727,8 @@ pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
 #[derive(Clone, Debug)]
 pub struct OutputEvent(pub(crate) OutputSet);
 
-impl OutputEvent {
-    pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static>(
-        self,
-        object_id: u32,
-        objects: &mut impl Store<Obj>,
-        conn: &impl WriteMessage,
-        current_outputs: &mut HashSet<WeakPtr<super::output::Output>>,
-        buffers: &mut crate::objects::compositor::SharedSurfaceBuffers,
-    ) {
-        use wl_server::connection::traits::StoreExt;
-        // Update list of bound output objects.
-        for (id, output_obj) in objects.by_type::<crate::objects::Output>() {
-            // Skip "incomplete" output objects for which we haven't sent the initial enter
-            // events yet.
-            let Some(output) = output_obj.output.clone() else { continue };
-            buffers.bound_outputs.insert(output, id);
-        }
-        buffers.new_outputs.extend(self.0.borrow().iter().cloned());
-        for deleted in current_outputs.difference(&buffers.new_outputs) {
-            if let Some(id) = buffers.bound_outputs.get(deleted) {
-                conn.send(object_id, wl_surface::events::Leave {
-                    output: wl_types::Object(*id),
-                })
-                .await
-                .unwrap();
-            }
-        }
-        for added in buffers.new_outputs.difference(current_outputs) {
-            if let Some(id) = buffers.bound_outputs.get(added) {
-                conn.send(object_id, wl_surface::events::Enter {
-                    output: wl_types::Object(*id),
-                })
-                .await
-                .unwrap();
-            }
-        }
-        current_outputs.clear();
-        current_outputs.extend(buffers.new_outputs.iter().cloned());
-        buffers.new_outputs.clear();
-        buffers.bound_outputs.clear();
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct LayoutEvent(pub(crate) Layout);
-impl LayoutEvent {
-    pub(crate) async fn handle<'a, Obj: ObjectMeta + 'static, Sh: super::xdg::XdgShell>(
-        self,
-        object_id: u32,
-        objects: &impl Store<Obj>,
-        conn: &impl WriteMessage,
-    ) {
-        use super::xdg::Surface as XdgSurface;
-        let surface = objects.get(object_id).unwrap();
-        let surface = surface
-            .cast::<crate::objects::compositor::Surface<Sh>>()
-            .unwrap();
-        if let Some(size) = self.0.extent {
-            if let Some(role_object_id) = surface
-                .inner
-                .role::<super::xdg::TopLevel>()
-                .map(|r| r.object_id)
-            {
-                conn.send(role_object_id, xdg_toplevel::events::Configure {
-                    height: size.h as i32,
-                    width:  size.w as i32,
-                    states: &[],
-                })
-                .await
-                .unwrap();
-            } else {
-                // TODO: handle PopUp role
-                unimplemented!()
-            }
-        }
-        // Send xdg_surface.configure event
-        let (serial, role_object_id) = {
-            let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
-            let serial = role.serial;
-            role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
-            role.pending_serial.push_back(serial);
-            (serial, role.object_id)
-        };
-        conn.send(role_object_id, xdg_surface::events::Configure {
-            serial: serial.get(),
-        })
-        .await
-        .unwrap();
-    }
-}
 /// Maximum number of frame callbacks that can be registered on a surface.
 pub const MAX_FRAME_CALLBACKS: usize = 100;
 // TODO: make Surface not shared. Role objects can just contain an object id

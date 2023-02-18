@@ -160,6 +160,7 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                 .await
                 .unwrap();
         }
+        conn.flush().await.unwrap();
         callbacks_to_fire.clear();
     }
 }
@@ -368,5 +369,6 @@ async fn handle_output_change_event(
         ShellOutput::send_done(&connection, object_id)
             .await
             .unwrap();
+        connection.flush().await.unwrap();
     }
 }

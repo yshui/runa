@@ -140,7 +140,23 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                     &*shell,
                 ) {
                     let state = shell.get(key);
-                    callbacks_to_fire.extend(state.frame_callback.iter().copied());
+                    let surface = state.surface().upgrade().unwrap();
+                    let first_frame_callback_index = surface.first_frame_callback_index();
+                    if state.frame_callback_end == first_frame_callback_index {
+                        continue;
+                    }
+
+                    tracing::debug!("Firing frame callback for surface {}", surface.object_id());
+                    tracing::debug!(
+                        "frame_callback_end: {}, surface.first_frame_callback_index: {}",
+                        state.frame_callback_end,
+                        first_frame_callback_index
+                    );
+                    callbacks_to_fire.extend(surface.frame_callbacks().borrow_mut().drain(
+                        ..(state.frame_callback_end - first_frame_callback_index)
+                            as usize,
+                    ));
+                    surface.set_first_frame_callback_index(state.frame_callback_end);
                 }
             }
         }
@@ -148,17 +164,6 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
             wl_server::objects::Callback::fire(callback, time, &mut objects, &conn)
                 .await
                 .unwrap();
-        }
-        // Remove fired callback objects from all of our surface states
-        let mut shell = server_context.shell().borrow_mut();
-        for (id, surface) in objects.by_interface("wl_surface") {
-            let Some(surface) = surface.cast::<crate::objects::compositor::Surface<S>>() else { continue };
-            for state in surface.inner.states().iter() {
-                shell
-                    .get_mut(*state)
-                    .frame_callback
-                    .retain(|id| !callbacks_to_fire.contains(id));
-            }
         }
         callbacks_to_fire.clear();
     }

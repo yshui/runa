@@ -318,6 +318,14 @@ where
                 &mut this.scratch_buffer.borrow_mut(),
             );
 
+            for frame_callback in this.inner.frame_callbacks().borrow_mut().drain(..) {
+                ctx.connection()
+                    .send(DISPLAY_ID, wl_display::events::DeleteId {
+                        id: frame_callback,
+                    })
+                    .await?;
+            }
+
             ctx.connection()
                 .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
@@ -418,7 +426,6 @@ where
                 ));
                 surface.set_current(current);
                 surface.set_pending(current);
-                surface.add_state(current);
                 shell.post_commit(None, current);
 
                 // TODO: Listen for output change events

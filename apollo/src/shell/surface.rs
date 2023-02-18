@@ -9,13 +9,14 @@ use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
+use tinyvecdeq::tinyvecdeq::TinyVecDeq;
 use wl_protocol::{
     stable::xdg_shell::{xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel},
     wayland::{wl_output::v4 as wl_output, wl_surface::v5 as wl_surface},
 };
 use wl_server::{
     connection::{LockedObjects, WriteMessage},
-    events::{single_state, BroadcastEventSource, EventSource},
+    events::{single_state, EventSource},
     objects::ObjectMeta,
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
@@ -122,21 +123,25 @@ pub mod roles {
     #[derive(Derivative)]
     #[derivative(Debug, Clone(bound = ""), Copy(bound = ""))]
     pub(super) struct SubsurfaceState<S: Shell> {
-        /// Parent surface state of this surface state. A surface state is only
-        /// considered a parent after it has been committed.
+        /// Parent surface *state* of this surface *state*. A surface state is
+        /// only considered a parent after it has been committed. This
+        /// is different from the parent surface, which is the
+        /// `Rc<Surface>` that is the parent of this surface. A surface can have
+        /// multiple surface states each have different parent surface
+        /// states. But a surface can have only one parent surface.
         ///
         /// A surface state can have multiple parents because of the sync
         /// mechanism of subsurfaces. i.e. a subsurface can be attached
         /// to a parent, then the parent has its own parent. When
         /// the parent is committed, its old state will still be referenced by
         /// the grandparent, and it will have a new committed state.
-        /// Both the old state and the new state are "parents"
+        /// Both the old state and the new state will be "parents"
         /// of this surface state.
         ///
         /// If that's the case, this field will point to the oldest, still valid
         /// parent. For states visible from a "root" surface (e.g. a
         /// xdg_toplevel), this convienently forms a path towards the
-        /// root.
+        /// root's current state.
         pub(super) parent: Option<S::Token>,
     }
     impl<S: Shell> super::RoleState for SubsurfaceState<S> {}
@@ -216,7 +221,7 @@ pub mod roles {
                 .upgrade()
                 .expect("surface is destroyed but its state is still being used");
             let parent_pending_state = parent.pending_mut(shell);
-            parent_pending_state.stack.remove(self.stack_index);
+            parent_pending_state.stack.remove(self.stack_index).unwrap();
             self.parent = Weak::new();
         }
 
@@ -429,18 +434,23 @@ impl<S: Shell> SurfaceStackEntry<S> {
 pub struct SurfaceState<S: Shell> {
     /// A set of flags that can be mutate even when the state is the current
     /// state of a surface.
-    flags:                     Cell<SurfaceFlags>,
-    surface:                   Weak<Surface<S>>,
-    pub(crate) frame_callback: VecDeque<u32>,
+    flags:                         Cell<SurfaceFlags>,
+    surface:                       Weak<Surface<S>>,
+    /// The index just pass the last frame callback attached to this surface.
+    /// For the definition of frame callback index, see
+    /// [`Surface::first_frame_callback_index`]. Each surface state always owns
+    /// a prefix of the surfaces frame callbacks, so it's sufficient to
+    /// store the index of the last frame callback.
+    pub(crate) frame_callback_end: u32,
     /// A stack of child surfaces and self.
-    stack:                     VecList<SurfaceStackEntry<S>>,
+    stack:                         VecList<SurfaceStackEntry<S>>,
     /// The position of this surface state in its own stack.
     /// None if the stack is just self.
-    pub(crate) stack_index:    Option<Index<SurfaceStackEntry<S>>>,
-    buffer:                    Option<Rc<S::Buffer>>,
+    pub(crate) stack_index:        Option<Index<SurfaceStackEntry<S>>>,
+    buffer:                        Option<Rc<S::Buffer>>,
     /// Scale of the buffer, a fraction with a denominator of 120
-    buffer_scale:              u32,
-    role_state:                Option<Box<dyn RoleState>>,
+    buffer_scale:                  u32,
+    role_state:                    Option<Box<dyn RoleState>>,
 }
 
 impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
@@ -449,7 +459,7 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
         f.debug_struct("SurfaceState")
             .field("flags", &self.flags)
             .field("surface", &self.surface.upgrade().map(|s| s.object_id()))
-            .field("frame_callback", &self.frame_callback)
+            .field("frame_callback_end", &self.frame_callback_end)
             .field("stack", &self.stack)
             .field("buffer", &self.buffer.as_ref().map(|b| b.object_id()))
             .field("buffer_scale", &self.buffer_scale_f32())
@@ -461,14 +471,14 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
 impl<S: Shell> SurfaceState<S> {
     pub fn new(surface: Rc<Surface<S>>) -> Self {
         Self {
-            flags:          Cell::new(SurfaceFlags { destroyed: false }),
-            surface:        Rc::downgrade(&surface),
-            frame_callback: VecDeque::new(),
-            stack:          Default::default(),
-            stack_index:    None,
-            buffer:         None,
-            buffer_scale:   120,
-            role_state:     None,
+            flags:              Cell::new(SurfaceFlags { destroyed: false }),
+            surface:            Rc::downgrade(&surface),
+            frame_callback_end: 0,
+            stack:              Default::default(),
+            stack_index:        None,
+            buffer:             None,
+            buffer_scale:       120,
+            role_state:         None,
         }
     }
 
@@ -483,14 +493,14 @@ impl<S: Shell> SurfaceState<S> {
 impl<S: Shell> Clone for SurfaceState<S> {
     fn clone(&self) -> Self {
         Self {
-            flags:          self.flags.clone(),
-            surface:        self.surface.clone(),
-            frame_callback: self.frame_callback.clone(),
-            stack:          self.stack.clone(),
-            stack_index:    self.stack_index,
-            buffer:         self.buffer.clone(),
-            buffer_scale:   self.buffer_scale,
-            role_state:     self.role_state.as_ref().map(|x| dyn_clone::clone_box(&**x)),
+            flags:              self.flags.clone(),
+            surface:            self.surface.clone(),
+            frame_callback_end: self.frame_callback_end,
+            stack:              self.stack.clone(),
+            stack_index:        self.stack_index,
+            buffer:             self.buffer.clone(),
+            buffer_scale:       self.buffer_scale,
+            role_state:         self.role_state.as_ref().map(|x| dyn_clone::clone_box(&**x)),
         }
     }
 }
@@ -657,7 +667,18 @@ impl<S: Shell> SurfaceState<S> {
     }
 
     pub fn add_frame_callback(&mut self, callback: u32) {
-        self.frame_callback.push_back(callback);
+        let surface = self
+            .surface()
+            .upgrade()
+            .expect("adding frame callback to dead surface");
+        surface.frame_callbacks.borrow_mut().push_back(callback);
+        self.frame_callback_end += 1;
+        tracing::debug!("XX: {:?}", surface.frame_callbacks.borrow());
+        debug_assert_eq!(
+            self.frame_callback_end,
+            surface.first_frame_callback_index.get() +
+                surface.frame_callbacks.borrow().len() as u32
+        );
     }
 
     pub fn set_role_state<T: RoleState>(&mut self, state: T) {
@@ -804,21 +825,33 @@ impl LayoutEvent {
         .unwrap();
     }
 }
-
+/// Maximum number of frame callbacks that can be registered on a surface.
+pub const MAX_FRAME_CALLBACKS: usize = 100;
+// TODO: make Surface not shared. Role objects can just contain an object id
+// maybe?
 pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
-    current:             Cell<Option<S::Token>>,
+    current:                    Cell<Option<S::Token>>,
     /// The pending state of the surface, this will be moved to [`current`] when
     /// commit is called
-    pending:             Cell<Option<S::Token>>,
+    pending:                    Cell<Option<S::Token>>,
     /// Set of all states associated with this surface
-    states:              RefCell<HashSet<S::Token>>,
-    role:                RefCell<Option<Box<dyn Role<S>>>>,
-    outputs:             OutputSet,
-    output_change_event: single_state::Sender<OutputEvent>,
-    layout_change_event: single_state::Sender<LayoutEvent>,
-    object_id:           u32,
+    /// XXX: XXX: maybe delete this? instead, track the set of all unfired frame
+    /// callbacks associated with this surface, in any of its surface
+    /// states.
+    frame_callbacks:            RefCell<TinyVecDeq<[u32; 4]>>,
+    /// The index of the first frame callback stored in `frame_callbacks`. Frame
+    /// callbacks attached to a surface is numbered starting from 0, and
+    /// loops over when it reaches `u32::MAX`. Callbacks are removed from
+    /// `frame_callbacks` when they are fired, and the index is incremented
+    /// accordingly.
+    first_frame_callback_index: Cell<u32>,
+    role:                       RefCell<Option<Box<dyn Role<S>>>>,
+    outputs:                    OutputSet,
+    output_change_event:        single_state::Sender<OutputEvent>,
+    layout_change_event:        single_state::Sender<LayoutEvent>,
+    object_id:                  u32,
 }
 
 impl<S: Shell> std::fmt::Debug for Surface<S> {
@@ -826,7 +859,11 @@ impl<S: Shell> std::fmt::Debug for Surface<S> {
         f.debug_struct("Surface")
             .field("current", &self.current)
             .field("pending", &self.pending)
-            .field("states", &self.states)
+            .field("frame_callbacks", &self.frame_callbacks)
+            .field(
+                "first_frame_callback_index",
+                &self.first_frame_callback_index,
+            )
             .field("object_id", &self.object_id)
             .finish()
     }
@@ -838,6 +875,10 @@ impl<S: Shell> Drop for Surface<S> {
             self.current == Default::default() && self.pending == Default::default(),
             "Surface must be destroyed with Surface::destroy"
         );
+        assert!(
+            self.frame_callbacks.borrow().is_empty(),
+            "Surface must be have no frame callbacks when dropped."
+        );
     }
 }
 
@@ -845,15 +886,28 @@ impl<S: Shell> Surface<S> {
     #[must_use]
     pub fn new(object_id: wl_types::NewId) -> Self {
         Self {
-            current:             Cell::new(None),
-            pending:             Cell::new(None),
-            states:              Default::default(),
-            role:                Default::default(),
-            outputs:             Default::default(),
-            output_change_event: Default::default(),
-            layout_change_event: Default::default(),
-            object_id:           object_id.0,
+            current:                    Cell::new(None),
+            pending:                    Cell::new(None),
+            role:                       Default::default(),
+            outputs:                    Default::default(),
+            output_change_event:        Default::default(),
+            layout_change_event:        Default::default(),
+            object_id:                  object_id.0,
+            frame_callbacks:            Default::default(),
+            first_frame_callback_index: 0.into(),
         }
+    }
+
+    pub fn frame_callbacks(&self) -> &RefCell<TinyVecDeq<[u32; 4]>> {
+        &self.frame_callbacks
+    }
+
+    pub fn first_frame_callback_index(&self) -> u32 {
+        self.first_frame_callback_index.get()
+    }
+
+    pub fn set_first_frame_callback_index(&self, index: u32) {
+        self.first_frame_callback_index.set(index)
     }
 }
 
@@ -876,7 +930,8 @@ impl<S: Shell> Surface<S> {
 
     /// Set the pending state as the current state of this surface.
     ///
-    /// Put potentially free-able surface states into `scratch_buffer`.
+    /// Put potentially free-able surface states into `scratch_buffer`. Also
+    /// updates the frame_callbacks indices.
     fn apply_pending(&self, shell: &mut S, scratch_buffer: &mut Vec<S::Token>) {
         let new_current = self.pending_key();
         let old_current = self.current_key();
@@ -884,6 +939,13 @@ impl<S: Shell> Surface<S> {
             return
         }
         scratch_buffer.clear();
+
+        // Update the frame callback indices
+        {
+            let new_state = shell.get_mut(new_current);
+            new_state.frame_callback_end =
+                self.first_frame_callback_index.get() + self.frame_callbacks.borrow().len() as u32;
+        }
 
         self.set_current(new_current);
         tracing::trace!("new surface state: {:?}", shell.get(new_current));
@@ -979,17 +1041,10 @@ impl<S: Shell> Surface<S> {
 
         // Now we have updated parent info, if any of the surface states iterated over
         // in the first freeing pass still doesn't have a parent, they can be
-        // freed.
+        // freed. (this also includes the old current state)
         for &token in &scratch_buffer[..] {
             let state = shell.get(token);
             if state.parent().is_none() {
-                state
-                    .surface
-                    .upgrade()
-                    .expect("surface state attached to dead surface")
-                    .states
-                    .borrow_mut()
-                    .remove(&token);
                 shell.destroy(token);
             }
         }
@@ -1009,14 +1064,6 @@ impl<S: Shell> Surface<S> {
 
     pub fn set_pending(&self, key: S::Token) {
         self.pending.set(Some(key));
-    }
-
-    pub fn add_state(&self, state: S::Token) {
-        self.states.borrow_mut().insert(state);
-    }
-
-    pub fn states(&self) -> Ref<'_, HashSet<S::Token>> {
-        self.states.borrow()
     }
 
     pub fn pending_key(&self) -> S::Token {
@@ -1051,7 +1098,6 @@ impl<S: Shell> Surface<S> {
                 .unwrap()
                 .token = new_pending_key;
             self.set_pending(new_pending_key);
-            self.add_state(new_pending_key);
         }
         shell.get_mut(self.pending_key())
     }
@@ -1086,71 +1132,85 @@ impl<S: Shell> Surface<S> {
     }
 
     pub fn destroy(&self, shell: &mut S, scratch_buffer: &mut Vec<S::Token>) {
+        // This function needs to do these things:
+        //  - free self.current if it's not referenced by any parent surface states.
+        //  - free self.pending
+        //  - also free any states that are only reachable via self.current
+        //
+        // Which can be split into 2 cases:
+        //
+        // 1. if self.current can be freed:
+        //   - semi-commit the pending state, so any outdated states referenced only by
+        //     the current state can be found and will be freed.
+        //   - now the pending state is the current state, and its children's oldest
+        //     parent link should have been updated.
+        //   - free self.current (was self.pending before semi-commit), and disconnect
+        //     its children's parent link.
+        // 2. if self.current can't be freed:
+        //   - just free self.pending if it's not the same as self.current
         tracing::debug!(
-            "Destroying surface {:p}, (current: {:?}, pending: {:?})",
+            "Destroying surface {:p}, (id: {}, current: {:?}, pending: {:?})",
             self,
+            self.object_id,
             self.current,
             self.pending
         );
 
         self.deactivate_role(shell);
 
-        // semi-commit the pending state, so any outdated states referenced only by the
-        // current state will be freed.
-        // then disconnect subsurface states from the now committed pending state,
-        // without freeing them, because they are still current in the
-        // subsurfaces.
-        self.apply_pending(shell, scratch_buffer);
-        for &token in scratch_buffer.iter() {
-            let state = shell.get(token);
-            if state.parent().is_none() {
-                state
-                    .surface
-                    .upgrade()
-                    .expect("surface state attached to dead surface")
-                    .states
-                    .borrow_mut()
-                    .remove(&token);
-                shell.destroy(token);
+        if self.current(shell).parent().is_none() {
+            self.apply_pending(shell, scratch_buffer);
+            for &token in scratch_buffer.iter() {
+                let state = shell.get(token);
+                if state.parent().is_none() {
+                    shell.destroy(token);
+                }
+            }
+            scratch_buffer.clear();
+
+            // disconnect subsurface states from the now committed pending state,
+            // without freeing them, because they are still current in the
+            // subsurfaces.
+            // get the list of our children, swap the stack out so we don't have to borrow
+            // `shell`.
+            let state = self.current_mut(shell);
+            let mut stack = Default::default();
+            std::mem::swap(&mut state.stack, &mut stack);
+
+            // orphan all our children
+            let current_key = self.current_key();
+            for child in stack {
+                if child.token == current_key {
+                    continue
+                }
+                let child = shell.get_mut(child.token);
+                let role_state = child
+                    .role_state_mut::<roles::SubsurfaceState<S>>()
+                    .expect("subsurface role state missing")
+                    .expect("subsurface role state has unexpected type");
+                if role_state.parent == Some(current_key) {
+                    role_state.parent = None;
+                }
+
+                // We need to deactivate the subsurface role of the child, but we don't want to
+                // call roles::Subsurface::deactivate() because it wants to modify
+                // the parent's (this surface's) pending state, which will cause a
+                // new pending state to be duplicated and assigned to us, which we
+                // don't want to happen.
+                let child_surface = child.surface().upgrade().unwrap();
+                let mut child_role = child_surface.role_mut::<roles::Subsurface<S>>().unwrap();
+                child_role.is_active = false;
+                child_role.parent = Weak::new();
+            }
+            shell.destroy(current_key);
+        } else {
+            // can't free self.current, so just free self.pending
+            if self.pending_key() != self.current_key() {
+                shell.destroy(self.pending_key());
             }
         }
-        scratch_buffer.clear();
-
-        // get the list of our children, swap the stack out so we don't have to borrow
-        // `shell`.
-        let state = self.current_mut(shell);
-        let mut stack = Default::default();
-        std::mem::swap(&mut state.stack, &mut stack);
-
-        // orphan all our children
-        let current_key = self.current_key();
-        for child in stack {
-            if child.token == current_key {
-                continue
-            }
-            let child = shell.get_mut(child.token);
-            let role_state = child
-                .role_state_mut::<roles::SubsurfaceState<S>>()
-                .expect("subsurface role state missing")
-                .expect("subsurface role state has unexpected type");
-            if role_state.parent == Some(current_key) {
-                role_state.parent = None;
-            }
-
-            // We need to deactivate the subsurface role of the child, but we don't want to
-            // call roles::Subsurface::deactivate() because it want to modify
-            // the parent's (this surface's) pending state, which will cause a
-            // new pending state to be duplicated and assigned to us, which we
-            // don't want to happen.
-            let child_surface = child.surface().upgrade().unwrap();
-            let mut child_role = child_surface.role_mut::<roles::Subsurface<S>>().unwrap();
-            child_role.is_active = false;
-            child_role.parent = Weak::new();
-        }
-        shell.destroy(current_key);
         self.pending.set(None);
         self.current.set(None);
-        self.states.borrow_mut().clear();
     }
 
     pub fn deactivate_role(&self, shell: &mut S) {

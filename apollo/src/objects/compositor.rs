@@ -318,7 +318,9 @@ where
                 &mut this.scratch_buffer.borrow_mut(),
             );
 
-            for frame_callback in this.inner.frame_callbacks().borrow_mut().drain(..) {
+            let mut frame_callbacks =
+                std::mem::take(&mut *this.inner.frame_callbacks().borrow_mut());
+            for frame_callback in frame_callbacks.drain(..) {
                 ctx.connection()
                     .send(DISPLAY_ID, wl_display::events::DeleteId {
                         id: frame_callback,

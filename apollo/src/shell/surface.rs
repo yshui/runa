@@ -11,7 +11,7 @@ use hashbrown::HashSet;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
 use wl_protocol::{
     stable::xdg_shell::{xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel},
-    wayland::{wl_output::v4 as wl_output, wl_surface::v5 as wl_surface},
+    wayland::wl_surface::v5 as wl_surface,
 };
 use wl_server::{
     connection::{traits::Store, WriteMessage},
@@ -743,9 +743,9 @@ impl OutputEvent {
         current_outputs: &mut HashSet<WeakPtr<super::output::Output>>,
         buffers: &mut crate::objects::compositor::SharedSurfaceBuffers,
     ) {
+        use wl_server::connection::traits::StoreExt;
         // Update list of bound output objects.
-        for (id, output_obj) in objects.by_interface(wl_output::NAME) {
-            let Some(output_obj) = output_obj.cast::<crate::objects::Output>() else { continue };
+        for (id, output_obj) in objects.by_type::<crate::objects::Output>() {
             // Skip "incomplete" output objects for which we haven't sent the initial enter
             // events yet.
             let Some(output) = output_obj.output.clone() else { continue };

@@ -386,8 +386,9 @@ where
             shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
             rx: impl futures_util::Stream<Item = OutputEvent>,
         ) {
-            use futures_util::StreamExt;
             use std::ops::DerefMut;
+
+            use futures_util::StreamExt;
             let mut current_outputs: HashSet<WeakPtr<crate::shell::output::Output>> =
                 HashSet::new();
             pin_mut!(rx);
@@ -427,31 +428,21 @@ where
                 surface.set_pending(current);
                 shell.post_commit(None, current);
 
-                // TODO: Listen for output change events
-                //let handle = ctx.event_handle();
-                //let slot = <Ctx as DispatchTo<crate::globals::Compositor>>::SLOT;
-                //surface
-                //    .add_output_change_listener((handle, slot),
-                // state.output_changed.write_end());
-
                 // Copy the shared scratch_buffer from an existing surface object
-                let scratch_buffer = if let Some(surface) = objects
-                    .by_interface("wl_surface")
-                    .filter_map(|(_, s)| s.cast::<Surface<ShellOf<Ctx::ServerContext>>>())
+                use wl_server::connection::traits::StoreExt;
+                let scratch_buffer = objects
+                    .by_type::<Surface<ShellOf<Ctx::ServerContext>>>()
                     .next()
-                {
-                    surface.scratch_buffer.clone()
-                } else {
-                    Default::default()
-                };
+                    .map(|(_, obj)| obj.scratch_buffer.clone())
+                    .unwrap_or_default();
                 let shared_surface_buffers = objects
                     .get(object_id)
-                    .unwrap()
+                    .expect("missing object")
                     .cast::<Self>()
-                    .unwrap()
+                    .expect("wrong type")
                     .inner
                     .as_ref()
-                    .unwrap()
+                    .expect("missing shared buffers")
                     .shared_surface_buffers
                     .clone();
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);

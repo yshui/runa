@@ -507,6 +507,11 @@ pub fn wayland_object(
                     #interface_tokens
                 }
             }
+
+            impl #filtered_generics #crate_::objects::StaticObjectMeta for #self_ty {
+                const INTERFACE: &'static str = #interface_tokens;
+            }
+
             impl #generics #our_trait for #self_ty #where_clause {
                 type Request<'a> = #message_ty #message_lifetime where #ctx: 'a;
                 type Error = #error;

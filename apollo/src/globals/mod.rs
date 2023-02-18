@@ -13,7 +13,10 @@ use wl_protocol::wayland::{
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{Client, traits::{Store, LockableStore}, WriteMessage},
+    connection::{
+        traits::{LockableStore, Store, StoreExt},
+        Client, WriteMessage,
+    },
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
@@ -66,17 +69,10 @@ where
             // Check if we already have a compositor bound, and clone their render event
             // handler abort handle if so; otherwise start the event handler task.
             let (fut, inner) = if let Some(compositor_inner) = objects
-                .by_interface(self.interface())
-                .filter_map(|(_, obj)| {
-                    obj.cast::<Self::Object>().and_then(|compositor| {
-                        if compositor.is_complete() {
-                            Some(compositor.clone())
-                        } else {
-                            None
-                        }
-                    })
-                })
+                .by_type::<Self::Object>()
+                .filter_map(|(_, obj)| obj.is_complete().then_some(obj)) // skip incomplete compositor objects
                 .next()
+                .cloned()
             {
                 (None, compositor_inner)
             } else {
@@ -122,11 +118,10 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
         {
             let shell = server_context.shell().borrow();
             // Send frame callback for all current surface states.
-            for (id, surface) in objects.by_interface("wl_surface") {
+            for (id, surface) in objects.by_type::<crate::objects::compositor::Surface<S>>() {
                 // Skip subsurfaces. Only iterate surface trees from the root surface, so we
                 // only gets the surface states that are current.
                 // TODO: handle desync'd subsurfaces
-                let Some(surface) = surface.cast::<crate::objects::compositor::Surface<S>>() else { continue };
                 let role = surface
                     .inner
                     .role::<crate::shell::surface::roles::Subsurface<S>>();
@@ -141,7 +136,7 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                     let surface = state.surface().upgrade().unwrap();
                     let first_frame_callback_index = surface.first_frame_callback_index();
                     if state.frame_callback_end == first_frame_callback_index {
-                        continue;
+                        continue
                     }
 
                     tracing::debug!("Firing frame callback for surface {}", surface.object_id());
@@ -150,10 +145,11 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                         state.frame_callback_end,
                         first_frame_callback_index
                     );
-                    callbacks_to_fire.extend(surface.frame_callbacks().borrow_mut().drain(
-                        ..(state.frame_callback_end - first_frame_callback_index)
-                            as usize,
-                    ));
+                    callbacks_to_fire.extend(
+                        surface.frame_callbacks().borrow_mut().drain(
+                            ..(state.frame_callback_end - first_frame_callback_index) as usize,
+                        ),
+                    );
                     surface.set_first_frame_callback_index(state.frame_callback_end);
                 }
             }
@@ -296,19 +292,18 @@ where
             self.0.send_all(client.connection(), object_id).await?;
             // Send enter events for surfaces already on this output
             let messages: Vec<_> = {
-                let surfaces = objects.by_interface("wl_surface");
+                let surfaces =
+                    objects.by_type::<crate::objects::compositor::Surface<
+                        <Ctx::ServerContext as HasShell>::Shell,
+                    >>();
                 surfaces
                     .filter_map(|(id, surface)| {
-                        if let Some(surface) = surface.cast::<crate::objects::compositor::Surface<
-                            <Ctx::ServerContext as HasShell>::Shell,
-                        >>() {
-                            if surface.inner.outputs().contains(&output) {
-                                return Some((id, wl_surface::events::Enter {
-                                    output: wl_types::Object(object_id),
-                                }))
-                            }
-                        }
-                        None
+                        surface.inner.outputs().contains(&output).then_some((
+                            id,
+                            wl_surface::events::Enter {
+                                output: wl_types::Object(object_id),
+                            },
+                        ))
                     })
                     .collect()
             };

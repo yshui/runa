@@ -45,6 +45,26 @@ pub mod traits {
         fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a>;
     }
 
+    pub trait StoreExt<O> {
+        type TypeIter<'a, T: StaticObjectMeta>: Iterator<Item = (u32, &'a T)> + 'a
+        where
+            T: 'static,
+            Self: 'a;
+        fn by_type<T: StaticObjectMeta + 'static>(&self) -> Self::TypeIter<'_, T>;
+    }
+
+    impl<O: ObjectMeta + 'static, S: Store<O>> StoreExt<O> for S {
+        type TypeIter<'a, T: StaticObjectMeta> = impl Iterator<Item = (u32, &'a T)> + 'a
+        where
+            T: 'static,
+            Self: 'a;
+
+        fn by_type<T: StaticObjectMeta + 'static>(&self) -> Self::TypeIter<'_, T> {
+            self.by_interface(T::INTERFACE)
+                .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
+        }
+    }
+
     /// A bundle of objects.
     ///
     /// Usually this is the set of objects a client has bound to. When cloned,

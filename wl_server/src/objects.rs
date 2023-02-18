@@ -42,6 +42,12 @@ pub trait ObjectMeta {
     }
 }
 
+/// An monomorphic object, i.e. it's a single object whose interface is known,
+/// not an union of multiple objects.
+pub trait StaticObjectMeta: ObjectMeta {
+    const INTERFACE: &'static str;
+}
+
 /// This is the bottom type for all per client objects. This trait provides some
 /// metadata regarding the object, as well as a way to cast objects into a
 /// common dynamic type.

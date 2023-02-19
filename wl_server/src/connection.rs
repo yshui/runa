@@ -3,14 +3,25 @@
 //!
 //! Here are also some default implementations of these traits.
 
-use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, task::ready};
+use std::{
+    any::Any,
+    cell::RefCell,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    rc::Rc,
+    task::{ready, Context, Poll, Waker},
+};
 
 use async_lock::{Mutex, MutexGuard};
 use derivative::Derivative;
+use futures_core::Stream;
+use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
 use hashbrown::{
     hash_map::{self, OccupiedError},
     HashMap, HashSet,
 };
+use slotmap::{DefaultKey, SlotMap};
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
 use crate::objects::{Object, ObjectMeta};
@@ -18,9 +29,14 @@ use crate::objects::{Object, ObjectMeta};
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
 pub mod traits {
-    use std::pin::Pin;
+    use std::{
+        any::Any,
+        error::Error,
+        pin::Pin,
+        task::{ready, Context, Poll},
+    };
 
-    use futures_core::Future;
+    use futures_core::{Future, Stream};
     use wl_io::traits::ser;
 
     use crate::objects::{ObjectMeta, StaticObjectMeta};
@@ -92,32 +108,109 @@ pub mod traits {
     }
 
     pub trait WriteMessage {
-        type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
-        where
-            Self: 'a,
-            M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
-        type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
-        where
-            Self: 'a;
-        /// Send a message to the client.
-        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-            &'a self,
-            object_id: u32,
-            msg: M,
-        ) -> Self::Send<'c, M>
-        where
-            'a: 'c,
-            'b: 'c;
+        /// Reserve space for a message
+        fn poll_reserve<M: ser::Serialize>(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            msg: &M,
+        ) -> Poll<std::io::Result<()>>;
+
+        /// Queue a message to be sent.
+        ///
+        /// # Panics
+        ///
+        /// if there is not enough space in the queue, this function panics.
+        /// Before calling this, you should call `poll_reserve` to
+        /// ensure there is enough space.
+        fn send<M: ser::Serialize + std::fmt::Debug>(self: Pin<&mut Self>, object_id: u32, msg: M);
 
         /// Flush connection
-        fn flush(&self) -> Self::Flush<'_>;
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+    }
+
+    pub struct Send<
+        'a,
+        W: WriteMessage + ?Sized + 'a,
+        M: ser::Serialize + Unpin + std::fmt::Debug + 'a,
+    > {
+        writer:    &'a mut W,
+        object_id: u32,
+        msg:       Option<M>,
+    }
+    impl<
+            'a,
+            W: WriteMessage + Unpin + ?Sized + 'a,
+            M: ser::Serialize + Unpin + std::fmt::Debug + 'a,
+        > Future for Send<'a, W, M>
+    {
+        type Output = std::io::Result<()>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            ready!(Pin::new(&mut *this.writer).poll_reserve(cx, this.msg.as_ref().unwrap()))?;
+            Pin::new(&mut *this.writer).send(this.object_id, this.msg.take().unwrap());
+            Poll::Ready(Ok(()))
+        }
+    }
+    pub struct Flush<'a, W: WriteMessage + ?Sized + 'a> {
+        writer: &'a mut W,
+    }
+
+    impl<'a, W: WriteMessage + Unpin + ?Sized + 'a> Future for Flush<'a, W> {
+        type Output = std::io::Result<()>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            Pin::new(&mut *this.writer).poll_flush(cx)
+        }
+    }
+
+    pub trait WriteMessageExt {
+        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+            &'a mut self,
+            object_id: u32,
+            msg: M,
+        ) -> Send<'c, Self, M>
+        where
+            Self: WriteMessage,
+            'a: 'c,
+            'b: 'c;
+        fn flush(&mut self) -> Flush<'_, Self>
+        where
+            Self: WriteMessage;
+    }
+
+    impl<W: WriteMessage + Unpin + ?Sized> WriteMessageExt for W {
+        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+            &'a mut self,
+            object_id: u32,
+            msg: M,
+        ) -> Send<'c, Self, M>
+        where
+            Self: WriteMessage,
+            'a: 'c,
+            'b: 'c,
+        {
+            Send {
+                writer: self,
+                object_id,
+                msg: Some(msg),
+            }
+        }
+
+        fn flush(&mut self) -> Flush<'_, Self>
+        where
+            Self: WriteMessage,
+        {
+            Flush { writer: self }
+        }
     }
 
     /// A client connection
     pub trait Client: Sized + 'static {
         type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
         type ObjectStore: LockableStore<Self::Object>;
-        type Connection: WriteMessage + Clone + 'static;
+        type Connection: WriteMessage + Unpin + Clone + 'static;
         type Object: crate::objects::Object<Self> + std::fmt::Debug;
         type DispatchFut<'a, R>: Future<Output = bool> + 'a
         where
@@ -346,12 +439,13 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::traits::{LockableStore, WriteMessage};
+                use $crate::connection::traits::{LockableStore, WriteMessageExt};
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::traits::Client>::Object as $crate::objects::Object<
                         Self,
                     >>::dispatch(self, object_id, (buf, fd))
                     .await;
+                let mut conn = self.connection().clone();
                 let (mut fatal, error) = match ret {
                     Ok(_) => (false, None),
                     Err(e) => (
@@ -368,9 +462,7 @@ macro_rules! impl_dispatch {
                 if let Some((object_id, error_code, msg)) = error {
                     // We are going to disconnect the client so we don't care about the
                     // error.
-                    fatal |= self
-                        .connection()
-                        .send(DISPLAY_ID, wl_display::events::Error {
+                    fatal |= conn.send(DISPLAY_ID, wl_display::events::Error {
                             object_id: wl_types::Object(object_id),
                             code:      error_code,
                             message:   wl_types::Str(msg.as_c_str()),
@@ -398,85 +490,6 @@ macro_rules! impl_dispatch {
     };
 }
 
-/// Implementation helper for Connection::send. This assumes you stored the
-/// connection object in a RefCell. This function makes sure to not hold RefMut
-/// across await.
-pub fn send_to<'a, 'b, 'c, M, C>(
-    conn: &'a RefCell<C>,
-    object_id: u32,
-    msg: M,
-) -> impl Future<Output = Result<(), std::io::Error>> + 'c
-where
-    M: ser::Serialize + Unpin + std::fmt::Debug + 'b,
-    C: AsyncBufWriteWithFd + Unpin,
-    'a: 'c,
-    'b: 'c,
-{
-    use std::task::{Context, Poll};
-    struct Send<'a, M, C> {
-        // Save a reference to the RefCell, if we save a Pin<&mut> here, we will be keeping the
-        // RefMut across await. Same for flush.
-        conn:      &'a RefCell<C>,
-        object_id: u32,
-        msg:       Option<M>,
-    }
-    impl<'a, M, C> Future for Send<'a, M, C>
-    where
-        M: ser::Serialize + Unpin,
-        C: AsyncBufWriteWithFd + Unpin,
-    {
-        type Output = Result<(), std::io::Error>;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = self.get_mut();
-            let msg_ref = this.msg.as_ref().expect("Send polled after completion");
-            let len = msg_ref.len();
-            let nfds = msg_ref.nfds();
-            let mut conn = this.conn.borrow_mut();
-            ready!(Pin::new(&mut *conn).poll_reserve(cx, len as usize, nfds as usize))?;
-            let object_id = this.object_id.to_ne_bytes();
-            Pin::new(&mut *conn).write(&object_id[..]);
-            this.msg
-                .take()
-                .expect("Send polled after completion")
-                .serialize(Pin::new(&mut *conn));
-            Poll::Ready(Ok(()))
-        }
-    }
-    tracing::debug!("Sending {:?}", msg);
-    Send {
-        conn,
-        object_id,
-        msg: Some(msg),
-    }
-}
-
-/// Implementation helper for Connection::flush. This assumes you stored the
-/// connection object in a RefCell. This function makes sure to not hold RefMut
-/// across await.
-pub fn flush_to(
-    conn: &RefCell<impl AsyncBufWriteWithFd + Unpin>,
-) -> impl Future<Output = Result<(), std::io::Error>> + '_ {
-    use std::task::{Context, Poll};
-    struct Flush<'a, C> {
-        conn: &'a RefCell<C>,
-    }
-    impl<'a, C> Future for Flush<'a, C>
-    where
-        C: AsyncBufWriteWithFd + Unpin,
-    {
-        type Output = Result<(), std::io::Error>;
-
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = self.get_mut();
-            let mut conn = this.conn.borrow_mut();
-            ready!(Pin::new(&mut *conn).poll_flush(cx))?;
-            Poll::Ready(Ok(()))
-        }
-    }
-    Flush { conn }
-}
-
 #[derive(Derivative)]
 #[derivative(Debug, Clone(bound = ""))]
 pub struct Connection<C> {
@@ -492,25 +505,29 @@ impl<C> Connection<C> {
 }
 
 impl<C: AsyncBufWriteWithFd + Unpin> traits::WriteMessage for Connection<C> {
-    type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a where C: 'a;
-    type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where
-        C: 'a,
-        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
-
-    fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-        &'a self,
-        object_id: u32,
-        msg: M,
-    ) -> Self::Send<'c, M>
-    where
-        'a: 'c,
-        'b: 'c,
-    {
-        send_to(&self.conn, object_id, msg)
+    fn poll_reserve<M: ser::Serialize>(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        msg: &M,
+    ) -> Poll<std::io::Result<()>> {
+        let len = msg.len();
+        let nfds = msg.nfds();
+        let mut conn = self.conn.borrow_mut();
+        Pin::new(&mut *conn).poll_reserve(cx, len as usize, nfds as usize)
     }
 
-    fn flush(&self) -> Self::Flush<'_> {
-        flush_to(&self.conn)
+    fn send<M: ser::Serialize + std::fmt::Debug>(self: Pin<&mut Self>, object_id: u32, msg: M) {
+        let object_id = object_id.to_ne_bytes();
+        let mut conn = self.conn.borrow_mut();
+        Pin::new(&mut *conn).write(&object_id[..]);
+        msg.serialize(Pin::new(&mut *conn));
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let mut conn = this.conn.borrow_mut();
+        ready!(Pin::new(&mut *conn).poll_flush(cx))?;
+        Poll::Ready(Ok(()))
     }
 }
 

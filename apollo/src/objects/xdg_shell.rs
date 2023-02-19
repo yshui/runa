@@ -8,7 +8,7 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
     error::Error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta},
@@ -60,7 +60,7 @@ where
             async fn handle_layout_event<Object: ObjectMeta + 'static, Sh: XdgShell>(
                 object_id: u32,
                 objects: impl LockableStore<Object>,
-                conn: impl WriteMessage,
+                mut conn: impl WriteMessage + Unpin,
                 rx: impl Stream<Item = LayoutEvent>,
             ) {
                 use futures_util::stream::StreamExt;

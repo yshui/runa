@@ -4,7 +4,7 @@ use futures_util::{pin_mut, FutureExt};
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
     events::EventSource,
     objects::ObjectMeta,
     server::{GlobalsUpdate, Server},
@@ -150,10 +150,10 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
     }
 }
 
-async fn handle_registry_events<SC: Server, C: WriteMessage>(
+async fn handle_registry_events<SC: Server, C: WriteMessage + Unpin>(
     registry_id: u32,
     server_context: SC,
-    connection: C,
+    mut connection: C,
     rx: impl futures_util::Stream<Item = GlobalsUpdate<<SC as Server>::Global>>,
 ) {
     use futures_lite::StreamExt as _;

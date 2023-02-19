@@ -33,6 +33,7 @@ futures-channel = "0.3.26"
 async-broadcast = "0.5.0"
 futures-core = "0.3.26"
 async-lock = "2.6.0"
+pin-project = "1.0.12"
 
 [features]
 default = []

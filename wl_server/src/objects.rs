@@ -12,7 +12,7 @@ use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
 
 use crate::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -103,21 +103,20 @@ where
             if objects.get(callback.0).is_some() {
                 return Err(crate::error::Error::IdExists(callback.0))
             }
-            ctx.connection()
-                .send(
-                    callback.0,
-                    wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
-                        // TODO: setup event serial
-                        callback_data: 0,
-                    }),
-                )
-                .await?;
-            ctx.connection()
-                .send(
-                    DISPLAY_ID,
-                    wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
-                )
-                .await?;
+            let mut conn = ctx.connection().clone();
+            conn.send(
+                callback.0,
+                wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
+                    // TODO: setup event serial
+                    callback_data: 0,
+                }),
+            )
+            .await?;
+            conn.send(
+                DISPLAY_ID,
+                wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
+            )
+            .await?;
             Ok(())
         }
     }
@@ -234,7 +233,7 @@ impl Callback {
         object_id: u32,
         data: u32,
         objects: &mut impl Store<O>,
-        conn: &impl WriteMessage,
+        conn: &mut (impl WriteMessage + Unpin),
     ) -> std::io::Result<()> {
         let obj = objects.get(object_id).unwrap();
         let interface = obj.interface();

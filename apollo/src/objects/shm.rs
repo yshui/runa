@@ -11,7 +11,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessageExt},
     error,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };
@@ -167,15 +167,15 @@ where
         size: i32,
     ) -> Self::CreatePoolFut<'_> {
         tracing::debug!("creating shm_pool with size {}", size);
+        let mut conn = ctx.connection().clone();
         async move {
             if size <= 0 {
-                ctx.connection()
-                    .send(DISPLAY_ID, wl_display::events::Error {
-                        code:      wl_shm::enums::Error::InvalidStride as u32,
-                        object_id: object_id.into(),
-                        message:   wl_types::str!("invalid size"),
-                    })
-                    .await?;
+                conn.send(DISPLAY_ID, wl_display::events::Error {
+                    code:      wl_shm::enums::Error::InvalidStride as u32,
+                    object_id: object_id.into(),
+                    message:   wl_types::str!("invalid size"),
+                })
+                .await?;
                 return Ok(())
             }
             let fd = unsafe {
@@ -210,13 +210,12 @@ where
                 })),
             };
             if ctx.objects().lock().await.insert(id.0, pool).is_err() {
-                ctx.connection()
-                    .send(DISPLAY_ID, wl_display::events::Error {
-                        code:      wl_display::enums::Error::InvalidObject as u32,
-                        object_id: object_id.into(),
-                        message:   wl_types::str!("id already in use"),
-                    })
-                    .await?;
+                conn.send(DISPLAY_ID, wl_display::events::Error {
+                    code:      wl_display::enums::Error::InvalidObject as u32,
+                    object_id: object_id.into(),
+                    message:   wl_types::str!("id already in use"),
+                })
+                .await?;
             }
             Ok(())
         }
@@ -345,9 +344,9 @@ where
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
             let mut objects = ctx.objects().lock().await;
+            let mut conn = ctx.connection().clone();
             objects.remove(object_id).unwrap();
-            ctx.connection()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

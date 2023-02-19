@@ -6,7 +6,7 @@ use std::{
 
 use hashbrown::HashMap;
 use wl_server::{
-    connection::traits::WriteMessage,
+    connection::traits::{WriteMessage, WriteMessageExt},
     events::{BroadcastEventSource, EventSource},
 };
 
@@ -195,9 +195,9 @@ impl Output {
     }
 
     /// Send a wl_output::geometry event to the client
-    pub(crate) async fn send_geometry<T: WriteMessage>(
+    pub(crate) async fn send_geometry<T: WriteMessage + Unpin>(
         &self,
-        client: &T,
+        client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
@@ -221,9 +221,9 @@ impl Output {
     }
 
     /// Send a wl_output::name event to the client
-    pub(crate) async fn send_name<T: WriteMessage>(
+    pub(crate) async fn send_name<T: WriteMessage + Unpin>(
         &self,
-        client: &T,
+        client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
@@ -237,9 +237,9 @@ impl Output {
             .await
     }
 
-    pub(crate) async fn send_scale<T: WriteMessage>(
+    pub(crate) async fn send_scale<T: WriteMessage + Unpin>(
         &self,
-        client: &T,
+        client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
@@ -251,8 +251,8 @@ impl Output {
     }
 
     /// Send a wl_output::done event to the client
-    pub(crate) async fn send_done<T: WriteMessage>(
-        client: &T,
+    pub(crate) async fn send_done<T: WriteMessage + Unpin>(
+        client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
         use wl_protocol::wayland::wl_output::v4 as wl_output;
@@ -265,9 +265,9 @@ impl Output {
     }
 
     /// Send all information about this output to the client.
-    pub(crate) async fn send_all<T: WriteMessage>(
+    pub(crate) async fn send_all<T: WriteMessage + Unpin>(
         &self,
-        client: &T,
+        client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
         self.send_geometry(client, object_id).await?;

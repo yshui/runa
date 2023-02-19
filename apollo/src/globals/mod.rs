@@ -13,7 +13,7 @@ use wl_protocol::wayland::{
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, StoreExt, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, StoreExt, WriteMessage, WriteMessageExt},
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
@@ -102,7 +102,7 @@ where
 async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
     objects: impl LockableStore<Obj>,
     server_context: impl Server + HasShell<Shell = S>,
-    conn: impl WriteMessage,
+    mut conn: impl WriteMessage + Unpin,
     rx: impl Stream<Item = ShellEvent>,
 ) {
     use futures_util::StreamExt;
@@ -153,7 +153,7 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
         }
         for &callback in &callbacks_to_fire {
             use std::ops::DerefMut;
-            wl_server::objects::Callback::fire(callback, time, objects.deref_mut(), &conn)
+            wl_server::objects::Callback::fire(callback, time, objects.deref_mut(), &mut conn)
                 .await
                 .unwrap();
         }
@@ -224,11 +224,11 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         let formats = client.server_context().formats();
+        let mut conn = client.connection().clone();
         async move {
             // Send known buffer formats
             for format in formats {
-                client
-                    .connection()
+                conn
                     .send(
                         object_id,
                         wl_shm::Event::Format(wl_shm::events::Format { format }),
@@ -286,8 +286,9 @@ where
             let objects = client.objects();
             let mut objects = objects.lock().await;
             let output: WeakPtr<_> = Rc::downgrade(&self.0).into();
+            let mut conn = client.connection().clone();
             // Send properties of this output
-            self.0.send_all(client.connection(), object_id).await?;
+            self.0.send_all(&mut conn, object_id).await?;
             // Send enter events for surfaces already on this output
             let messages: Vec<_> = {
                 let surfaces =
@@ -306,7 +307,7 @@ where
                     .collect()
             };
             for (id, message) in messages {
-                client.connection().send(id, message).await.unwrap();
+                conn.send(id, message).await.unwrap();
             }
             // Sent all the enter events before finailzing the object, this is to
             // avoid race conditions. For example, if we send the enter events
@@ -338,7 +339,7 @@ use crate::shell::output::Output as ShellOutput;
 async fn handle_output_change_event(
     object_id: u32,
     output: WeakPtr<crate::shell::output::Output>,
-    connection: impl WriteMessage,
+    mut connection: impl WriteMessage + Unpin,
     mut rx: impl futures_util::Stream<Item = OutputChangeEvent> + Unpin,
 ) {
     use futures_util::StreamExt;
@@ -347,23 +348,23 @@ async fn handle_output_change_event(
         let Some(output_global) = Weak::upgrade(&event.output) else { continue };
         if event.change.contains(OutputChange::GEOMETRY) {
             output_global
-                .send_geometry(&connection, object_id)
+                .send_geometry(&mut connection, object_id)
                 .await
                 .unwrap();
         }
         if event.change.contains(OutputChange::NAME) {
             output_global
-                .send_name(&connection, object_id)
+                .send_name(&mut connection, object_id)
                 .await
                 .unwrap();
         }
         if event.change.contains(OutputChange::SCALE) {
             output_global
-                .send_scale(&connection, object_id)
+                .send_scale(&mut connection, object_id)
                 .await
                 .unwrap();
         }
-        ShellOutput::send_done(&connection, object_id)
+        ShellOutput::send_done(&mut connection, object_id)
             .await
             .unwrap();
         connection.flush().await.unwrap();

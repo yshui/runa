@@ -4,7 +4,7 @@ use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_output::v4 as wl_output,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessageExt},
     objects::{wayland_object, DISPLAY_ID},
 };
 
@@ -36,9 +36,9 @@ where
         async move {
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
+            let mut conn = ctx.connection().clone();
             objects.remove(object_id);
-            ctx.connection()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -72,8 +72,9 @@ where
         async move {
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
+            let mut conn = ctx.connection().clone();
             let _ = objects.remove(object_id).unwrap();
-            ctx.connection()
+            conn
                 .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())

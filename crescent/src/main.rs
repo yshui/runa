@@ -115,9 +115,10 @@ impl wl_server::server::Server for Crescent {
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
+                let mut conn = client_ctx.connection().clone();
                 loop {
                     // Flush output before we start waiting.
-                    if let Err(e) = client_ctx.connection().flush().await {
+                    if let Err(e) = conn.flush().await {
                         tracing::trace!("Error while flushing connection {e}");
                         break
                     }
@@ -134,7 +135,7 @@ impl wl_server::server::Server for Crescent {
                 }
                 // Try to flush the connection, ok if it fails, as the connection could have
                 // been broken at this point.
-                client_ctx.connection().flush().await.ok();
+                conn.flush().await.ok();
                 client_ctx.disconnect().await;
                 Ok::<(), wl_server::error::Error>(())
             })

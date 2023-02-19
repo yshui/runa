@@ -25,7 +25,7 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
     error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
@@ -252,8 +252,8 @@ where
                 }
             };
             if let Some(released_buffer) = released_buffer {
-                ctx.connection()
-                    .send(released_buffer, wl_buffer::events::Release {})
+                let mut conn = ctx.connection().clone();
+                conn.send(released_buffer, wl_buffer::events::Release {})
                     .await?;
             }
             Ok(())
@@ -306,6 +306,7 @@ where
             let server_context = ctx.server_context().clone();
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
+            let mut conn = ctx.connection().clone();
             let this = objects.remove(object_id).unwrap();
             let this: &Self = this.cast().unwrap();
 
@@ -317,15 +318,13 @@ where
             let mut frame_callbacks =
                 std::mem::take(&mut *this.inner.frame_callbacks().borrow_mut());
             for frame_callback in frame_callbacks.drain(..) {
-                ctx.connection()
-                    .send(DISPLAY_ID, wl_display::events::DeleteId {
-                        id: frame_callback,
-                    })
-                    .await?;
+                conn.send(DISPLAY_ID, wl_display::events::DeleteId {
+                    id: frame_callback,
+                })
+                .await?;
             }
 
-            ctx.connection()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -380,7 +379,7 @@ where
         async fn handle_surface_output_event<Obj: ObjectMeta + 'static>(
             object_id: u32,
             objects: impl LockableStore<Obj>,
-            conn: impl WriteMessage,
+            mut conn: impl WriteMessage + Unpin,
             shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
             rx: impl futures_util::Stream<Item = OutputEvent>,
         ) {

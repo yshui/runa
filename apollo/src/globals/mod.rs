@@ -13,10 +13,7 @@ use wl_protocol::wayland::{
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{
-        traits::{LockableStore, Store, StoreExt},
-        Client, WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, StoreExt, WriteMessage},
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,

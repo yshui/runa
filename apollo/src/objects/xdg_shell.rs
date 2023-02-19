@@ -8,10 +8,7 @@ use wl_protocol::stable::xdg_shell::{
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::{
-        traits::{LockableStore, Store},
-        Client, WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     error::Error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta},
@@ -77,10 +74,8 @@ where
                         .cast::<crate::objects::compositor::Surface<Sh>>()
                         .unwrap();
                     if let Some(size) = event.0.extent {
-                        if let Some(role_object_id) = surface
-                            .inner
-                            .role::<TopLevel>()
-                            .map(|r| r.object_id)
+                        if let Some(role_object_id) =
+                            surface.inner.role::<TopLevel>().map(|r| r.object_id)
                         {
                             conn.send(role_object_id, xdg_toplevel::events::Configure {
                                 height: size.h as i32,

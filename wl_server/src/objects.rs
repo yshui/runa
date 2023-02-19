@@ -12,10 +12,7 @@ use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
 
 use crate::{
-    connection::{
-        traits::{LockableStore, Store},
-        Client, WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -237,7 +234,7 @@ impl Callback {
         object_id: u32,
         data: u32,
         objects: &mut impl Store<O>,
-        conn: &impl crate::connection::WriteMessage,
+        conn: &impl WriteMessage,
     ) -> std::io::Result<()> {
         let obj = objects.get(object_id).unwrap();
         let interface = obj.interface();

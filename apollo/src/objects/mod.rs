@@ -4,11 +4,7 @@ use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_output::v4 as wl_output,
 };
 use wl_server::{
-    connection::{
-        traits::{LockableStore, Store},
-        Client,
-        WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     objects::{wayland_object, DISPLAY_ID},
 };
 
@@ -77,7 +73,6 @@ where
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
             let _ = objects.remove(object_id).unwrap();
-            use wl_server::connection::WriteMessage;
             ctx.connection()
                 .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;

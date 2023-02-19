@@ -4,10 +4,7 @@ use futures_util::{pin_mut, FutureExt};
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::{
-        traits::{LockableStore, Store},
-        Client, WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     events::EventSource,
     objects::ObjectMeta,
     server::{GlobalsUpdate, Server},

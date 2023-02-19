@@ -18,7 +18,10 @@ use crate::objects::{Object, ObjectMeta};
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
 pub mod traits {
+    use std::pin::Pin;
+
     use futures_core::Future;
+    use wl_io::traits::ser;
 
     use crate::objects::{ObjectMeta, StaticObjectMeta};
 
@@ -86,6 +89,55 @@ pub mod traits {
             Self: 'a;
         /// Lock the store for read/write accesses.
         fn lock(&self) -> Self::LockFut<'_>;
+    }
+
+    pub trait WriteMessage {
+        type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
+        where
+            Self: 'a,
+            M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
+        type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
+        where
+            Self: 'a;
+        /// Send a message to the client.
+        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+            &'a self,
+            object_id: u32,
+            msg: M,
+        ) -> Self::Send<'c, M>
+        where
+            'a: 'c,
+            'b: 'c;
+
+        /// Flush connection
+        fn flush(&self) -> Self::Flush<'_>;
+    }
+
+    /// A client connection
+    pub trait Client: Sized + 'static {
+        type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
+        type ObjectStore: LockableStore<Self::Object>;
+        type Connection: WriteMessage + Clone + 'static;
+        type Object: crate::objects::Object<Self> + std::fmt::Debug;
+        type DispatchFut<'a, R>: Future<Output = bool> + 'a
+        where
+            Self: 'a,
+            R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
+        /// Return the server context singleton.
+        fn server_context(&self) -> &Self::ServerContext;
+        fn connection(&self) -> &Self::Connection;
+        fn objects(&self) -> &Self::ObjectStore;
+        /// Spawn a client dependent task from the context. When the client is
+        /// disconnected, the task should be cancelled, otherwise the task
+        /// should keep running.
+        ///
+        /// For simplicity's sake, we don't return a handle to the task. So if
+        /// you want to stop your task early, you can wrap it in
+        /// [`futures::future::Abortable`], or similar.
+        fn spawn(&self, fut: impl Future<Output = ()> + 'static);
+        fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+        where
+            R: wl_io::traits::buf::AsyncBufReadWithFd;
     }
 }
 
@@ -263,55 +315,6 @@ impl<O: ObjectMeta> traits::Store<O> for Store<O> {
     }
 }
 
-pub trait WriteMessage {
-    type Send<'a, M>: Future<Output = Result<(), std::io::Error>> + 'a
-    where
-        Self: 'a,
-        M: 'a + wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug;
-    type Flush<'a>: Future<Output = Result<(), std::io::Error>> + 'a
-    where
-        Self: 'a;
-    /// Send a message to the client.
-    fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-        &'a self,
-        object_id: u32,
-        msg: M,
-    ) -> Self::Send<'c, M>
-    where
-        'a: 'c,
-        'b: 'c;
-
-    /// Flush connection
-    fn flush(&self) -> Self::Flush<'_>;
-}
-
-/// A client connection
-pub trait Client: Sized + 'static {
-    type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
-    type ObjectStore: traits::LockableStore<Self::Object>;
-    type Connection: WriteMessage + Clone + 'static;
-    type Object: Object<Self> + std::fmt::Debug;
-    type DispatchFut<'a, R>: Future<Output = bool> + 'a
-    where
-        Self: 'a,
-        R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
-    /// Return the server context singleton.
-    fn server_context(&self) -> &Self::ServerContext;
-    fn connection(&self) -> &Self::Connection;
-    fn objects(&self) -> &Self::ObjectStore;
-    /// Spawn a client dependent task from the context. When the client is
-    /// disconnected, the task should be cancelled, otherwise the task
-    /// should keep running.
-    ///
-    /// For simplicity's sake, we don't return a handle to the task. So if you
-    /// want to stop your task early, you can wrap it in
-    /// [`futures::future::Abortable`], or similar.
-    fn spawn(&self, fut: impl Future<Output = ()> + 'static);
-    fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
-    where
-        R: wl_io::traits::buf::AsyncBufReadWithFd;
-}
-
 #[macro_export]
 macro_rules! impl_dispatch {
     // This can be a default impl in the trait, but for that we need one of the
@@ -343,9 +346,9 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::{traits::LockableStore, WriteMessage};
+                use $crate::connection::traits::{LockableStore, WriteMessage};
                 let (ret, bytes_read, fds_read) =
-                    <<Self as $crate::connection::Client>::Object as $crate::objects::Object<
+                    <<Self as $crate::connection::traits::Client>::Object as $crate::objects::Object<
                         Self,
                     >>::dispatch(self, object_id, (buf, fd))
                     .await;
@@ -488,7 +491,7 @@ impl<C> Connection<C> {
     }
 }
 
-impl<C: AsyncBufWriteWithFd + Unpin> WriteMessage for Connection<C> {
+impl<C: AsyncBufWriteWithFd + Unpin> traits::WriteMessage for Connection<C> {
     type Flush<'a> = impl Future<Output = Result<(), std::io::Error>> + 'a where C: 'a;
     type Send<'a, M> = impl Future<Output = Result<(), std::io::Error>> + 'a where
         C: 'a,

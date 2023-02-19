@@ -6,7 +6,7 @@ use std::{
 
 use hashbrown::HashMap;
 use wl_server::{
-    connection::WriteMessage,
+    connection::traits::WriteMessage,
     events::{BroadcastEventSource, EventSource},
 };
 
@@ -265,7 +265,7 @@ impl Output {
     }
 
     /// Send all information about this output to the client.
-    pub(crate) async fn send_all<T: wl_server::connection::WriteMessage>(
+    pub(crate) async fn send_all<T: WriteMessage>(
         &self,
         client: &T,
         object_id: u32,

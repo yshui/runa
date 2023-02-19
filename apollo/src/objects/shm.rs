@@ -11,7 +11,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::{Client, traits::{LockableStore, Store}, WriteMessage},
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     error,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };

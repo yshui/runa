@@ -17,9 +17,8 @@ use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{
-        self,
-        traits::{LockableStore as _, Store as _},
-        Client as _, Connection, LockableStore, WriteMessage as _,
+        traits::{Client, LockableStore as _, Store as _},
+        Connection, LockableStore,
     },
     objects::Object,
     renderer_capability::RendererCapability,
@@ -180,7 +179,7 @@ impl CrescentClient {
     }
 }
 
-impl connection::Client for CrescentClient {
+impl Client for CrescentClient {
     type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
     type Object = AnyObject;
     type ObjectStore = LockableStore<Self::Object>;

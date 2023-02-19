@@ -25,10 +25,7 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::{
-        traits::{LockableStore, Store},
-        Client, WriteMessage,
-    },
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
@@ -230,7 +227,6 @@ where
             let objects = ctx.objects();
             let objects = objects.lock().await;
             let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
-            use wl_server::connection::WriteMessage;
 
             use crate::shell::buffers::Buffer;
             let server_context = ctx.server_context().clone();

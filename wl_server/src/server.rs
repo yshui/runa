@@ -6,6 +6,7 @@ use std::{cell::RefCell, future::Future, rc::Rc};
 use derivative::Derivative;
 
 use crate::{
+    connection::traits::Client,
     events::{BroadcastEventSource, EventSource},
     globals::Global,
     Serial,
@@ -18,14 +19,11 @@ use crate::{
 /// an Rc)
 pub trait Server: Clone + Sized {
     /// The per client context type.
-    type ClientContext: crate::connection::Client<ServerContext = Self>;
+    type ClientContext: Client<ServerContext = Self>;
     type Conn;
     type Error;
     type GlobalStore: Globals<Self::Global>;
-    type Global: Global<
-        Self::ClientContext,
-        Object = <Self::ClientContext as crate::connection::Client>::Object,
-    >;
+    type Global: Global<Self::ClientContext, Object = <Self::ClientContext as Client>::Object>;
 
     fn globals(&self) -> &RefCell<Self::GlobalStore>;
     fn new_connection(&self, conn: Self::Conn) -> Result<(), Self::Error>;

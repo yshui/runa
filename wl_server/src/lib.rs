@@ -269,7 +269,7 @@ macro_rules! globals {
             }
         )*
         impl $crate::globals::GlobalMeta for $N {
-            type Object = <$ctx as $crate::connection::Client>::Object;
+            type Object = <$ctx as $crate::connection::traits::Client>::Object;
             fn interface(&self) -> &'static str {
                 match self {
                     $(

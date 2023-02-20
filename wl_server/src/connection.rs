@@ -107,6 +107,11 @@ pub mod traits {
         fn lock(&self) -> Self::LockFut<'_>;
     }
 
+    /// A trait for objects that can accept messages to be sent.
+    ///
+    /// This is similar to `Sink`, but instead of accepting only one type of
+    /// Items, it accepts any type that implements
+    /// [`wl_io::traits::ser::Serialize`].
     pub trait WriteMessage {
         /// Reserve space for a message
         fn poll_reserve<M: ser::Serialize>(
@@ -122,7 +127,11 @@ pub mod traits {
         /// if there is not enough space in the queue, this function panics.
         /// Before calling this, you should call `poll_reserve` to
         /// ensure there is enough space.
-        fn send<M: ser::Serialize + std::fmt::Debug>(self: Pin<&mut Self>, object_id: u32, msg: M);
+        fn start_send<M: ser::Serialize + std::fmt::Debug>(
+            self: Pin<&mut Self>,
+            object_id: u32,
+            msg: M,
+        );
 
         /// Flush connection
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
@@ -147,8 +156,9 @@ pub mod traits {
 
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let this = self.get_mut();
-            ready!(Pin::new(&mut *this.writer).poll_reserve(cx, this.msg.as_ref().unwrap()))?;
-            Pin::new(&mut *this.writer).send(this.object_id, this.msg.take().unwrap());
+            let mut sink = Pin::new(&mut *this.writer);
+            ready!(sink.as_mut().poll_reserve(cx, this.msg.as_ref().unwrap()))?;
+            sink.start_send(this.object_id, this.msg.take().unwrap());
             Poll::Ready(Ok(()))
         }
     }
@@ -166,6 +176,7 @@ pub mod traits {
     }
 
     pub trait WriteMessageExt {
+        #[must_use]
         fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
             &'a mut self,
             object_id: u32,
@@ -175,6 +186,7 @@ pub mod traits {
             Self: WriteMessage,
             'a: 'c,
             'b: 'c;
+        #[must_use]
         fn flush(&mut self) -> Flush<'_, Self>
         where
             Self: WriteMessage;
@@ -516,7 +528,11 @@ impl<C: AsyncBufWriteWithFd + Unpin> traits::WriteMessage for Connection<C> {
         Pin::new(&mut *conn).poll_reserve(cx, len as usize, nfds as usize)
     }
 
-    fn send<M: ser::Serialize + std::fmt::Debug>(self: Pin<&mut Self>, object_id: u32, msg: M) {
+    fn start_send<M: ser::Serialize + std::fmt::Debug>(
+        self: Pin<&mut Self>,
+        object_id: u32,
+        msg: M,
+    ) {
         let object_id = object_id.to_ne_bytes();
         let mut conn = self.conn.borrow_mut();
         Pin::new(&mut *conn).write(&object_id[..]);

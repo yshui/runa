@@ -73,6 +73,9 @@ fn deallocate_surface<Ctx: Client>(
     let mut shell = server_context.shell().borrow_mut();
     this.inner
         .destroy(&mut shell, &mut this.scratch_buffer.borrow_mut());
+
+    // Disconnected, no point sending DeleteId for those callbacks
+    this.inner.frame_callbacks().borrow_mut().clear();
 }
 
 #[derive(Debug)]

@@ -16,7 +16,10 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{
         event_handler::Abortable,
-        traits::{Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage},
+        traits::{
+            Client, EventDispatcher, EventHandler, EventHandlerAction, LockableStore, Store,
+            WriteMessage,
+        },
     },
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
@@ -86,9 +89,11 @@ where
 
                 // Only start the event handler for the first completed compositor object bound.
                 let rx = client.server_context().shell().borrow().subscribe();
-                client.add_event_handler(rx, RenderEventHandler {
-                    callbacks_to_fire: Vec::new(),
-                });
+                client
+                    .event_dispatcher()
+                    .add_event_handler(rx, RenderEventHandler {
+                        callbacks_to_fire: Vec::new(),
+                    });
             };
 
             Ok(())
@@ -340,7 +345,7 @@ where
             let handler = OutputChangeEventHandler { object_id };
             let (handler, abort) = Abortable::new(handler);
             let auto_abort = abort.auto_abort();
-            client.add_event_handler(rx, handler);
+            client.event_dispatcher().add_event_handler(rx, handler);
 
             // Add this output to the set of all outputs
             all_outputs

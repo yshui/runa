@@ -30,7 +30,7 @@ use wl_protocol::wayland::{
 };
 use wl_server::{
     connection::traits::{
-        Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage,
+        Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage, EventDispatcher,
     },
     error,
     events::EventSource,
@@ -431,7 +431,7 @@ where
                     .next();
                 drop(objects); // unlock
                 drop(shell);
-                ctx.add_event_handler(rx, OutputChangedEventHandler {
+                ctx.event_dispatcher().add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id: id.0,
                     shared_surface_buffers,

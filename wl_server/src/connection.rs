@@ -241,12 +241,21 @@ pub mod traits {
         ) -> Poll<Result<EventHandlerAction, Box<dyn Error + std::marker::Send + Sync + 'static>>>;
     }
 
+    pub trait EventDispatcher<Ctx: Client> {
+        fn add_event_handler<M: Any>(
+            &mut self,
+            event_source: impl Stream<Item = M> + 'static,
+            handler: impl EventHandler<Ctx, Message = M> + 'static,
+        );
+    }
+
     /// A client connection
     pub trait Client: Sized + 'static {
         type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
         type ObjectStore: LockableStore<Self::Object>;
         type Connection: WriteMessage + Unpin + Clone + 'static;
         type Object: crate::objects::Object<Self> + std::fmt::Debug;
+        type EventDispatcher: EventDispatcher<Self> + 'static;
         type DispatchFut<'a, R>: Future<Output = bool> + 'a
         where
             Self: 'a,
@@ -255,6 +264,7 @@ pub mod traits {
         fn server_context(&self) -> &Self::ServerContext;
         fn connection(&self) -> &Self::Connection;
         fn objects(&self) -> &Self::ObjectStore;
+        fn event_dispatcher(&mut self) -> &mut Self::EventDispatcher;
         /// Spawn a client dependent task from the context. When the client is
         /// disconnected, the task should be cancelled, otherwise the task
         /// should keep running.
@@ -266,11 +276,6 @@ pub mod traits {
         fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
             R: wl_io::traits::buf::AsyncBufReadWithFd;
-        fn add_event_handler<M: Any>(
-            &mut self,
-            event_source: impl Stream<Item = M> + 'static,
-            handler: impl EventHandler<Self, Message = M> + 'static,
-        );
     }
 }
 
@@ -730,7 +735,7 @@ pub struct EventDispatcher<Ctx> {
     #[pin]
     handlers:       FuturesUnordered<StreamFuture<BoxedAnyEventHandler<Ctx>>>,
     active_handler: Option<BoxedAnyEventHandler<Ctx>>,
-    waker:          Vec<Waker>,
+    waker:          Option<Waker>,
 }
 
 impl<Ctx> std::fmt::Debug for EventDispatcher<Ctx> {
@@ -744,7 +749,7 @@ impl<Ctx> Default for EventDispatcher<Ctx> {
         Self {
             handlers:       FuturesUnordered::new(),
             active_handler: None,
-            waker:          Vec::new(),
+            waker:          None,
         }
     }
 }
@@ -755,8 +760,8 @@ impl<Ctx> EventDispatcher<Ctx> {
     }
 }
 
-impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
-    pub fn add_event_handler<M: Any>(
+impl<Ctx: traits::Client + 'static> traits::EventDispatcher<Ctx> for EventDispatcher<Ctx> {
+    fn add_event_handler<M: Any>(
         &mut self,
         event_source: impl Stream<Item = M> + 'static,
         handler: impl traits::EventHandler<Ctx, Message = M> + 'static,
@@ -770,13 +775,20 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
         let pinned = pinned as Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
         let pinned = pinned.into_future();
         self.handlers.push(pinned);
-        for waker in self.waker.drain(..) {
-            waker.wake();
+        if let Some(w) = self.waker.take() {
+            w.wake();
         }
     }
+}
 
+impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
     /// Poll for the next event, which needs to be handled with the use of the
     /// client context.
+    ///
+    /// # Caveats
+    ///
+    /// If this is called from multiple tasks, those tasks will just keep waking
+    /// up each other and waste CPU cycles.
     pub fn poll_next<'a>(
         self: Pin<&'a mut Self>,
         cx: &mut Context<'_>,
@@ -793,7 +805,15 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
                 Some((None, _)) => (),
                 None => {
                     // We have no handlers, so we sleep until a new handler is added.
-                    this.waker.push(cx.waker().clone());
+                    if let Some(w) = this.waker.take() {
+                        if w.will_wake(cx.waker()) {
+                            *this.waker = Some(w);
+                        } else {
+                            // Wake the previous waker, because it's going to be replaced.
+                            w.wake();
+                            *this.waker = Some(cx.waker().clone());
+                        }
+                    }
                     return Poll::Pending
                 },
             }

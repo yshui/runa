@@ -7,9 +7,7 @@ use std::{
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{
-        Client, EventHandler, WriteMessage, EventHandlerAction,
-    },
+    connection::traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, WriteMessage},
     events::EventSource,
     server::{GlobalsUpdate, Server},
 };
@@ -158,9 +156,11 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
                     .unwrap()
             }
             connection.flush().await.unwrap();
-            client.add_event_handler(rx, RegistryEventHandler {
-                registry_id: object_id,
-            });
+            client
+                .event_dispatcher()
+                .add_event_handler(rx, RegistryEventHandler {
+                    registry_id: object_id,
+                });
             Ok(())
         }
     }

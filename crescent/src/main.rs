@@ -17,7 +17,7 @@ use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{
-        traits::{Client, LockableStore as _, Store as _},
+        traits::{Client, LockableStore as _, Store as _, WriteMessage as _},
         Connection, EventDispatcher, LockableStore,
     },
     objects::Object,
@@ -99,7 +99,6 @@ impl wl_server::server::Server for Crescent {
         self.0
             .executor
             .spawn(async move {
-                use wl_server::connection::traits::*;
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
                     store: Some(Default::default()),
@@ -210,6 +209,7 @@ impl Client for CrescentClient {
     type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
     type Object = AnyObject;
     type ObjectStore = LockableStore<Self::Object>;
+    type EventDispatcher = EventDispatcher<Self>;
     type ServerContext = Crescent;
 
     wl_server::impl_dispatch!();
@@ -231,13 +231,8 @@ impl Client for CrescentClient {
         self.tasks.borrow_mut().push(task);
     }
 
-    fn add_event_handler<M: std::any::Any>(
-        &mut self,
-        event_source: impl futures_util::Stream<Item = M> + 'static,
-        handler: impl wl_server::connection::traits::EventHandler<Self, Message = M> + 'static,
-    ) {
-        self.event_dispatcher
-            .add_event_handler(event_source, handler);
+    fn event_dispatcher(&mut self) -> &mut Self::EventDispatcher {
+        &mut self.event_dispatcher
     }
 }
 

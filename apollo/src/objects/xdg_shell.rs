@@ -14,7 +14,7 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::{
         event_handler::{Abortable, AutoAbortHandle},
-        traits::{Client, EventHandlerAction, LockableStore, Store, WriteMessage},
+        traits::{Client, EventDispatcher, EventHandlerAction, LockableStore, Store, WriteMessage},
     },
     error::Error,
     events::EventSource,
@@ -227,7 +227,7 @@ where
                 let (handler, abort) = Abortable::new(LayoutEventHandler {
                     surface_object_id: surface.object_id(),
                 });
-                ctx.add_event_handler(rx, handler);
+                ctx.event_dispatcher().add_event_handler(rx, handler);
                 // `abort.auto_abort()` creates a handle which will stop the event handler when
                 // the TopLevel object is destroyed.
                 TopLevel(surface, abort.auto_abort()).into()

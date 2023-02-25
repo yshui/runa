@@ -1,10 +1,14 @@
 use std::{
-    os::unix::io::RawFd,
+    os::{
+        fd::{FromRawFd, OwnedFd},
+        unix::io::RawFd,
+    },
     pin::Pin,
     task::{ready, Poll},
 };
 
 use pin_project_lite::pin_project;
+use wl_io_traits::OwnedFds;
 
 use crate::traits::{buf::AsyncBufReadWithFd, AsyncReadWithFd};
 
@@ -115,9 +119,13 @@ unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
             // post condition from the if above: buf.len() >= len + pos_data
             // combined: filled_data < buf.len()
             let buf = unsafe { &mut this.buf.get_unchecked_mut(*this.filled_data..) };
-            let mut fd_buf = [0; crate::SCM_MAX_FD];
-            let (bytes, nfds) = ready!(this.inner.poll_read_with_fds(cx, buf, &mut fd_buf[..]))?;
-            if bytes == 0 && nfds == 0 {
+            // Safety: OwnedFd is repr(transparent) over RawFd.
+            let fd_buf = unsafe {
+                std::mem::transmute::<&mut Vec<RawFd>, &mut Vec<OwnedFd>>(&mut *this.fd_buf)
+            };
+            let nfds = fd_buf.len();
+            let bytes = ready!(this.inner.poll_read_with_fds(cx, buf, fd_buf))?;
+            if bytes == 0 && (fd_buf.len() == nfds) {
                 // We hit EOF while the buffer is not filled
                 tracing::debug!(
                     "EOF while the buffer is not filled, filled {}",
@@ -125,7 +133,6 @@ unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
                 );
                 return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()))
             }
-            this.fd_buf.extend_from_slice(&fd_buf[..nfds]);
             *this.filled_data += bytes;
         }
 
@@ -149,13 +156,13 @@ unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
     }
 }
 
-unsafe impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
-    fn poll_read_with_fds(
+impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
+    fn poll_read_with_fds<Fds: OwnedFds>(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         mut buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<std::io::Result<(usize, usize)>> {
+        fds: &mut Fds,
+    ) -> Poll<std::io::Result<usize>> {
         ready!(self.as_mut().poll_fill_buf_until(cx, 1))?;
         let our_buf = self.as_ref().get_ref().buffer();
         let read_len = std::cmp::min(our_buf.len(), buf.len());
@@ -163,13 +170,15 @@ unsafe impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
         buf = &mut buf[read_len..];
 
         let this = self.as_mut().project();
-        let fd_len = std::cmp::min(this.fd_buf.len(), fds.len());
-        fds.copy_from_slice(&this.fd_buf[..fd_len]);
+        fds.extend(
+            this.fd_buf
+                .drain(..)
+                .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }),
+        );
 
-        self.as_mut().consume(read_len, fd_len);
+        self.as_mut().consume(read_len, 0);
 
         let mut read = read_len;
-        let mut fd_read = fd_len;
         if !buf.is_empty() {
             // If we still have buffer left, we try to read directly into the buffer to
             // opportunistically avoid copying.
@@ -178,16 +187,15 @@ unsafe impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
             // called we will fill our buffer instead re-entering this if
             // branch.
             let this = self.project();
-            match this.inner.poll_read_with_fds(cx, buf, &mut fds[fd_len..])? {
-                Poll::Ready((bytes, nfds)) => {
+            match this.inner.poll_read_with_fds(cx, buf, fds)? {
+                Poll::Ready(bytes) => {
                     read += bytes;
-                    fd_read += nfds;
                 },
                 Poll::Pending => {}, // This is fine - we already read data.
             }
         }
 
-        Poll::Ready(Ok((read, fd_read)))
+        Poll::Ready(Ok(read))
     }
 }
 

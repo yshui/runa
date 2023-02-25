@@ -2,9 +2,12 @@
 use std::{
     io::Result,
     mem::MaybeUninit,
-    os::unix::{
-        io::{AsRawFd, OwnedFd, RawFd},
-        net::UnixStream as StdUnixStream,
+    os::{
+        fd::FromRawFd,
+        unix::{
+            io::{AsRawFd, OwnedFd, RawFd},
+            net::UnixStream as StdUnixStream,
+        },
     },
     pin::Pin,
     rc::Rc,
@@ -256,15 +259,15 @@ where
     })
 }
 
-unsafe impl traits::AsyncReadWithFd for ReadWithFd {
+impl traits::AsyncReadWithFd for ReadWithFd {
     /// This implementation will close extra file descriptors if fd_limit is
     /// reached.
-    fn poll_read_with_fds(
+    fn poll_read_with_fds<Fds: traits::OwnedFds>(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>> {
+        fds: &mut Fds,
+    ) -> Poll<Result<usize>> {
         use nix::sys::socket::MsgFlags;
         ready!(self.inner.poll_readable(cx)?);
         let fd = self.inner.as_raw_fd();
@@ -278,16 +281,14 @@ unsafe impl traits::AsyncReadWithFd for ReadWithFd {
             Err(nix::errno::Errno::EWOULDBLOCK) => Poll::Pending,
             Err(e) => Poll::Ready(Err(e.into())),
             Ok(msg) => {
-                let mut ifds = msg.scm_rights().flatten();
-                let mut count = 0;
-                for (dst, src) in fds.iter_mut().zip(&mut ifds) {
-                    *dst = src;
-                    count += 1;
-                }
-                for fd in ifds {
-                    nix::unistd::close(fd).unwrap();
-                }
-                Poll::Ready(Ok((msg.bytes, count)))
+                let ifds = msg
+                    .scm_rights()
+                    .flatten()
+                    // Safety: we just received those file descriptors so we know
+                    // they are valid and not shared.
+                    .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+                fds.extend(ifds);
+                Poll::Ready(Ok(msg.bytes))
             },
         }
     }
@@ -346,8 +347,8 @@ impl<const N: usize> traits::OwnedFds for OwnedFds<N> {
     }
 
     #[inline]
-    fn capacity(&self) -> usize {
-        N
+    fn capacity(&self) -> Option<usize> {
+        Some(N)
     }
 
     fn take<T: Extend<OwnedFd>>(&mut self, fds: &mut T) {

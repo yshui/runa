@@ -4,7 +4,7 @@ use std::{
     io::Result,
     os::{fd::OwnedFd, unix::io::RawFd},
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 /// A bunch of owned file descriptors.
@@ -12,8 +12,11 @@ pub trait OwnedFds: Extend<OwnedFd> {
     /// Returns the number of file descriptors.
     fn len(&self) -> usize;
     /// Returns the maximum number of file descriptors that can be stored.
-    /// This number cannot be larger than `SCM_MAX_FD`.
-    fn capacity(&self) -> usize;
+    /// Trying to store more than this number of file descriptors will cause
+    /// them to be dropped.
+    ///
+    /// Returns `None` if there is no limit.
+    fn capacity(&self) -> Option<usize>;
     /// Returns true if there are no file descriptors.
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -21,6 +24,23 @@ pub trait OwnedFds: Extend<OwnedFd> {
 
     /// Take all the file descriptors out of this object.
     fn take<T: Extend<OwnedFd>>(&mut self, fds: &mut T);
+}
+
+impl OwnedFds for Vec<OwnedFd> {
+    #[inline]
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    #[inline]
+    fn capacity(&self) -> Option<usize> {
+        None
+    }
+
+    #[inline]
+    fn take<T: Extend<OwnedFd>>(&mut self, fds: &mut T) {
+        fds.extend(self.drain(..))
+    }
 }
 
 /// A extension trait of `AsyncWrite` that supports sending file descriptors
@@ -149,14 +169,7 @@ pub trait WriteMessage {
 
 /// A extension trait of `AsyncRead` that supports receiving file descriptors
 /// along with data.
-///
-/// # Safety
-///
-/// At the minimum, the implementation cannot hold copies of the file
-/// descriptors after they have been transferred to the caller. Additionally,
-/// the file descriptors must be suitable for creating
-/// [`std::unix::io::OwnedFd`].
-pub unsafe trait AsyncReadWithFd {
+pub trait AsyncReadWithFd {
     /// Reads data and file descriptors from the stream. This is generic over
     /// how you store the file descriptors. Use something like tinyvec if
     /// you want to avoid heap allocations.
@@ -176,35 +189,30 @@ pub unsafe trait AsyncReadWithFd {
     /// # Note
     ///
     /// If the `fds` buffer is too small to hold all the file descriptors, the
-    /// extra file descriptors MAY BE CLOSED. Some implementation might hold
-    /// a buffer of file descriptors to prevent this from happening. You
-    /// should check the documentation of the implementor.
+    /// extra file descriptors MAY BE CLOSED (see [`OwnedFds`]). Some
+    /// implementation might hold a buffer of file descriptors to prevent
+    /// this from happening. You should check the documentation of the
+    /// implementor.
     ///
     /// # Returns
     ///
-    /// The number of bytes read and the number of file descriptors read,
-    /// respectively.
-    fn poll_read_with_fds(
+    /// The number of bytes read.
+    fn poll_read_with_fds<Fds: OwnedFds>(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>>;
+        fds: &mut Fds,
+    ) -> Poll<Result<usize>>;
 }
 
 /// Forward impl of `AsyncReadWithFd` for `&mut T` where `T: AsyncReadWithFd`.
-///
-/// # Safety
-///
-/// `impl AsyncReadWithFd for T` is already unsafe, so we can assume it upholds
-/// the contract of AsyncReadWithFd.
-unsafe impl<T: AsyncReadWithFd + Unpin> AsyncReadWithFd for &mut T {
-    fn poll_read_with_fds(
+impl<T: AsyncReadWithFd + Unpin> AsyncReadWithFd for &mut T {
+    fn poll_read_with_fds<Fds: OwnedFds>(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<Result<(usize, usize)>> {
+        fds: &mut Fds,
+    ) -> Poll<Result<usize>> {
         Pin::new(&mut **self).poll_read_with_fds(cx, buf, fds)
     }
 }

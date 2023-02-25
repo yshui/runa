@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 bytes.workspace = true
+futures-io = "0.3.26"

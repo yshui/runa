@@ -1,17 +1,16 @@
 #![doc(hidden)]
 
 use std::{
-    os::unix::io::{OwnedFd, RawFd},
+    os::{
+        fd::FromRawFd,
+        unix::io::{OwnedFd, RawFd},
+    },
     pin::Pin,
     task::Poll,
 };
 
+use super::traits::{buf::AsyncBufReadWithFd, AsyncReadWithFd, AsyncWriteWithFd, OwnedFds};
 use crate::traits;
-
-use super::traits::{
-    buf::{AsyncBufReadWithFd},
-    AsyncReadWithFd, AsyncWriteWithFd,
-};
 
 #[derive(Default, Debug)]
 pub struct WritePool {
@@ -139,19 +138,22 @@ unsafe impl AsyncBufReadWithFd for ReadPool {
     }
 }
 
-unsafe impl AsyncReadWithFd for ReadPool {
-    fn poll_read_with_fds(
+impl AsyncReadWithFd for ReadPool {
+    fn poll_read_with_fds<Fds: OwnedFds>(
         mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &mut [u8],
-        fds: &mut [RawFd],
-    ) -> Poll<std::io::Result<(usize, usize)>> {
+        fds: &mut Fds,
+    ) -> Poll<std::io::Result<usize>> {
         use std::io::Read;
         let len = self.read(buf).unwrap();
         let fd_len = std::cmp::min(fds.len(), self.fds.len());
-        fds.copy_from_slice(&self.fds[..fd_len]);
-        self.fds.drain(..fd_len);
-        Poll::Ready(Ok((len, fd_len)))
+        fds.extend(
+            self.fds
+                .drain(..fd_len)
+                .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }),
+        );
+        Poll::Ready(Ok(len))
     }
 }
 

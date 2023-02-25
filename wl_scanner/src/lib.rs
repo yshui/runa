@@ -227,9 +227,7 @@ fn generate_serialize_for_type(
     use wl_spec::protocol::Type::*;
     if let Fd = arg.typ {
         return quote! {
-            writer
-                .as_mut()
-                .push_fds(&mut ::std::iter::once(self.#name.take().expect("trying to send raw fd")));
+            fds.extend(Some(self.#name.take().expect("trying to send raw fd")));
         }
     }
     let get = match arg.typ {
@@ -243,48 +241,47 @@ fn generate_serialize_for_type(
                 };
                 if info.is_bitfield {
                     quote! {
-                        let buf = self.#name.bits().to_ne_bytes();
+                        &self.#name.bits().to_ne_bytes()[..]
                     }
                 } else {
                     quote! {
-                        let buf: #repr = self.#name.into();
-                        let buf = buf.to_ne_bytes();
+                        {
+                            let b: #repr = self.#name.into();
+                            &b.to_ne_bytes()[..]
+                        }
                     }
                 }
             } else {
                 quote! {
-                    let buf = self.#name.to_ne_bytes();
+                    &self.#name.to_ne_bytes()[..]
                 }
             },
         Fixed | Object | NewId => quote! {
-            let buf = self.#name.0.to_ne_bytes();
+            &self.#name.0.to_ne_bytes()[..]
         },
         Fd => unreachable!(),
         String => quote! {
-            let buf = self.#name.0.to_bytes_with_nul();
+            self.#name.0.to_bytes_with_nul()
         },
         Array => quote! {
-            let buf = self.#name;
+            &self.#name[..]
         },
         Destructor => quote! {},
     };
     match arg.typ {
         Int | Uint | Fixed | Object | NewId => quote! {
-            #get
-            writer.as_mut().write(&buf);
+            buf.put_slice(#get);
         },
         String | Array => quote! {
-            #get
+            let tmp = #get;
             // buf aligned to 4 bytes, plus length prefix
-            let aligned_len = ((buf.len() + 3) & !3) + 4;
-            let align_buf = [0; 3];
-            let len_buf = (buf.len() as u32).to_ne_bytes();
+            let aligned_len = ((tmp.len() + 3) & !3) + 4;
             // [0, 4): length
             // [4, buf.len()+4): buf
             // [buf.len()+4, aligned_len): alignment
-            writer.as_mut().write(&len_buf);
-            writer.as_mut().write(buf);
-            writer.as_mut().write(&align_buf[..(aligned_len - buf.len() - 4)]);
+            buf.put_u32_ne(tmp.len() as u32);
+            buf.put_slice(tmp);
+            buf.put_bytes(0, aligned_len - tmp.len() - 4);
         },
         Fd => unreachable!(),
         Destructor => quote! {},
@@ -444,13 +441,15 @@ fn generate_message_variant(
             pub const OPCODE: u16 = #opcode;
         }
         impl #lifetime ::wl_scanner_support::io::ser::Serialize for #name #lifetime {
-            fn serialize<W: ::wl_scanner_support::io::buf::AsyncBufWriteWithFd>(
+            fn serialize<Fds: Extend<std::os::unix::io::OwnedFd>>(
                 #mut_ self,
-                mut writer: ::std::pin::Pin<&mut W>
+                buf: &mut ::wl_scanner_support::BytesMut,
+                fds: &mut Fds,
             ) {
+                use ::wl_scanner_support::BufMut;
                 let msg_len = self.len() as u32;
                 let prefix: u32 = (msg_len << 16) + (#opcode as u32);
-                writer.as_mut().write(&prefix.to_ne_bytes());
+                buf.put_u32_ne(prefix);
                 #(#serialize)*
             }
             #[inline]
@@ -586,7 +585,7 @@ fn generate_event_or_request(
         let enum_serialize_cases = messages.iter().map(|v| {
             let name = format_ident!("{}", v.name.to_pascal_case());
             quote! {
-                Self::#name(v) => v.serialize(writer),
+                Self::#name(v) => v.serialize(buf, fds),
             }
         });
         let enum_deserialize_cases = messages.iter().enumerate().map(|(opcode, v)| {
@@ -625,9 +624,10 @@ fn generate_event_or_request(
             }
             #dispatch
             impl #enum_lifetime ::wl_scanner_support::io::ser::Serialize for #type_name #enum_lifetime {
-                fn serialize<W: ::wl_scanner_support::io::buf::AsyncBufWriteWithFd>(
+                fn serialize<Fds: Extend<std::os::unix::io::OwnedFd>>(
                     self,
-                    writer: ::std::pin::Pin<&mut W>
+                    buf: &mut ::wl_scanner_support::BytesMut,
+                    fds: &mut Fds,
                 ) {
                     match self {
                         #(#enum_serialize_cases)*

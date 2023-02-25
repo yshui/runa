@@ -1,10 +1,28 @@
 #![feature(type_alias_impl_trait)]
 use std::{
+    future::Future,
     io::Result,
-    os::unix::io::{BorrowedFd, RawFd},
+    os::{fd::OwnedFd, unix::io::RawFd},
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, ready},
 };
+
+/// A bunch of owned file descriptors.
+pub trait OwnedFds: Extend<OwnedFd> {
+    /// Returns the number of file descriptors.
+    fn len(&self) -> usize;
+    /// Returns the maximum number of file descriptors that can be stored.
+    /// This number cannot be larger than `SCM_MAX_FD`.
+    fn capacity(&self) -> usize;
+    /// Returns true if there are no file descriptors.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Take all the file descriptors out of this object.
+    fn take<T: Extend<OwnedFd>>(&mut self, fds: &mut T);
+}
+
 /// A extension trait of `AsyncWrite` that supports sending file descriptors
 /// along with data.
 pub trait AsyncWriteWithFd {
@@ -23,22 +41,109 @@ pub trait AsyncWriteWithFd {
     /// will all be sent as long as they don't exceed the maximum number of
     /// file descriptors that can be sent in a message, in which case an
     /// error is returned.
-    fn poll_write_with_fds(
+    fn poll_write_with_fds<Fds: OwnedFds>(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[BorrowedFd<'_>],
+        fds: &mut Fds,
     ) -> Poll<Result<usize>>;
 }
 
 impl<T: AsyncWriteWithFd + Unpin> AsyncWriteWithFd for &mut T {
-    fn poll_write_with_fds(
+    #[inline]
+    fn poll_write_with_fds<Fds: OwnedFds>(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[BorrowedFd<'_>],
+        fds: &mut Fds,
     ) -> Poll<Result<usize>> {
         Pin::new(&mut **self).poll_write_with_fds(cx, buf, fds)
+    }
+}
+
+pub struct Send<'a, W: WriteMessage + ?Sized + 'a, M: ser::Serialize + Unpin + std::fmt::Debug + 'a>
+{
+    writer:    &'a mut W,
+    object_id: u32,
+    msg:       Option<M>,
+}
+pub struct Flush<'a, W: WriteMessage + ?Sized + 'a> {
+    writer: &'a mut W,
+}
+
+impl<
+        'a,
+        W: WriteMessage + Unpin + ?Sized + 'a,
+        M: ser::Serialize + Unpin + std::fmt::Debug + 'a,
+    > Future for Send<'a, W, M>
+{
+    type Output = std::io::Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut sink = Pin::new(&mut *this.writer);
+        ready!(sink.as_mut().poll_ready(cx))?;
+        sink.start_send(this.object_id, this.msg.take().unwrap());
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<'a, W: WriteMessage + Unpin + ?Sized + 'a> Future for Flush<'a, W> {
+    type Output = std::io::Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.writer).poll_flush(cx)
+    }
+}
+
+/// A trait for objects that can accept messages to be sent.
+///
+/// This is similar to `Sink`, but instead of accepting only one type of
+/// Items, it accepts any type that implements
+/// [`wl_io::traits::ser::Serialize`].
+pub trait WriteMessage {
+    /// Reserve space for a message
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+
+    /// Queue a message to be sent.
+    ///
+    /// # Panics
+    ///
+    /// if there is not enough space in the queue, this function panics.
+    /// Before calling this, you should call `poll_reserve` to
+    /// ensure there is enough space.
+    fn start_send<M: ser::Serialize + std::fmt::Debug>(
+        self: Pin<&mut Self>,
+        object_id: u32,
+        msg: M,
+    );
+
+    /// Flush connection
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+    #[must_use]
+    fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+        &'a mut self,
+        object_id: u32,
+        msg: M,
+    ) -> Send<'c, Self, M>
+    where
+        Self: Unpin,
+        'a: 'c,
+        'b: 'c,
+    {
+        Send {
+            writer: self,
+            object_id,
+            msg: Some(msg),
+        }
+    }
+    #[must_use]
+    fn flush(&mut self) -> Flush<'_, Self>
+    where
+        Self: Unpin,
+    {
+        Flush { writer: self }
     }
 }
 
@@ -71,7 +176,7 @@ pub unsafe trait AsyncReadWithFd {
     /// # Note
     ///
     /// If the `fds` buffer is too small to hold all the file descriptors, the
-    /// extra file descriptors MAY be CLOSED. Some implementation might hold
+    /// extra file descriptors MAY BE CLOSED. Some implementation might hold
     /// a buffer of file descriptors to prevent this from happening. You
     /// should check the documentation of the implementor.
     ///
@@ -105,7 +210,9 @@ unsafe impl<T: AsyncReadWithFd + Unpin> AsyncReadWithFd for &mut T {
 }
 
 pub mod ser {
-    use std::pin::Pin;
+    use std::os::fd::OwnedFd;
+
+    use bytes::BytesMut;
 
     /// A serialization trait, implemented by wayland message types.
     ///
@@ -113,9 +220,8 @@ pub mod ser {
     /// Most of the serialization code is expected to be generated by
     /// `wl_scanner`.
     ///
-    /// For now instead of a Serializer trait, we take types that impls
-    /// AsyncBufWriteWithFd directly, because we expect to only serialize to
-    /// binary, but this might change in the future.
+    /// For now instead of a Serializer trait, we only serialize to
+    /// bytes and fds, but this might change in the future.
     #[allow(clippy::len_without_is_empty)]
     pub trait Serialize {
         /// Serialize into the buffered writer. This function returns no errors,
@@ -129,7 +235,7 @@ pub mod ser {
         /// serializing, so this indicates programming error. If `self`
         /// contains file descriptors that aren't OwnedFd, this function
         /// panics too.
-        fn serialize<W: super::buf::AsyncBufWriteWithFd>(self, writer: Pin<&mut W>);
+        fn serialize<Fds: Extend<OwnedFd>>(self, buf: &mut BytesMut, fds: &mut Fds);
         /// How many bytes will this message serialize to. Including the 8 byte
         /// header.
         fn len(&self) -> u16;
@@ -190,7 +296,7 @@ pub mod de {
 }
 
 pub mod buf {
-    use std::{future::Future, io::Result, os::unix::io::OwnedFd, task::ready};
+    use std::{future::Future, io::Result, task::ready};
 
     use super::*;
     /// Buffered I/O object for a stream of bytes with file descriptors.
@@ -217,30 +323,7 @@ pub mod buf {
         fn fds(&self) -> &[RawFd];
         fn buffer(&self) -> &[u8];
         fn consume(self: Pin<&mut Self>, amt: usize, amt_fd: usize);
-    }
 
-    pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
-
-    impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
-        type Output = Result<()>;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = &mut *self;
-            let len = this.1;
-            let inner = this.0.take().expect("FillBufUtil polled after completion");
-            match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
-                Poll::Pending => {
-                    this.0 = Some(inner);
-                    Poll::Pending
-                },
-                ready => ready,
-            }
-        }
-    }
-
-    pub type NextMessageFut<'a, T: AsyncBufReadWithFd + 'a> =
-        impl Future<Output = Result<(u32, usize, &'a [u8], &'a [RawFd])>> + 'a;
-    pub trait AsyncBufReadWithFdExt: AsyncBufReadWithFd {
         fn fill_buf_until(&mut self, len: usize) -> FillBufUtil<'_, Self>
         where
             Self: Unpin,
@@ -308,81 +391,25 @@ pub mod buf {
         }
     }
 
-    impl<T: AsyncBufReadWithFd + ?Sized> AsyncBufReadWithFdExt for T {}
+    pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
 
-    pub trait AsyncBufWriteWithFd: AsyncWriteWithFd {
-        /// Waits until there are at least `demand` bytes available in the
-        /// buffer, and `demand_fd` available slots in the file
-        /// descriptor buffer. Implementation shold first try to flush
-        /// the buffer, until enough free space is available. If buffer
-        /// is not big enough after a complete flush, it should allocate
-        /// more space.
-        fn poll_reserve(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            demand: usize,
-            demand_fd: usize,
-        ) -> Poll<Result<()>>;
-
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>>;
-
-        /// Write data into the buffer. This function should just do memory copy
-        /// and cannot fail. If the buffer is not big enough, this means
-        /// the caller has not called poll_reserve properly, and this
-        /// function should panic.
-        ///
-        /// # Panic
-        ///
-        /// This function should panic if the buffer is not big enough.
-        fn write(self: Pin<&mut Self>, buf: &[u8]);
-
-        /// Move file descriptor into the buffer, until the buffer is full.
-        ///
-        /// # Panic
-        ///
-        /// This function should panic if the buffer is not big enough.
-        fn push_fds(self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>);
-    }
-
-    pub struct Reserve<'a, W: ?Sized>(Pin<&'a mut W>, (usize, usize));
-
-    impl<'a, W: AsyncBufWriteWithFd + Unpin + ?Sized> Future for Reserve<'a, W> {
+    impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
         type Output = Result<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let (demand, demand_fd) = self.1;
-            // Poll to ready with a dummy write function, because we can only use the
-            // function once, and we can't lose it if we return Poll::Pending.
-            self.0.as_mut().poll_reserve(cx, demand, demand_fd)
-        }
-    }
-
-    type Flush<'a, T: Unpin + AsyncBufWriteWithFd + 'a> = impl Future<Output = Result<()>> + 'a;
-
-    pub trait AsyncBufWriteWithFdExt: AsyncBufWriteWithFd {
-        fn reserve(&mut self, demand: usize, demand_fd: usize) -> Reserve<'_, Self>
-        where
-            Self: Unpin,
-        {
-            Reserve(Pin::new(self), (demand, demand_fd))
-        }
-        fn flush(&mut self) -> Flush<'_, Self>
-        where
-            Self: Unpin + Sized,
-        {
-            struct Flush<'a, W: ?Sized>(Pin<&'a mut W>);
-
-            impl<'a, W: AsyncBufWriteWithFd + Unpin + ?Sized> Future for Flush<'a, W> {
-                type Output = Result<()>;
-
-                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                    self.0.as_mut().poll_flush(cx)
-                }
+            let this = &mut *self;
+            let len = this.1;
+            let inner = this.0.take().expect("FillBufUtil polled after completion");
+            match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
+                Poll::Pending => {
+                    this.0 = Some(inner);
+                    Poll::Pending
+                },
+                ready => ready,
             }
-
-            Flush(Pin::new(self))
         }
     }
 
-    impl<T: AsyncBufWriteWithFd + ?Sized> AsyncBufWriteWithFdExt for T {}
+    pub type NextMessageFut<'a, T: AsyncBufReadWithFd + 'a> =
+        impl Future<Output = Result<(u32, usize, &'a [u8], &'a [RawFd])>> + 'a;
 }

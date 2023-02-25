@@ -7,6 +7,7 @@ use std::{
 };
 
 use derivative::Derivative;
+use wl_io::traits::WriteMessage;
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
@@ -14,7 +15,7 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::{
         event_handler::{Abortable, AutoAbortHandle},
-        traits::{Client, ClientParts, EventDispatcher, EventHandlerAction, Store, WriteMessage},
+        traits::{Client, ClientParts, EventDispatcher, EventHandlerAction, Store},
     },
     error::Error,
     events::EventSource,
@@ -132,13 +133,14 @@ where
                 );
                 r.object_id
             }) {
-                let message = xdg_toplevel::events::Configure {
-                    height: size.h as i32,
-                    width:  size.w as i32,
-                    states: &[],
-                };
-                ready!(connection.as_mut().poll_reserve(cx, &message))?;
-                connection.as_mut().start_send(role_object_id, message);
+                ready!(connection.as_mut().poll_ready(cx))?;
+                connection
+                    .as_mut()
+                    .start_send(role_object_id, xdg_toplevel::events::Configure {
+                        height: size.h as i32,
+                        width:  size.w as i32,
+                        states: &[],
+                    });
             } else {
                 // TODO: handle PopUp role
                 unimplemented!()
@@ -155,11 +157,10 @@ where
             role.pending_serial.push_back(serial);
             (serial, role.object_id)
         };
-        let message = xdg_surface::events::Configure {
+        ready!(connection.as_mut().poll_ready(cx))?;
+        connection.start_send(role_object_id, xdg_surface::events::Configure {
             serial: serial.get(),
-        };
-        ready!(connection.as_mut().poll_reserve(cx, &message))?;
-        connection.start_send(role_object_id, message);
+        });
         Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }

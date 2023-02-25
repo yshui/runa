@@ -13,12 +13,15 @@ use apollo::{
 };
 use futures_util::{select, TryStreamExt};
 use smol::{block_on, LocalExecutor};
-use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
+use wl_io::{
+    buf::BufReaderWithFd,
+    traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
+    Connection,
+};
 use wl_server::{
-    __private::AsyncBufReadWithFdExt,
     connection::{
-        traits::{Client, ClientParts, Store as _, WriteMessage as _},
-        Connection, EventDispatcher, Store,
+        traits::{Client, ClientParts, Store as _},
+        EventDispatcher, Store,
     },
     objects::Object,
     renderer_capability::RendererCapability,
@@ -103,7 +106,7 @@ impl wl_server::server::Server for Crescent {
                 let mut client_ctx = CrescentClient {
                     store: Some(Default::default()),
                     state,
-                    tx: Connection::new(BufWriterWithFd::new(tx)),
+                    tx: Connection::new(tx, 256),
                     event_dispatcher: EventDispatcher::new(),
                 };
                 client_ctx
@@ -186,7 +189,7 @@ impl RendererCapability for Crescent {
 pub struct CrescentClient {
     store:            Option<Store<AnyObject>>,
     state:            Crescent,
-    tx:               Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
+    tx:               Connection<wl_io::WriteWithFd>,
     event_dispatcher: EventDispatcher<Self>,
 }
 
@@ -200,7 +203,7 @@ impl CrescentClient {
 }
 
 impl Client for CrescentClient {
-    type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
+    type Connection = Connection<wl_io::WriteWithFd>;
     type EventDispatcher = EventDispatcher<Self>;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;

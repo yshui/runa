@@ -9,6 +9,7 @@ pub mod xdg_shell;
 
 use derivative::Derivative;
 use futures_util::pin_mut;
+use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
@@ -16,10 +17,7 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{
         event_handler::Abortable,
-        traits::{
-            Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
-            WriteMessage,
-        },
+        traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
     },
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},

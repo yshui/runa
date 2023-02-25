@@ -20,9 +20,10 @@ pub mod __private {
     // Re-exports used by macros
     pub use static_assertions::assert_impl_all;
     pub use wl_io::traits::{
-        buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
+        buf::AsyncBufReadWithFd,
         de::{Deserialize, Error as DeserError},
         ser::Serialize,
+        WriteMessage,
     };
     pub use wl_protocol::{wayland::wl_display, ProtocolError};
     pub use wl_types;

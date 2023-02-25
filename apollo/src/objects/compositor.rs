@@ -23,6 +23,7 @@ use std::{
 
 use derivative::Derivative;
 use hashbrown::{HashMap, HashSet};
+use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
     wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
@@ -30,7 +31,7 @@ use wl_protocol::wayland::{
 };
 use wl_server::{
     connection::traits::{
-        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store, WriteMessage,
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error,
     events::EventSource,
@@ -571,19 +572,21 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
         }
 
         while let Some(id) = deleted_buffer.last() {
-            let message = wl_surface::events::Leave {
-                output: wl_types::Object(*id),
-            };
-            ready!(connection.as_mut().poll_reserve(cx, &message))?;
-            connection.as_mut().start_send(*object_id, message);
+            ready!(connection.as_mut().poll_ready(cx))?;
+            connection
+                .as_mut()
+                .start_send(*object_id, wl_surface::events::Leave {
+                    output: wl_types::Object(*id),
+                });
             deleted_buffer.pop();
         }
         while let Some(id) = added_buffer.last() {
-            let message = wl_surface::events::Enter {
-                output: wl_types::Object(*id),
-            };
-            ready!(connection.as_mut().poll_reserve(cx, &message))?;
-            connection.as_mut().start_send(*object_id, message);
+            ready!(connection.as_mut().poll_ready(cx))?;
+            connection
+                .as_mut()
+                .start_send(*object_id, wl_surface::events::Enter {
+                    output: wl_types::Object(*id),
+                });
             added_buffer.pop();
         }
         *in_progress = false;

@@ -9,11 +9,7 @@ use wayland::wl_display::v1::{events, Event};
 use wl_io::utils::{ReadPool, WritePool};
 use wl_macros::generate_protocol;
 use wl_scanner_support::{
-    io::{
-        buf::{AsyncBufReadWithFd, AsyncBufReadWithFdExt},
-        de::Deserialize,
-        ser::Serialize,
-    },
+    io::{buf::AsyncBufReadWithFd, de::Deserialize, ser::Serialize},
     wayland_types::{Fd, NewId, Object, Str},
 };
 generate_protocol!("protocols/wayland.xml");

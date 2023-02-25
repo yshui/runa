@@ -5,10 +5,11 @@ use std::{
 };
 
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
+use wl_io::traits::WriteMessage;
 
 use crate::{
     connection::traits::{
-        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, WriteMessage,
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction,
     },
     events::EventSource,
     server::{GlobalsUpdate, Server},
@@ -190,20 +191,20 @@ impl<Ctx: Client> EventHandler<Ctx> for RegistryEventHandler {
         let mut connection = Pin::new(connection);
         match message {
             GlobalsUpdate::Removed(name) => {
-                let message = wl_registry::events::GlobalRemove { name: *name };
-                ready!(connection.as_mut().poll_reserve(cx, &message))?;
-                connection.start_send(self.registry_id, message);
+                ready!(connection.as_mut().poll_ready(cx))?;
+                connection.start_send(self.registry_id, wl_registry::events::GlobalRemove {
+                    name: *name,
+                });
             },
             GlobalsUpdate::Added(name, global) => {
                 let interface = std::ffi::CString::new(global.interface()).unwrap();
                 let version = global.version();
-                let message = wl_registry::events::Global {
+                ready!(connection.as_mut().poll_ready(cx))?;
+                connection.start_send(self.registry_id, wl_registry::events::Global {
                     name: *name,
                     interface: wl_types::Str(interface.as_c_str()),
                     version,
-                };
-                ready!(connection.as_mut().poll_reserve(cx, &message))?;
-                connection.start_send(self.registry_id, message)
+                })
             },
         }
 

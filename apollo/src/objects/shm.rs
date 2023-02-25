@@ -7,11 +7,12 @@ use std::{
 
 use dlv_list::{Index, VecList};
 use spin::mutex::Mutex;
+use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::traits::{Client, Store, WriteMessage},
+    connection::traits::{Client, Store},
     error,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };

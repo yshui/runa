@@ -1,8 +1,9 @@
 #![feature(type_alias_impl_trait)]
 use std::{
     io::Result,
+    mem::MaybeUninit,
     os::unix::{
-        io::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
+        io::{AsRawFd, OwnedFd, RawFd},
         net::UnixStream as StdUnixStream,
     },
     pin::Pin,
@@ -14,6 +15,9 @@ pub mod buf;
 pub mod utils;
 
 pub use buf::*;
+use bytes::{Buf, BufMut, BytesMut};
+use pin_project_lite::pin_project;
+use wl_io_traits::OwnedFds as _;
 
 pub mod traits {
     pub use wl_io_traits::*;
@@ -21,10 +25,9 @@ pub mod traits {
 
 /// Maximum number of file descriptors that can be sent in a write by the
 /// wayland protocol. As defined in libwayland.
-#[allow(dead_code)]
-const MAX_FDS_OUT: usize = 28;
+pub const MAX_FDS_OUT: usize = 28;
 
-pub(crate) const SCM_MAX_FD: usize = 253;
+pub const SCM_MAX_FD: usize = 253;
 
 #[derive(Debug)]
 pub struct ReadWithFd {
@@ -57,24 +60,24 @@ impl traits::AsyncWriteWithFd for WriteWithFd {
     /// called concurrently from different tasks. Otherwise you risk
     /// interleaving data, as well as causing tasks to wake each other up and
     /// eatting CPU.
-    fn poll_write_with_fds(
+    #[inline]
+    fn poll_write_with_fds<Fds: traits::OwnedFds>(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
-        fds: &[BorrowedFd<'_>],
+        fds: &mut Fds,
     ) -> Poll<Result<usize>> {
         use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 
         ready!(self.inner.poll_writable(cx)?);
         let fd = self.inner.as_raw_fd();
-        let fd_len = fds.len();
+        let mut tmp_fds = OwnedFds::<SCM_MAX_FD>::new();
+        fds.take(&mut tmp_fds);
 
         match sendmsg::<()>(
             fd,
             &[std::io::IoSlice::new(buf)],
-            &[ControlMessage::ScmRights(unsafe {
-                std::slice::from_raw_parts(fds.as_ptr().cast::<RawFd>(), fd_len)
-            })],
+            &[ControlMessage::ScmRights(unsafe { tmp_fds.as_raw_fds() })],
             MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL,
             None,
         ) {
@@ -192,12 +195,12 @@ impl Iterator for FdIter<'_> {
     }
 }
 
-unsafe fn read_mhdr<'a, 'b, S>(
+unsafe fn read_mhdr<'b, S>(
     mhdr: libc::msghdr,
     r: isize,
     msg_controllen: usize,
     address: S,
-    cmsg_buffer: &'a mut Option<&'b mut Vec<u8>>,
+    cmsg_buffer: &mut Option<&'b mut Vec<u8>>,
 ) -> RecvMsg<'b, S>
 where
     S: nix::sys::socket::SockaddrLike,
@@ -287,5 +290,156 @@ unsafe impl traits::AsyncReadWithFd for ReadWithFd {
                 Poll::Ready(Ok((msg.bytes, count)))
             },
         }
+    }
+}
+
+pub struct OwnedFds<const N: usize> {
+    fds: [MaybeUninit<OwnedFd>; N],
+    len: usize,
+}
+
+impl<const N: usize> Default for OwnedFds<N> {
+    fn default() -> Self {
+        const UNINIT: MaybeUninit<OwnedFd> = MaybeUninit::uninit();
+        Self {
+            fds: [UNINIT; N],
+            len: 0,
+        }
+    }
+}
+
+impl<const N: usize> std::fmt::Debug for OwnedFds<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_list = f.debug_list();
+        for fd in self.fds[..self.len].iter() {
+            // Safety: fds[..self.len] are initialized.
+            let fd = unsafe { fd.assume_init_ref() };
+            debug_list.entry(fd);
+        }
+        debug_list.finish()
+    }
+}
+
+impl<const N: usize> OwnedFds<N> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn as_ptr(&self) -> *const OwnedFd {
+        self.fds.as_ptr() as *const _
+    }
+
+    /// Return a slice of raw file descriptors.
+    ///
+    /// # Safety
+    ///
+    /// the caller must ensure to not close the file descriptors.
+    pub unsafe fn as_raw_fds(&self) -> &[RawFd] {
+        unsafe { std::slice::from_raw_parts(self.as_ptr() as *const _, self.len) }
+    }
+}
+
+impl<const N: usize> traits::OwnedFds for OwnedFds<N> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        N
+    }
+
+    fn take<T: Extend<OwnedFd>>(&mut self, fds: &mut T) {
+        for fd in self.fds[..self.len].iter_mut() {
+            fds.extend(Some(unsafe { fd.assume_init_read() }));
+        }
+        self.len = 0;
+    }
+}
+
+impl<const N: usize> Extend<OwnedFd> for OwnedFds<N> {
+    fn extend<T: IntoIterator<Item = OwnedFd>>(&mut self, fds: T) {
+        for fd in fds {
+            if self.len < N {
+                self.fds[self.len] = MaybeUninit::new(fd);
+                self.len += 1;
+            } else {
+                drop(fd);
+            }
+        }
+    }
+}
+
+impl<const N: usize> Drop for OwnedFds<N> {
+    fn drop(&mut self) {
+        for fd in self.fds[..self.len].iter_mut() {
+            unsafe { fd.assume_init_drop() };
+        }
+        self.len = 0;
+    }
+}
+
+pin_project! {
+#[derive(Debug)]
+pub struct Connection<C> {
+    #[pin]
+    conn:     C,
+    buf:      BytesMut,
+    fds:      OwnedFds<SCM_MAX_FD>,
+    capacity: usize,
+}
+}
+
+impl<C> Connection<C> {
+    pub fn new(conn: C, capacity: usize) -> Self {
+        Connection {
+            conn,
+            capacity,
+            fds: OwnedFds::new(),
+            buf: BytesMut::with_capacity(capacity),
+        }
+    }
+}
+
+impl<C: traits::AsyncWriteWithFd> traits::WriteMessage for Connection<C> {
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        // Flush if we are:
+        //   1. over capacity or
+        //   2. not having enough space for MAX_FDS_OUT file descriptors
+        if self.buf.len() > self.capacity || self.fds.len() + MAX_FDS_OUT > SCM_MAX_FD {
+            ready!(self.poll_flush(cx))?;
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send<M: traits::ser::Serialize + std::fmt::Debug>(
+        self: Pin<&mut Self>,
+        object_id: u32,
+        msg: M,
+    ) {
+        let this = self.project();
+        assert!(msg.nfds() as usize + this.fds.len() <= SCM_MAX_FD);
+        this.buf.put_u32_ne(object_id);
+        msg.serialize(this.buf, this.fds);
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let mut this = self.project();
+        while !this.buf.is_empty() {
+            let written =
+                ready!(this
+                    .conn
+                    .as_mut()
+                    .poll_write_with_fds(cx, &*this.buf, &mut *this.fds))?;
+            if written == 0 {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "written 0 bytes",
+                )))
+            }
+            this.buf.advance(written);
+        }
+        Poll::Ready(Ok(()))
     }
 }

@@ -5,10 +5,8 @@ use std::{
 };
 
 use hashbrown::HashMap;
-use wl_server::{
-    connection::traits::WriteMessage,
-    events::{BroadcastEventSource, EventSource},
-};
+use wl_io::traits::WriteMessage;
+use wl_server::events::{BroadcastEventSource, EventSource};
 
 use crate::utils::{
     geometry::{coords, Extent, Point, Rectangle, Scale, Transform},

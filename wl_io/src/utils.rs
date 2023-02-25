@@ -1,13 +1,15 @@
 #![doc(hidden)]
 
 use std::{
-    os::unix::io::{BorrowedFd, OwnedFd, RawFd},
+    os::unix::io::{OwnedFd, RawFd},
     pin::Pin,
     task::Poll,
 };
 
+use crate::traits;
+
 use super::traits::{
-    buf::{AsyncBufReadWithFd, AsyncBufWriteWithFd},
+    buf::{AsyncBufReadWithFd},
     AsyncReadWithFd, AsyncWriteWithFd,
 };
 
@@ -42,42 +44,15 @@ impl futures_lite::AsyncWrite for WritePool {
     }
 }
 
-impl AsyncBufWriteWithFd for WritePool {
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn write(mut self: Pin<&mut Self>, buf: &[u8]) {
-        self.inner.extend_from_slice(buf);
-    }
-
-    fn push_fds(mut self: Pin<&mut Self>, fds: &mut impl Iterator<Item = OwnedFd>) {
-        self.fds.extend(fds);
-    }
-
-    fn poll_reserve(
-        self: Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        _demand: usize,
-        _demand_fd: usize,
-    ) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
 impl AsyncWriteWithFd for WritePool {
-    fn poll_write_with_fds(
+    fn poll_write_with_fds<Fds: traits::OwnedFds>(
         mut self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
         buf: &[u8],
-        fds: &[BorrowedFd<'_>],
+        fds: &mut Fds,
     ) -> Poll<std::io::Result<usize>> {
         self.inner.extend_from_slice(buf);
-        self.fds
-            .extend(fds.iter().map(|fd| fd.try_clone_to_owned().unwrap()));
+        fds.take(&mut self.fds);
         Poll::Ready(Ok(buf.len()))
     }
 }

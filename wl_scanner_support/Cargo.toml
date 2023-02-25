@@ -11,4 +11,5 @@ pin-project-lite = "0.2.9"
 wl_types = { version = "0.1.0", path = "../wl_types" }
 wl_io_traits = { path = "../wl_io_traits" }
 futures-lite.workspace = true
+bytes.workspace = true
 thiserror.workspace = true

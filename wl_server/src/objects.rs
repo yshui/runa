@@ -15,9 +15,10 @@ use ::wl_protocol::wayland::{
 };
 use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
+use wl_io::traits::WriteMessage;
 
 use crate::{
-    connection::traits::{Client, ClientParts, Store, WriteMessage},
+    connection::traits::{Client, ClientParts, Store},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -253,17 +254,19 @@ impl Callback {
             panic!("object is not callback, it's {interface}")
         };
         if !this.fired {
-            let message = wl_protocol::wayland::wl_callback::v1::events::Done {
-                callback_data: data,
-            };
-            ready!(conn.as_mut().poll_reserve(cx, &message))?;
-            conn.as_mut().start_send(object_id, message);
+            ready!(conn.as_mut().poll_ready(cx))?;
+            conn.as_mut().start_send(
+                object_id,
+                wl_protocol::wayland::wl_callback::v1::events::Done {
+                    callback_data: data,
+                },
+            );
             this.fired = true;
         }
 
-        let message = wl_display::events::DeleteId { id: object_id };
-        ready!(conn.as_mut().poll_reserve(cx, &message))?;
-        conn.as_mut().start_send(DISPLAY_ID, message);
+        ready!(conn.as_mut().poll_ready(cx))?;
+        conn.as_mut()
+            .start_send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id });
         objects.remove(object_id).unwrap();
         Poll::Ready(Ok(()))
     }

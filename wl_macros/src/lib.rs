@@ -636,7 +636,6 @@ pub fn interface_message_dispatch_for_enum(
             let ident = &v.ident;
             quote! {
                 Self::#ident(_) => {
-                    drop(objects);
                     let msg = match #crate_::__private::Deserialize::deserialize(msg.0, msg.1) {
                         Ok(msg) => msg,
                         Err(e) => return (Err(e.into()), 0, 0),
@@ -773,9 +772,8 @@ pub fn interface_message_dispatch_for_enum(
                 msg: Self::Request<'a>,
             ) -> Self::Fut<'a> {
                 async move {
-                    use #crate_::connection::{traits::{LockableStore, Store}};
-                    let objects = ctx.objects().lock().await;
-                    let object = objects.get(object_id);
+                    use #crate_::connection::traits::Store;
+                    let object = ctx.objects().get(object_id);
                     if object.is_none() {
                         return (Err(#crate_::error::Error::InvalidObject(object_id).into()), 0, 0);
                     }

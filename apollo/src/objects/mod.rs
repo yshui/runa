@@ -7,7 +7,7 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::{
         event_handler::AutoAbortHandle,
-        traits::{Client, LockableStore, Store, WriteMessage},
+        traits::{Client, Store, WriteMessage},
     },
     objects::{wayland_object, DISPLAY_ID},
 };
@@ -37,12 +37,10 @@ where
     type DestroyFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
+        ctx.objects_mut().remove(object_id);
         async move {
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
-            let mut conn = ctx.connection().clone();
-            objects.remove(object_id);
-            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection_mut()
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -72,12 +70,9 @@ where
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
             use wl_server::objects::ObjectMeta;
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
-            let mut conn = ctx.connection().clone();
 
             // Remove ourself from all_outputs
-            let mut object = objects.remove(object_id).unwrap();
+            let mut object = ctx.objects_mut().remove(object_id).unwrap();
             let object = object.cast_mut::<Self>().unwrap();
             let all_outputs = object.all_outputs.take().unwrap();
             let mut all_outputs = all_outputs.borrow_mut();
@@ -87,7 +82,8 @@ where
                 all_outputs.remove(&object.output);
             }
 
-            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection_mut()
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

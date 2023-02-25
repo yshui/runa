@@ -7,7 +7,9 @@ use std::{
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, WriteMessage},
+    connection::traits::{
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, WriteMessage,
+    },
     events::EventSource,
     server::{GlobalsUpdate, Server},
 };
@@ -132,11 +134,15 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
             use crate::server::Globals;
-            let rx = client.server_context().globals().borrow().subscribe();
-            let mut connection = client.connection().clone();
+            let ClientParts {
+                server_context,
+                connection,
+                event_dispatcher,
+                ..
+            } = client.as_mut_parts();
+            let rx = server_context.globals().borrow().subscribe();
             // Send existing globals
-            let globals: Vec<_> = client
-                .server_context()
+            let globals: Vec<_> = server_context
                 .globals()
                 .borrow()
                 .iter()
@@ -156,11 +162,9 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
                     .unwrap()
             }
             connection.flush().await.unwrap();
-            client
-                .event_dispatcher()
-                .add_event_handler(rx, RegistryEventHandler {
-                    registry_id: object_id,
-                });
+            event_dispatcher.add_event_handler(rx, RegistryEventHandler {
+                registry_id: object_id,
+            });
             Ok(())
         }
     }

@@ -3,7 +3,12 @@
 //! well as a `InterfaceMeta` trait to provide information about the interface,
 //! and allowing them to be cast into trait objects and stored together.
 
-use std::{convert::Infallible, future::Future, task::{Poll, ready, Context}, pin::Pin};
+use std::{
+    convert::Infallible,
+    future::Future,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
@@ -12,7 +17,7 @@ use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
 
 use crate::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, ClientParts, Store, WriteMessage},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -99,11 +104,11 @@ where
             debug!("wl_display.sync {}", callback);
             // Lock the object store to avoid races. e.g. an object with the same
             // ID being added between sending Done and DeleteId.
-            let objects = ctx.objects().lock().await;
+            let objects = ctx.objects();
             if objects.get(callback.0).is_some() {
                 return Err(crate::error::Error::IdExists(callback.0))
             }
-            let mut conn = ctx.connection().clone();
+            let conn = ctx.connection_mut();
             conn.send(
                 callback.0,
                 wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
@@ -129,10 +134,12 @@ where
         async move {
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
-            let objects = ctx.objects().clone();
-            let mut objects = objects.lock().await;
+            let ClientParts {
+                server_context,
+                objects,
+                ..
+            } = ctx.as_mut_parts();
             let global = {
-                let server_context = ctx.server_context();
                 let globals = server_context.globals().borrow();
                 let global = globals
                     .iter()
@@ -190,12 +197,14 @@ where
         tracing::debug!("bind name:{name}, id:{id}");
         async move {
             use crate::server::Server;
-            let objects = ctx.objects().clone();
-            let mut objects = objects.lock().await;
-            let global = ctx.server_context().globals().borrow().get(name).cloned();
+            let ClientParts {
+                server_context,
+                objects,
+                ..
+            } = ctx.as_mut_parts();
+            let global = server_context.globals().borrow().get(name).cloned();
             if let Some(global) = global {
                 let inserted = objects.try_insert_with(id.0, || global.new_object());
-                drop(objects); // unlock the object store
 
                 if !inserted {
                     Err(crate::error::Error::IdExists(id.0))

@@ -155,8 +155,7 @@ pub mod de {
                     write!(f, "int {v} is not a valid value for {name}"),
                 Error::InvalidUintEnum(v, name) =>
                     write!(f, "uint {v} is not a valid value for {name}"),
-                Error::UnknownOpcode(v, name) =>
-                    write!(f, "opcode {v} is not valid for {name}"),
+                Error::UnknownOpcode(v, name) => write!(f, "opcode {v} is not valid for {name}"),
                 Error::TrailingData(expected, got) => write!(
                     f,
                     "message trailing bytes, expected {expected} bytes, got {got} bytes"
@@ -174,8 +173,8 @@ pub mod de {
     impl std::error::Error for Error {}
 
     pub trait Deserialize<'a>: Sized {
-        /// Deserialize from the given buffer. Returns deserialized message, and number of bytes
-        /// and file descriptors consumed, respectively.
+        /// Deserialize from the given buffer. Returns deserialized message, and
+        /// number of bytes and file descriptors consumed, respectively.
         fn deserialize(data: &'a [u8], fds: &'a [RawFd]) -> Result<Self, Error>;
     }
     impl<'a> Deserialize<'a> for Infallible {

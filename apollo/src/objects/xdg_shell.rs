@@ -14,7 +14,7 @@ use wl_protocol::stable::xdg_shell::{
 use wl_server::{
     connection::{
         event_handler::{Abortable, AutoAbortHandle},
-        traits::{Client, EventDispatcher, EventHandlerAction, LockableStore, Store, WriteMessage},
+        traits::{Client, ClientParts, EventDispatcher, EventHandlerAction, Store, WriteMessage},
     },
     error::Error,
     events::EventSource,
@@ -57,8 +57,11 @@ where
         surface: wl_types::Object,
     ) -> Self::GetXdgSurfaceFut<'_> {
         async move {
-            let objects = ctx.objects().clone();
-            let mut objects = objects.lock().await;
+            let ClientParts {
+                objects,
+                server_context,
+                ..
+            } = ctx.as_mut_parts();
             let surface_id = surface.0;
             let surface_obj = objects
                 .get(surface_id)
@@ -69,8 +72,7 @@ where
                 .inner
                 .clone();
 
-            let server_ctx = ctx.server_context().clone();
-            let mut shell = server_ctx.shell().borrow_mut();
+            let mut shell = server_context.shell().borrow_mut();
             let inserted = objects.try_insert_with(id.0, || {
                 let role = crate::shell::xdg::Surface::new(id);
                 surface.set_role(role, &mut shell);
@@ -113,7 +115,6 @@ where
         message: &mut Self::Message,
     ) -> Poll<Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>> {
         tracing::debug!(?message, "LayoutEventHandler::poll_handle_event");
-        let objects = objects.try_lock().unwrap();
         use crate::shell::{
             surface::Role,
             xdg::{Surface as XdgSurface, TopLevel},
@@ -205,8 +206,12 @@ where
         id: wl_types::NewId,
     ) -> Self::GetToplevelFut<'_> {
         async move {
-            let objects = ctx.objects().clone();
-            let mut objects = objects.lock().await;
+            let ClientParts {
+                objects,
+                server_context,
+                event_dispatcher,
+                ..
+            } = ctx.as_mut_parts();
             let surface = objects
                 .get(object_id)
                 .unwrap()
@@ -217,17 +222,14 @@ where
             let inserted = objects.try_insert_with(id.0, || {
                 let base_role = surface.role::<xdg::Surface>().unwrap().clone();
                 let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
-                {
-                    let mut shell = ctx.server_context().shell().borrow_mut();
-                    surface.set_role(role, &mut shell);
-                }
+                surface.set_role(role, &mut server_context.shell().borrow_mut());
 
                 // Start listening to layout events
                 let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
                 let (handler, abort) = Abortable::new(LayoutEventHandler {
                     surface_object_id: surface.object_id(),
                 });
-                ctx.event_dispatcher().add_event_handler(rx, handler);
+                event_dispatcher.add_event_handler(rx, handler);
                 // `abort.auto_abort()` creates a handle which will stop the event handler when
                 // the TopLevel object is destroyed.
                 TopLevel(surface, abort.auto_abort()).into()
@@ -242,8 +244,12 @@ where
 
     fn ack_configure(ctx: &mut Ctx, object_id: u32, serial: u32) -> Self::AckConfigureFut<'_> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
             while let Some(front) = role.pending_serial.front() {
                 if front.get() > serial {
@@ -267,8 +273,12 @@ where
         height: i32,
     ) -> Self::SetWindowGeometryFut<'_> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
             role.pending_geometry = Some(Rectangle {
                 loc:  Point::new(x, y),
@@ -339,8 +349,12 @@ where
         title: wl_types::Str<'a>,
     ) -> Self::SetTitleFut<'a> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.title = Some(String::from_utf8_lossy(title.0.to_bytes()).into_owned());
             Ok(())
@@ -361,8 +375,12 @@ where
         app_id: wl_types::Str<'a>,
     ) -> Self::SetAppIdFut<'a> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.app_id = Some(String::from_utf8_lossy(app_id.0.to_bytes()).into_owned());
             Ok(())
@@ -376,8 +394,12 @@ where
         height: i32,
     ) -> Self::SetMaxSizeFut<'_> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.pending.max_size = Some(Extent::new(width, height));
             Ok(())
@@ -391,8 +413,12 @@ where
         height: i32,
     ) -> Self::SetMinSizeFut<'_> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.pending.min_size = Some(Extent::new(width, height));
             Ok(())

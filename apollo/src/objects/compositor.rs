@@ -30,7 +30,7 @@ use wl_protocol::wayland::{
 };
 use wl_server::{
     connection::traits::{
-        Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage, EventDispatcher,
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store, WriteMessage,
     },
     error,
     events::EventSource,
@@ -137,8 +137,11 @@ where
 
     fn frame(ctx: &mut Ctx, object_id: u32, callback: wl_types::NewId) -> Self::FrameFut<'_> {
         async move {
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
+            let ClientParts {
+                objects,
+                server_context,
+                ..
+            } = ctx.as_mut_parts();
             let surface = objects
                 .get(object_id)
                 .unwrap()
@@ -147,7 +150,7 @@ where
                 .inner
                 .clone();
             let inserted = objects.try_insert_with(callback.0, || {
-                let mut shell = ctx.server_context().shell().borrow_mut();
+                let mut shell = server_context.shell().borrow_mut();
                 let state = surface.pending_mut(&mut shell);
                 state.add_frame_callback(callback.0);
                 wl_server::objects::Callback::default().into()
@@ -174,11 +177,16 @@ where
                     kind: wl_surface::enums::Error::InvalidOffset,
                 }))
             }
-            let objects = ctx.objects();
-            let objects = objects.lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let buffer_id = buffer.0;
-            let Some(buffer) = objects.get(buffer.0) else { return Err(error::Error::UnknownObject(buffer_id)); };
+            let Some(buffer) = ctx.objects().get(buffer.0) else {
+                return Err(error::Error::UnknownObject(buffer_id));
+            };
             if buffer.interface() != wl_buffer::NAME {
                 return Err(error::Error::InvalidObject(buffer_id))
             }
@@ -201,9 +209,12 @@ where
         height: i32,
     ) -> Self::DamageFut<'_> {
         async move {
-            let objects = ctx.objects();
-            let objects = objects.lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
@@ -220,9 +231,12 @@ where
         height: i32,
     ) -> Self::DamageBufferFut<'_> {
         async move {
-            let objects = ctx.objects();
-            let objects = objects.lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
@@ -232,9 +246,12 @@ where
 
     fn commit(ctx: &mut Ctx, object_id: u32) -> Self::CommitFut<'_> {
         async move {
-            let objects = ctx.objects();
-            let objects = objects.lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
 
             use crate::shell::buffers::Buffer;
             let server_context = ctx.server_context().clone();
@@ -260,8 +277,8 @@ where
                 }
             };
             if let Some(released_buffer) = released_buffer {
-                let mut conn = ctx.connection().clone();
-                conn.send(released_buffer, wl_buffer::events::Release {})
+                ctx.connection_mut()
+                    .send(released_buffer, wl_buffer::events::Release {})
                     .await?;
             }
             Ok(())
@@ -270,9 +287,12 @@ where
 
     fn set_buffer_scale(ctx: &mut Ctx, object_id: u32, scale: i32) -> Self::SetBufferScaleFut<'_> {
         async move {
-            let objects = ctx.objects();
-            let objects = objects.lock().await;
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
+            let this = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let pending_mut = this.inner.pending_mut(&mut shell);
 
@@ -311,10 +331,12 @@ where
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         async move {
-            let server_context = ctx.server_context().clone();
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
-            let mut conn = ctx.connection().clone();
+            let ClientParts {
+                server_context,
+                objects,
+                connection,
+                ..
+            } = ctx.as_mut_parts();
             let this = objects.remove(object_id).unwrap();
             let this: &Self = this.cast().unwrap();
 
@@ -326,13 +348,15 @@ where
             let mut frame_callbacks =
                 std::mem::take(&mut *this.inner.frame_callbacks().borrow_mut());
             for frame_callback in frame_callbacks.drain(..) {
-                conn.send(DISPLAY_ID, wl_display::events::DeleteId {
-                    id: frame_callback,
-                })
-                .await?;
+                connection
+                    .send(DISPLAY_ID, wl_display::events::DeleteId {
+                        id: frame_callback,
+                    })
+                    .await?;
             }
 
-            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            connection
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -382,11 +406,15 @@ where
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
         async move {
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
-            if objects.get(id.0).is_none() {
+            if ctx.objects().get(id.0).is_none() {
+                let ClientParts {
+                    server_context,
+                    objects,
+                    event_dispatcher,
+                    ..
+                } = ctx.as_mut_parts();
                 // Add the id to the list of surfaces
-                let shell = ctx.server_context().shell();
+                let shell = server_context.shell();
                 let mut shell = shell.borrow_mut();
                 let surface = Rc::new(surface::Surface::new(id));
                 let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
@@ -429,9 +457,7 @@ where
                     .by_type::<super::Output>()
                     .map(|(_, obj)| obj.all_outputs.clone().unwrap())
                     .next();
-                drop(objects); // unlock
-                drop(shell);
-                ctx.event_dispatcher().add_event_handler(rx, OutputChangedEventHandler {
+                event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id: id.0,
                     shared_surface_buffers,
@@ -492,7 +518,6 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
         } = self.get_mut();
 
         let mut connection = Pin::new(connection);
-        let objects = objects.try_lock().unwrap();
 
         // Usually we would check if the object is still alive here, and stop the event
         // handler if it is not. But when a surface object dies, its event
@@ -614,11 +639,16 @@ where
 
     fn set_position(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::SetPositionFut<'_> {
         async move {
-            let objects = ctx.objects().lock().await;
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let this = objects.get(object_id).unwrap().cast::<Self>().unwrap();
-            let role = this
+            let surface = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap()
                 .0
+                .clone();
+            let mut shell = ctx.server_context().shell().borrow_mut();
+            let role = surface
                 .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
             let parent = role.parent().upgrade().unwrap().pending_mut(&mut shell);
@@ -700,12 +730,9 @@ where
             parent
         );
         async move {
-            let shell = ctx.server_context().shell();
-            let objects = ctx.objects();
-            let mut objects = objects.lock().await;
-            let mut shell = shell.borrow_mut();
             let surface_id = surface.0;
-            let surface = objects
+            let surface = ctx
+                .objects()
                 .get(surface.0)
                 .and_then(|r| {
                     r.cast()
@@ -717,7 +744,8 @@ where
                         subsurface_object: object_id,
                     })
                 })?;
-            let parent = objects
+            let parent = ctx
+                .objects()
                 .get(parent.0)
                 .and_then(|r| {
                     r.cast()
@@ -729,7 +757,9 @@ where
                         subsurface_object: object_id,
                     })
                 })?;
-            if objects.get(id.0).is_none() {
+            if ctx.objects().get(id.0).is_none() {
+                let shell = ctx.server_context().shell();
+                let mut shell = shell.borrow_mut();
                 if !crate::shell::surface::roles::Subsurface::attach(
                     parent,
                     surface.clone(),
@@ -740,7 +770,8 @@ where
                         subsurface_object: object_id,
                     }))
                 } else {
-                    objects.insert(id.0, Subsurface(surface)).unwrap();
+                    drop(shell);
+                    ctx.objects_mut().insert(id.0, Subsurface(surface)).unwrap();
                     Ok(())
                 }
             } else {

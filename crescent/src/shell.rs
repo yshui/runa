@@ -1,4 +1,4 @@
-use std::{rc::Rc, cell::RefCell};
+use std::{cell::RefCell, rc::Rc};
 
 use apollo::{
     shell::{
@@ -187,7 +187,10 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
     fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self> {
         // This unwrap cannot fail, unless there is a bug in this implementation to
         // cause it to return an invalid token.
-        self.storage.get(key).map(|v| &v.0).unwrap_or_else(|| panic!("Invalid token: {:?}", key))
+        self.storage
+            .get(key)
+            .map(|v| &v.0)
+            .unwrap_or_else(|| panic!("Invalid token: {:?}", key))
     }
 
     fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {

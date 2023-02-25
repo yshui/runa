@@ -12,13 +12,13 @@ use apollo::{
     utils::geometry::{Extent, Point},
 };
 use futures_util::{select, TryStreamExt};
-use smol::{block_on, LocalExecutor, Task};
+use smol::{block_on, LocalExecutor};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{
-        traits::{Client, LockableStore as _, Store as _, WriteMessage as _},
-        Connection, EventDispatcher, LockableStore,
+        traits::{Client, ClientParts, Store as _, WriteMessage as _},
+        Connection, EventDispatcher, Store,
     },
     objects::Object,
     renderer_capability::RendererCapability,
@@ -103,26 +103,16 @@ impl wl_server::server::Server for Crescent {
                 let mut client_ctx = CrescentClient {
                     store: Some(Default::default()),
                     state,
-                    tasks: Default::default(),
                     tx: Connection::new(BufWriterWithFd::new(tx)),
                     event_dispatcher: EventDispatcher::new(),
                 };
                 client_ctx
-                    .objects()
-                    .lock()
-                    .await
+                    .objects_mut()
                     .insert(1, wl_server::objects::Display)
                     .unwrap();
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
-                let mut conn = client_ctx.connection().clone();
                 loop {
-                    // Flush output before we start waiting.
-                    if let Err(e) = conn.flush().await {
-                        tracing::trace!("Error while flushing connection {e}");
-                        break
-                    }
-                    use futures_util::FutureExt;
                     let CrescentClient {
                         store,
                         state,
@@ -130,6 +120,12 @@ impl wl_server::server::Server for Crescent {
                         event_dispatcher,
                         ..
                     } = &mut client_ctx;
+                    // Flush output before we start waiting.
+                    if let Err(e) = tx.flush().await {
+                        tracing::trace!("Error while flushing connection {e}");
+                        break
+                    }
+                    use futures_util::FutureExt;
                     select! {
                         msg = Pin::new(&mut read).next_message().fuse() => {
                             match msg {
@@ -147,7 +143,7 @@ impl wl_server::server::Server for Crescent {
                             match event {
                                 Some(event) => {
                                     event.handle(store.as_mut().unwrap(), tx, state).await?;
-                                    conn.flush().await?;
+                                    tx.flush().await?;
                                 },
                                 None => {
                                     tracing::trace!("Event dispatcher returned None");
@@ -159,7 +155,7 @@ impl wl_server::server::Server for Crescent {
                 }
                 // Try to flush the connection, ok if it fails, as the connection could have
                 // been broken at this point.
-                conn.flush().await.ok();
+                client_ctx.tx.flush().await.ok();
                 client_ctx.disconnect().await;
                 Ok::<(), wl_server::error::Error>(())
             })
@@ -188,9 +184,8 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:            Option<LockableStore<AnyObject>>,
+    store:            Option<Store<AnyObject>>,
     state:            Crescent,
-    tasks:            RefCell<Vec<Task<()>>>,
     tx:               Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
     event_dispatcher: EventDispatcher<Self>,
 }
@@ -198,8 +193,7 @@ pub struct CrescentClient {
 impl CrescentClient {
     /// Finalize the client context after the client has disconnected.
     async fn disconnect(&mut self) {
-        if let Some(store) = self.store.take() {
-            let mut store = store.lock().await;
+        if let Some(mut store) = self.store.take() {
             store.clear_for_disconnect(self);
         }
     }
@@ -207,9 +201,9 @@ impl CrescentClient {
 
 impl Client for CrescentClient {
     type Connection = Connection<BufWriterWithFd<wl_io::WriteWithFd>>;
-    type Object = AnyObject;
-    type ObjectStore = LockableStore<Self::Object>;
     type EventDispatcher = EventDispatcher<Self>;
+    type Object = AnyObject;
+    type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
 
     wl_server::impl_dispatch!();
@@ -218,21 +212,17 @@ impl Client for CrescentClient {
         &self.state
     }
 
-    fn connection(&self) -> &Self::Connection {
-        &self.tx
-    }
-
     fn objects(&self) -> &Self::ObjectStore {
         self.store.as_ref().unwrap()
     }
 
-    fn spawn(&self, fut: impl Future<Output = ()> + 'static) {
-        let task = self.state.0.executor.spawn(fut);
-        self.tasks.borrow_mut().push(task);
-    }
-
-    fn event_dispatcher(&mut self) -> &mut Self::EventDispatcher {
-        &mut self.event_dispatcher
+    fn as_mut_parts(&mut self) -> ClientParts<'_, Self> {
+        ClientParts {
+            server_context:   &self.state,
+            connection:       &mut self.tx,
+            objects:          self.store.as_mut().unwrap(),
+            event_dispatcher: &mut self.event_dispatcher,
+        }
     }
 }
 

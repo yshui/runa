@@ -13,7 +13,6 @@ use std::{
     task::{ready, Context, Poll, Waker},
 };
 
-use async_lock::{Mutex, MutexGuard};
 use derivative::Derivative;
 use futures_core::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
@@ -76,30 +75,6 @@ pub mod traits {
             self.by_interface(T::INTERFACE)
                 .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
         }
-    }
-
-    /// A bundle of objects.
-    ///
-    /// Usually this is the set of objects a client has bound to. When cloned,
-    /// the result should reference to the same bundle of objects.
-    ///
-    /// Although all the methods are callable with a shared reference, if you
-    /// are holding the value returned by a `get(...)` call, you should not
-    /// try to modify the store, using methods like `insert`, `remove`,
-    /// etc., which may cause a panic. Drop the `ObjectRef` first.
-    pub trait LockableStore<O>: Clone {
-        type LockedStore: Store<O>;
-        type Guard<'a>: std::ops::DerefMut<Target = Self::LockedStore> + 'a
-        where
-            Self: 'a,
-            O: 'a;
-        type LockFut<'a>: Future<Output = Self::Guard<'a>> + 'a
-        where
-            O: 'a,
-            Self: 'a;
-        /// Lock the store for read/write accesses.
-        fn lock(&self) -> Self::LockFut<'_>;
-        fn try_lock(&self) -> Option<Self::Guard<'_>>;
     }
 
     /// A trait for objects that can accept messages to be sent.
@@ -249,11 +224,18 @@ pub mod traits {
         );
     }
 
+    pub struct ClientParts<'a, C: Client> {
+        pub server_context:   &'a C::ServerContext,
+        pub objects:          &'a mut C::ObjectStore,
+        pub connection:       &'a mut C::Connection,
+        pub event_dispatcher: &'a mut C::EventDispatcher,
+    }
+
     /// A client connection
     pub trait Client: Sized + 'static {
         type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
-        type ObjectStore: LockableStore<Self::Object>;
-        type Connection: WriteMessage + Unpin + Clone + 'static;
+        type ObjectStore: Store<Self::Object>;
+        type Connection: WriteMessage + Unpin + 'static;
         type Object: crate::objects::Object<Self> + std::fmt::Debug;
         type EventDispatcher: EventDispatcher<Self> + 'static;
         type DispatchFut<'a, R>: Future<Output = bool> + 'a
@@ -262,17 +244,28 @@ pub mod traits {
             R: wl_io::traits::buf::AsyncBufReadWithFd + 'a;
         /// Return the server context singleton.
         fn server_context(&self) -> &Self::ServerContext;
-        fn connection(&self) -> &Self::Connection;
+        /// Return a references to the object store
         fn objects(&self) -> &Self::ObjectStore;
-        fn event_dispatcher(&mut self) -> &mut Self::EventDispatcher;
-        /// Spawn a client dependent task from the context. When the client is
-        /// disconnected, the task should be cancelled, otherwise the task
-        /// should keep running.
-        ///
-        /// For simplicity's sake, we don't return a handle to the task. So if
-        /// you want to stop your task early, you can wrap it in
-        /// [`futures::future::Abortable`], or similar.
-        fn spawn(&self, fut: impl Future<Output = ()> + 'static);
+
+        /// Return a unique reference to the connection object
+        fn connection_mut(&mut self) -> &mut Self::Connection {
+            self.as_mut_parts().connection
+        }
+
+        /// Return a unique reference to the object store
+        fn objects_mut(&mut self) -> &mut Self::ObjectStore {
+            self.as_mut_parts().objects
+        }
+
+        /// Return a unique reference to the event dispatcher
+        fn event_dispatcher_mut(&mut self) -> &mut Self::EventDispatcher {
+            self.as_mut_parts().event_dispatcher
+        }
+
+        /// Get unique access to all members of the client context. Otherwise
+        /// accessing one of these members will borrow the whole client
+        /// context, preventing access to the other members.
+        fn as_mut_parts(&mut self) -> ClientParts<'_, Self>;
         fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
             R: wl_io::traits::buf::AsyncBufReadWithFd;
@@ -325,33 +318,6 @@ impl<Object: crate::objects::ObjectMeta> Store<Object> {
                 true
             },
         }
-    }
-}
-
-/// Per client mapping from object ID to objects. This is the reference
-/// implementation of [`Objects`].
-#[derive(Debug, Derivative)]
-#[derivative(Default(bound = ""), Clone(bound = ""))]
-pub struct LockableStore<Object> {
-    inner: Rc<Mutex<Store<Object>>>,
-}
-
-impl<Object: ObjectMeta> traits::LockableStore<Object> for LockableStore<Object> {
-    type Guard<'a> = MutexGuard<'a, Store<Object>> where Object: 'a;
-    type LockedStore = Store<Object>;
-
-    type LockFut<'a> = impl Future<Output = Self::Guard<'a>> + 'a
-    where
-        Object: 'a,
-        Self: 'a;
-
-    fn lock(&self) -> Self::LockFut<'_> {
-        tracing::trace!("Locking store");
-        self.inner.lock()
-    }
-
-    fn try_lock(&self) -> Option<Self::Guard<'_>> {
-        self.inner.try_lock()
     }
 }
 
@@ -490,13 +456,11 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::traits::LockableStore;
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::traits::Client>::Object as $crate::objects::Object<
                         Self,
                     >>::dispatch(self, object_id, (buf, fd))
                     .await;
-                let mut conn = self.connection().clone();
                 let (mut fatal, error) = match ret {
                     Ok(_) => (false, None),
                     Err(e) => (
@@ -513,7 +477,7 @@ macro_rules! impl_dispatch {
                 if let Some((object_id, error_code, msg)) = error {
                     // We are going to disconnect the client so we don't care about the
                     // error.
-                    fatal |= conn.send(DISPLAY_ID, wl_display::events::Error {
+                    fatal |= self.connection_mut().send(DISPLAY_ID, wl_display::events::Error {
                             object_id: wl_types::Object(object_id),
                             code:      error_code,
                             message:   wl_types::Str(msg.as_c_str()),
@@ -529,7 +493,7 @@ macro_rules! impl_dispatch {
                         tracing::error!(
                             "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
                              {}@{object_id}, opcode: {opcode}",
-                            self.objects().lock().await.get(object_id).map(|o| o.interface()).unwrap_or("unknown")
+                            self.objects().get(object_id).map(|o| o.interface()).unwrap_or("unknown")
                         );
                         fatal = true;
                     }

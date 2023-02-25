@@ -11,7 +11,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage},
+    connection::traits::{Client, Store, WriteMessage},
     error,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
 };
@@ -167,8 +167,8 @@ where
         size: i32,
     ) -> Self::CreatePoolFut<'_> {
         tracing::debug!("creating shm_pool with size {}", size);
-        let mut conn = ctx.connection().clone();
         async move {
+            let conn = ctx.connection_mut();
             if size <= 0 {
                 conn.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_shm::enums::Error::InvalidStride as u32,
@@ -209,13 +209,14 @@ where
                     }),
                 })),
             };
-            if ctx.objects().lock().await.insert(id.0, pool).is_err() {
-                conn.send(DISPLAY_ID, wl_display::events::Error {
-                    code:      wl_display::enums::Error::InvalidObject as u32,
-                    object_id: object_id.into(),
-                    message:   wl_types::str!("id already in use"),
-                })
-                .await?;
+            if ctx.objects_mut().insert(id.0, pool).is_err() {
+                ctx.connection_mut()
+                    .send(DISPLAY_ID, wl_display::events::Error {
+                        code:      wl_display::enums::Error::InvalidObject as u32,
+                        object_id: object_id.into(),
+                        message:   wl_types::str!("id already in use"),
+                    })
+                    .await?;
             }
             Ok(())
         }
@@ -308,15 +309,14 @@ where
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
-            let mut objects = ctx.objects().lock().await;
             let pool = {
                 use wl_server::objects::ObjectMeta;
-                let this = objects.get(object_id).unwrap();
+                let this = ctx.objects().get(object_id).unwrap();
                 let this = this.cast::<Self>().unwrap();
                 this.inner.clone()
             };
 
-            let inserted = objects.try_insert_with(id.0, || {
+            let inserted = ctx.objects_mut().try_insert_with(id.0, || {
                 let buffer: BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer> = BufferObj {
                     buffer: Rc::new(
                         Buffer {
@@ -342,11 +342,10 @@ where
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
+        ctx.objects_mut().remove(object_id).unwrap();
         async move {
-            let mut objects = ctx.objects().lock().await;
-            let mut conn = ctx.connection().clone();
-            objects.remove(object_id).unwrap();
-            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+            ctx.connection_mut()
+                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }
@@ -355,12 +354,14 @@ where
     fn resize(ctx: &mut Ctx, object_id: u32, size: i32) -> Self::ResizeFut<'_> {
         async move {
             let len = size as usize;
-            let pool = {
-                let objects = ctx.objects().lock().await;
-                let this = objects.get(object_id).unwrap();
-                let this: &Self = this.cast().unwrap();
-                this.inner.clone()
-            };
+            let pool = ctx
+                .objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap()
+                .inner
+                .clone();
             let mut inner = pool.borrow_mut();
             tracing::debug!("resize shm_pool {:p} to {}", &*inner, size);
             if len > inner.len {

@@ -183,8 +183,7 @@ impl Iterator for FdIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let p = unsafe { libc::CMSG_DATA(self.cmsghdr as *const _) };
-        let data_len =
-            self.cmsghdr as *const _ as usize + self.cmsghdr.cmsg_len - p as usize;
+        let data_len = self.cmsghdr as *const _ as usize + self.cmsghdr.cmsg_len - p as usize;
         let nfds = data_len / std::mem::size_of::<RawFd>();
         let fds = unsafe { std::slice::from_raw_parts(p as *const RawFd, nfds) };
         let ret = fds.get(self.idx).copied();
@@ -206,10 +205,7 @@ where
     let cmsghdr = {
         if mhdr.msg_controllen > 0 {
             // got control message(s)
-            cmsg_buffer
-                .as_mut()
-                .unwrap()
-                .set_len(mhdr.msg_controllen);
+            cmsg_buffer.as_mut().unwrap().set_len(mhdr.msg_controllen);
             debug_assert!(!mhdr.msg_control.is_null());
             debug_assert!(msg_controllen >= mhdr.msg_controllen);
             libc::CMSG_FIRSTHDR(&mhdr as *const libc::msghdr)

@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use crate::utils::geometry::{Extent, coords};
+use crate::utils::geometry::{coords, Extent};
 
 /// The base buffer trait.
 ///
@@ -31,7 +31,7 @@ pub trait HasBuffer {
 /// All buffer implementations in this crate uses this.
 #[derive(Debug)]
 pub struct BufferBase {
-    damaged: Cell<bool>,
+    damaged:   Cell<bool>,
     object_id: u32,
 }
 
@@ -64,6 +64,7 @@ impl Buffer for BufferBase {
     fn dimension(&self) -> Extent<u32, coords::Buffer> {
         unimplemented!()
     }
+
     #[inline]
     fn object_id(&self) -> u32 {
         self.object_id
@@ -116,6 +117,7 @@ impl Buffer for Buffers {
             Self::Shm(buffer) => buffer.dimension(),
         }
     }
+
     #[inline]
     fn object_id(&self) -> u32 {
         match self {
@@ -155,6 +157,7 @@ impl<Data: std::fmt::Debug + 'static> Buffer for RendererBuffer<Data> {
     fn dimension(&self) -> Extent<u32, coords::Buffer> {
         self.buffer.dimension()
     }
+
     #[inline]
     fn object_id(&self) -> u32 {
         self.buffer.object_id()

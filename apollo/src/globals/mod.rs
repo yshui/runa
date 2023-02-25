@@ -17,7 +17,7 @@ use wl_server::{
     connection::{
         event_handler::Abortable,
         traits::{
-            Client, EventDispatcher, EventHandler, EventHandlerAction, LockableStore, Store,
+            Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
             WriteMessage,
         },
     },
@@ -68,7 +68,7 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            let mut objects = client.objects().lock().await;
+            let objects = client.objects_mut();
             // Check if we already have a compositor bound, and clone their render event
             // handler abort handle if so; otherwise start the event handler task.
             let other_compositor = objects
@@ -90,7 +90,7 @@ where
                 // Only start the event handler for the first completed compositor object bound.
                 let rx = client.server_context().shell().borrow().subscribe();
                 client
-                    .event_dispatcher()
+                    .event_dispatcher_mut()
                     .add_event_handler(rx, RenderEventHandler {
                         callbacks_to_fire: Vec::new(),
                     });
@@ -123,7 +123,6 @@ where
     > {
         assert!(matches!(message, ShellEvent::Render));
         let time = crate::time::elapsed().as_millis() as u32;
-        let mut objects = objects.try_lock().unwrap();
         if self.callbacks_to_fire.is_empty() {
             // First collect all callbacks we need to fire
             let shell = server_context.shell().borrow();
@@ -165,12 +164,11 @@ where
             }
         }
         while let Some(&callback) = self.callbacks_to_fire.last() {
-            use std::ops::DerefMut;
             ready!(wl_server::objects::Callback::poll_fire(
                 cx,
                 callback,
                 time,
-                objects.deref_mut(),
+                objects,
                 Pin::new(&mut *connection)
             ))?;
             self.callbacks_to_fire.pop();
@@ -243,7 +241,7 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         let formats = client.server_context().formats();
-        let mut conn = client.connection().clone();
+        let conn = client.connection_mut();
         async move {
             // Send known buffer formats
             for format in formats {
@@ -305,12 +303,15 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            let objects = client.objects().clone();
-            let mut objects = objects.lock().await;
+            let ClientParts {
+                connection,
+                objects,
+                event_dispatcher,
+                ..
+            } = client.as_mut_parts();
             let output: WeakPtr<_> = Rc::downgrade(&self.shell_output).into();
-            let mut conn = client.connection().clone();
             // Send properties of this output
-            self.shell_output.send_all(&mut conn, object_id).await?;
+            self.shell_output.send_all(connection, object_id).await?;
             // Send enter events for surfaces already on this output
             let messages: Vec<_> = {
                 let surfaces =
@@ -329,7 +330,7 @@ where
                     .collect()
             };
             for (id, message) in messages {
-                conn.send(id, message).await.unwrap();
+                connection.send(id, message).await.unwrap();
             }
 
             // If there is an output object already bound (of any shell output), we can get
@@ -345,7 +346,7 @@ where
             let handler = OutputChangeEventHandler { object_id };
             let (handler, abort) = Abortable::new(handler);
             let auto_abort = abort.auto_abort();
-            client.event_dispatcher().add_event_handler(rx, handler);
+            event_dispatcher.add_event_handler(rx, handler);
 
             // Add this output to the set of all outputs
             all_outputs

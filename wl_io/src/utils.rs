@@ -1,9 +1,7 @@
 #![doc(hidden)]
 
 use std::{
-    os::{
-        unix::io::{BorrowedFd, OwnedFd, RawFd},
-    },
+    os::unix::io::{BorrowedFd, OwnedFd, RawFd},
     pin::Pin,
     task::Poll,
 };

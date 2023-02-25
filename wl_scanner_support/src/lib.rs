@@ -21,8 +21,8 @@ pub mod io {
     }
 
     #[inline]
-    /// Pop `len` bytes from the buffer and returns it. Advances the buffer by `len` aligned up to
-    /// 4 bytes.
+    /// Pop `len` bytes from the buffer and returns it. Advances the buffer by
+    /// `len` aligned up to 4 bytes.
     pub fn pop_bytes<'a>(bytes: &mut &'a [u8], len: usize) -> &'a [u8] {
         use std::slice::from_raw_parts;
         let blen = bytes.len();
@@ -33,7 +33,12 @@ pub mod io {
         );
         let ptr = bytes.as_ptr();
         // Safety: we checked that the slice is long enough
-        let (ret, rest) = unsafe { (from_raw_parts(ptr, len), from_raw_parts(ptr.add(len_aligned), blen - len_aligned)) };
+        let (ret, rest) = unsafe {
+            (
+                from_raw_parts(ptr, len),
+                from_raw_parts(ptr.add(len_aligned), blen - len_aligned),
+            )
+        };
         *bytes = rest;
         ret
     }

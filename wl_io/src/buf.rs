@@ -1,8 +1,6 @@
 use std::{
     io::Result,
-    os::{
-        unix::io::{RawFd, BorrowedFd, OwnedFd},
-    },
+    os::unix::io::{BorrowedFd, OwnedFd, RawFd},
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -377,10 +375,7 @@ impl<T: AsyncWriteWithFd> AsyncWriteWithFd for BufWriterWithFd<T> {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        os::fd::{AsRawFd},
-        pin::Pin,
-    };
+    use std::{os::fd::AsRawFd, pin::Pin};
 
     use anyhow::Result;
     use arbitrary::Arbitrary;

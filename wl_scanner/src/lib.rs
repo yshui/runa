@@ -1,5 +1,4 @@
 use ahash::AHashMap as HashMap;
-
 use heck::{ToPascalCase, ToShoutySnekCase};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
@@ -146,9 +145,9 @@ fn generate_arg_type_with_lifetime(
                     // Box<[u8]>
                     syn::Type::Path(syn::TypePath {
                         qself: None,
-                        path: syn::Path {
+                        path:  syn::Path {
                             leading_colon: None,
-                            segments: [syn::PathSegment {
+                            segments:      [syn::PathSegment {
                                 ident:     syn::Ident::new("Box", Span::call_site()),
                                 arguments: syn::PathArguments::AngleBracketed(
                                     syn::AngleBracketedGenericArguments {
@@ -356,17 +355,15 @@ fn generate_message_variant(
     enum_info: &EnumInfos,
 ) -> TokenStream {
     let args = &request.args;
-    let args = args
-        .iter()
-        .map(|arg| {
-            let name = format_ident!("{}", arg.name);
-            let ty = generate_arg_type(arg, is_owned, iface_version);
-            let doc_comment = generate_doc_comment(&arg.description);
-            quote! {
-                #doc_comment
-                pub #name: #ty
-            }
-        });
+    let args = args.iter().map(|arg| {
+        let name = format_ident!("{}", arg.name);
+        let ty = generate_arg_type(arg, is_owned, iface_version);
+        let doc_comment = generate_doc_comment(&arg.description);
+        quote! {
+            #doc_comment
+            pub #name: #ty
+        }
+    });
     let pname = request.name.as_str().to_pascal_case();
     let name = format_ident!("{}", pname);
     let is_borrowed = if !is_owned {
@@ -393,7 +390,8 @@ fn generate_message_variant(
             | wl_spec::protocol::Type::Destructor=> false,
         })
         .count() as u32 *
-        4 + 8; // 8 bytes for header
+        4 +
+        8; // 8 bytes for header
     let variable_len = request.args.iter().map(|arg| {
         let name = format_ident!("{}", arg.name);
         match &arg.typ {
@@ -412,24 +410,17 @@ fn generate_message_variant(
             },
         }
     });
-    let serialize = request
-        .args
-        .iter()
-        .map(|arg| {
-            let name = format_ident!("{}", arg.name);
-            generate_serialize_for_type(iface_name, &name, arg, enum_info)
-        });
-    let deserialize = request
-        .args
-        .iter()
-        .map(|arg| {
-            let name = format_ident!("{}", arg.name);
-            let deserialize =
-                generate_deserialize_for_type(iface_name, arg, enum_info, iface_version);
-            quote! {
-                #name: #deserialize
-            }
-        });
+    let serialize = request.args.iter().map(|arg| {
+        let name = format_ident!("{}", arg.name);
+        generate_serialize_for_type(iface_name, &name, arg, enum_info)
+    });
+    let deserialize = request.args.iter().map(|arg| {
+        let name = format_ident!("{}", arg.name);
+        let deserialize = generate_deserialize_for_type(iface_name, arg, enum_info, iface_version);
+        quote! {
+            #name: #deserialize
+        }
+    });
     let doc_comment = generate_doc_comment(&request.description);
     let nfds: u8 = request
         .args
@@ -474,7 +465,7 @@ fn generate_message_variant(
         impl<'a> ::wl_scanner_support::io::de::Deserialize<'a> for #name #lifetime {
             #[inline]
             fn deserialize(
-                mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd] 
+                mut data: &'a [u8], mut fds: &'a [::std::os::unix::io::RawFd]
             ) -> Result<Self, ::wl_scanner_support::io::de::Error> {
                 use ::wl_scanner_support::io::{pop_fd, pop_bytes, pop_i32, pop_u32};
                 Ok(Self {
@@ -496,36 +487,31 @@ fn generate_dispatch_trait(
         EventOrRequest::Event => format_ident!("EventDispatch"),
         EventOrRequest::Request => format_ident!("RequestDispatch"),
     };
-    let methods = messages
-        .iter()
-        .map(|m| {
-            let name = if m.name == "move" || m.name == "type" {
-                format_ident!("{}_", m.name)
-            } else {
-                format_ident!("{}", m.name)
-            };
-            let retty = format_ident!("{}Fut", m.name.to_pascal_case());
-            let args = m
-                .args
-                .iter()
-                .map(|arg| {
-                    let name = format_ident!("{}", arg.name);
-                    let typ = generate_arg_type(arg, false, iface_version);
-                    quote! {
-                        #name: #typ
-                    }
-                });
-            let doc_comment = generate_doc_comment(&m.description);
+    let methods = messages.iter().map(|m| {
+        let name = if m.name == "move" || m.name == "type" {
+            format_ident!("{}_", m.name)
+        } else {
+            format_ident!("{}", m.name)
+        };
+        let retty = format_ident!("{}Fut", m.name.to_pascal_case());
+        let args = m.args.iter().map(|arg| {
+            let name = format_ident!("{}", arg.name);
+            let typ = generate_arg_type(arg, false, iface_version);
             quote! {
-                #doc_comment
-                fn #name<'a>(
-                    ctx: &'a mut Ctx,
-                    object_id: u32,
-                    #(#args),*
-                )
-                -> Self::#retty<'a>;
+                #name: #typ
             }
         });
+        let doc_comment = generate_doc_comment(&m.description);
+        quote! {
+            #doc_comment
+            fn #name<'a>(
+                ctx: &'a mut Ctx,
+                object_id: u32,
+                #(#args),*
+            )
+            -> Self::#retty<'a>;
+        }
+    });
     let futs = messages
         .iter()
         .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
@@ -568,20 +554,17 @@ fn generate_event_or_request(
         let enum_is_borrowed = messages
             .iter()
             .any(|v| v.args.iter().any(|arg| type_is_borrowed(&arg.typ)));
-        let public = messages
-            .iter()
-            .enumerate()
-            .map(|(opcode, v)| {
-                generate_message_variant(
-                    iface_name,
-                    opcode as u16,
-                    v,
-                    false,
-                    &mod_name,
-                    iface_version,
-                    enum_info,
-                )
-            });
+        let public = messages.iter().enumerate().map(|(opcode, v)| {
+            generate_message_variant(
+                iface_name,
+                opcode as u16,
+                v,
+                false,
+                &mod_name,
+                iface_version,
+                enum_info,
+            )
+        });
         let enum_lifetime = if enum_is_borrowed {
             quote! { <'a> }
         } else {
@@ -606,18 +589,15 @@ fn generate_event_or_request(
                 Self::#name(v) => v.serialize(writer),
             }
         });
-        let enum_deserialize_cases = messages
-            .iter()
-            .enumerate()
-            .map(|(opcode, v)| {
-                let name = format_ident!("{}", v.name.to_pascal_case());
-                let opcode = opcode as u32;
-                quote! {
-                    #opcode => {
-                        Ok(Self::#name(<#mod_name::#name>::deserialize(data, fds)?))
-                    },
-                }
-            });
+        let enum_deserialize_cases = messages.iter().enumerate().map(|(opcode, v)| {
+            let name = format_ident!("{}", v.name.to_pascal_case());
+            let opcode = opcode as u32;
+            quote! {
+                #opcode => {
+                    Ok(Self::#name(<#mod_name::#name>::deserialize(data, fds)?))
+                },
+            }
+        });
         let enum_len_cases = messages.iter().map(|v| {
             let name = format_ident!("{}", v.name.to_pascal_case());
             quote! {
@@ -734,30 +714,26 @@ fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
                     })
             })
             .collect();
-        let desc = desc
-            .split('\n')
-            .filter_map(|s| {
-                let s = s.trim();
-                if let Some(m) = LINKREF_REGEX.find(s) {
-                    if m.start() == 0 {
-                        return None
-                    }
+        let desc = desc.split('\n').filter_map(|s| {
+            let s = s.trim();
+            if let Some(m) = LINKREF_REGEX.find(s) {
+                if m.start() == 0 {
+                    return None
                 }
-                let mut s = wrap_links(s);
-                s = LINKREF_REGEX_WITH_SPACE
-                    .replace(&s, |m: &Captures| {
-                        let refnum = m.get(1).unwrap().as_str().parse::<u32>().unwrap();
-                        let link = link_refs.get(&refnum).unwrap();
-                        format!(
-                            "<a href={link}><sup>{refnum}</sup></a>"
-                        )
-                    })
-                    .into_owned();
-                s = s.replace('[', "\\[").replace(']', "\\]");
-                Some(quote! {
-                    #[doc = #s]
+            }
+            let mut s = wrap_links(s);
+            s = LINKREF_REGEX_WITH_SPACE
+                .replace(&s, |m: &Captures| {
+                    let refnum = m.get(1).unwrap().as_str().parse::<u32>().unwrap();
+                    let link = link_refs.get(&refnum).unwrap();
+                    format!("<a href={link}><sup>{refnum}</sup></a>")
                 })
-            });
+                .into_owned();
+            s = s.replace('[', "\\[").replace(']', "\\]");
+            Some(quote! {
+                #[doc = #s]
+            })
+        });
         let summary = summary.replace('[', "\\[").replace(']', "\\]");
         quote! {
             #[doc = #summary]

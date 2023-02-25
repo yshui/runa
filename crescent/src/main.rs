@@ -11,14 +11,14 @@ use apollo::{
     },
     utils::geometry::{Extent, Point},
 };
-use futures_util::TryStreamExt;
+use futures_util::{select, TryStreamExt};
 use smol::{block_on, LocalExecutor, Task};
 use wl_io::buf::{BufReaderWithFd, BufWriterWithFd};
 use wl_server::{
     __private::AsyncBufReadWithFdExt,
     connection::{
         traits::{Client, LockableStore as _, Store as _},
-        Connection, LockableStore,
+        Connection, EventDispatcher, LockableStore,
     },
     objects::Object,
     renderer_capability::RendererCapability,
@@ -106,6 +106,7 @@ impl wl_server::server::Server for Crescent {
                     state,
                     tasks: Default::default(),
                     tx: Connection::new(BufWriterWithFd::new(tx)),
+                    event_dispatcher: EventDispatcher::new(),
                 };
                 client_ctx
                     .objects()
@@ -122,14 +123,38 @@ impl wl_server::server::Server for Crescent {
                         tracing::trace!("Error while flushing connection {e}");
                         break
                     }
-                    match Pin::new(&mut read).next_message().await {
-                        Ok(_) =>
-                            if client_ctx.dispatch(Pin::new(&mut read)).await {
-                                break
-                            },
-                        Err(e) => {
-                            tracing::trace!("Error while reading message: {e}");
-                            break
+                    use futures_util::FutureExt;
+                    let CrescentClient {
+                        store,
+                        state,
+                        tx,
+                        event_dispatcher,
+                        ..
+                    } = &mut client_ctx;
+                    select! {
+                        msg = Pin::new(&mut read).next_message().fuse() => {
+                            match msg {
+                                Ok(_) =>
+                                    if client_ctx.dispatch(Pin::new(&mut read)).await {
+                                        break
+                                    },
+                                Err(e) => {
+                                    tracing::trace!("Error while reading message: {e}");
+                                    break
+                                },
+                            }
+                        },
+                        event = Pin::new(event_dispatcher).next().fuse() => {
+                            match event {
+                                Some(event) => {
+                                    event.handle(store.as_mut().unwrap(), tx, state).await?;
+                                    conn.flush().await?;
+                                },
+                                None => {
+                                    tracing::trace!("Event dispatcher returned None");
+                                    break
+                                }
+                            }
                         },
                     }
                 }
@@ -164,10 +189,11 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store: Option<LockableStore<AnyObject>>,
-    state: Crescent,
-    tasks: RefCell<Vec<Task<()>>>,
-    tx:    Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
+    store:            Option<LockableStore<AnyObject>>,
+    state:            Crescent,
+    tasks:            RefCell<Vec<Task<()>>>,
+    tx:               Connection<BufWriterWithFd<wl_io::WriteWithFd>>,
+    event_dispatcher: EventDispatcher<Self>,
 }
 
 impl CrescentClient {
@@ -203,6 +229,15 @@ impl Client for CrescentClient {
     fn spawn(&self, fut: impl Future<Output = ()> + 'static) {
         let task = self.state.0.executor.spawn(fut);
         self.tasks.borrow_mut().push(task);
+    }
+
+    fn add_event_handler<M: std::any::Any>(
+        &mut self,
+        event_source: impl futures_util::Stream<Item = M> + 'static,
+        handler: impl wl_server::connection::traits::EventHandler<Self, Message = M> + 'static,
+    ) {
+        self.event_dispatcher
+            .add_event_handler(event_source, handler);
     }
 }
 

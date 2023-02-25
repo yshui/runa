@@ -113,18 +113,3 @@ impl<T> From<Weak<T>> for WeakPtr<T> {
         Self(value)
     }
 }
-
-#[derive(Debug)]
-pub(crate) struct AutoAbort(futures_util::future::AbortHandle);
-
-impl AutoAbort {
-    pub fn new(handle: futures_util::future::AbortHandle) -> Self {
-        Self(handle)
-    }
-}
-
-impl Drop for AutoAbort {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}

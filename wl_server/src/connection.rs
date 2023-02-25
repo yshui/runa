@@ -21,7 +21,6 @@ use hashbrown::{
     hash_map::{self, OccupiedError},
     HashMap, HashSet,
 };
-use slotmap::{DefaultKey, SlotMap};
 use wl_io::traits::{buf::AsyncBufWriteWithFd, ser};
 
 use crate::objects::{Object, ObjectMeta};
@@ -40,10 +39,16 @@ pub mod traits {
     use wl_io::traits::ser;
 
     use crate::objects::{ObjectMeta, StaticObjectMeta};
+    type ByType<'a, T, O, S>
+    where
+        O: ObjectMeta + 'static,
+        S: Store<O> + 'a,
+        T: StaticObjectMeta + 'static,
+    = impl Iterator<Item = (u32, &'a T)> + 'a;
 
     pub trait Store<O> {
         /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
-        type IfaceIter<'a>: Iterator<Item = (u32, &'a O)> + 'a
+        type ByIface<'a>: Iterator<Item = (u32, &'a O)> + 'a
         where
             O: 'a,
             Self: 'a;
@@ -61,24 +66,13 @@ pub mod traits {
         /// Return an `AsIterator` for all objects in the store with a specific
         /// interface An `Iterator` can be obtain from an `AsIterator` by
         /// calling `as_iter()`
-        fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a>;
-    }
+        fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a>;
 
-    pub trait StoreExt<O> {
-        type TypeIter<'a, T: StaticObjectMeta>: Iterator<Item = (u32, &'a T)> + 'a
+        fn by_type<T: StaticObjectMeta + 'static>(&self) -> ByType<'_, T, O, Self>
         where
-            T: 'static,
-            Self: 'a;
-        fn by_type<T: StaticObjectMeta + 'static>(&self) -> Self::TypeIter<'_, T>;
-    }
-
-    impl<O: ObjectMeta + 'static, S: Store<O>> StoreExt<O> for S {
-        type TypeIter<'a, T: StaticObjectMeta> = impl Iterator<Item = (u32, &'a T)> + 'a
-        where
-            T: 'static,
-            Self: 'a;
-
-        fn by_type<T: StaticObjectMeta + 'static>(&self) -> Self::TypeIter<'_, T> {
+            Self: Sized,
+            O: ObjectMeta + 'static,
+        {
             self.by_interface(T::INTERFACE)
                 .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
         }
@@ -105,6 +99,7 @@ pub mod traits {
             Self: 'a;
         /// Lock the store for read/write accesses.
         fn lock(&self) -> Self::LockFut<'_>;
+        fn try_lock(&self) -> Option<Self::Guard<'_>>;
     }
 
     /// A trait for objects that can accept messages to be sent.
@@ -135,6 +130,30 @@ pub mod traits {
 
         /// Flush connection
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+        #[must_use]
+        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
+            &'a mut self,
+            object_id: u32,
+            msg: M,
+        ) -> Send<'c, Self, M>
+        where
+            Self: Unpin,
+            'a: 'c,
+            'b: 'c,
+        {
+            Send {
+                writer: self,
+                object_id,
+                msg: Some(msg),
+            }
+        }
+        #[must_use]
+        fn flush(&mut self) -> Flush<'_, Self>
+        where
+            Self: Unpin,
+        {
+            Flush { writer: self }
+        }
     }
 
     pub struct Send<
@@ -146,6 +165,10 @@ pub mod traits {
         object_id: u32,
         msg:       Option<M>,
     }
+    pub struct Flush<'a, W: WriteMessage + ?Sized + 'a> {
+        writer: &'a mut W,
+    }
+
     impl<
             'a,
             W: WriteMessage + Unpin + ?Sized + 'a,
@@ -162,9 +185,6 @@ pub mod traits {
             Poll::Ready(Ok(()))
         }
     }
-    pub struct Flush<'a, W: WriteMessage + ?Sized + 'a> {
-        writer: &'a mut W,
-    }
 
     impl<'a, W: WriteMessage + Unpin + ?Sized + 'a> Future for Flush<'a, W> {
         type Output = std::io::Result<()>;
@@ -175,47 +195,50 @@ pub mod traits {
         }
     }
 
-    pub trait WriteMessageExt {
-        #[must_use]
-        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-            &'a mut self,
-            object_id: u32,
-            msg: M,
-        ) -> Send<'c, Self, M>
-        where
-            Self: WriteMessage,
-            'a: 'c,
-            'b: 'c;
-        #[must_use]
-        fn flush(&mut self) -> Flush<'_, Self>
-        where
-            Self: WriteMessage;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum EventHandlerAction {
+        // This event handler should be stopped.
+        Stop,
+        // This event handler should be kept.
+        Keep,
     }
 
-    impl<W: WriteMessage + Unpin + ?Sized> WriteMessageExt for W {
-        fn send<'a, 'b, 'c, M: ser::Serialize + Unpin + std::fmt::Debug + 'b>(
-            &'a mut self,
-            object_id: u32,
-            msg: M,
-        ) -> Send<'c, Self, M>
-        where
-            Self: WriteMessage,
-            'a: 'c,
-            'b: 'c,
-        {
-            Send {
-                writer: self,
-                object_id,
-                msg: Some(msg),
-            }
-        }
-
-        fn flush(&mut self) -> Flush<'_, Self>
-        where
-            Self: WriteMessage,
-        {
-            Flush { writer: self }
-        }
+    /// An event handler.
+    ///
+    /// Occasionally, wayland object implementations need to handle events that
+    /// arise from the compositor. For example, when user moves the pointer,
+    /// the wl_surface objects maybe need to send motion events to the
+    /// client.
+    ///
+    /// This can be achieved by implement this trait, and call
+    /// `Client::add_event_handler` to register event handlers. Event handlers
+    /// have an associated event source. Whenever a new event is received,
+    /// the event source will be polled, and the event handler will be
+    /// called with the received event.
+    pub trait EventHandler<Ctx: Client> {
+        type Message;
+        /// Poll to handle an event. Every time an event is received, this will
+        /// be called until it returns `Poll::Ready(_)`. The returned
+        /// value indicates whether this event handler should be removed, i.e.
+        /// if true is returned, the event handler will be removed from
+        /// the client context. Event handler is also removed if the event
+        /// stream has terminated.
+        ///
+        /// This function is not passed a `&mut Ctx`, because handling events
+        /// may require exclusive access to the set of event handlers.
+        /// So we split a `Ctx` apart, remove the access to the event
+        /// handlers, and only pass the remaining parts.
+        ///
+        /// If an error is returned, the client connection should be closed with
+        /// an error.
+        fn poll_handle_event(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            objects: &mut Ctx::ObjectStore,
+            connection: &mut Ctx::Connection,
+            server_context: &Ctx::ServerContext,
+            message: &mut Self::Message,
+        ) -> Poll<Result<EventHandlerAction, Box<dyn Error + std::marker::Send + Sync + 'static>>>;
     }
 
     /// A client connection
@@ -243,6 +266,11 @@ pub mod traits {
         fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
         where
             R: wl_io::traits::buf::AsyncBufReadWithFd;
+        fn add_event_handler<M: Any>(
+            &mut self,
+            event_source: impl Stream<Item = M> + 'static,
+            handler: impl EventHandler<Self, Message = M> + 'static,
+        );
     }
 }
 
@@ -313,7 +341,12 @@ impl<Object: ObjectMeta> traits::LockableStore<Object> for LockableStore<Object>
         Self: 'a;
 
     fn lock(&self) -> Self::LockFut<'_> {
+        tracing::trace!("Locking store");
         self.inner.lock()
+    }
+
+    fn try_lock(&self) -> Option<Self::Guard<'_>> {
+        self.inner.try_lock()
     }
 }
 
@@ -341,7 +374,7 @@ impl<Object> Drop for Store<Object> {
 }
 
 impl<O: ObjectMeta> traits::Store<O> for Store<O> {
-    type IfaceIter<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
+    type ByIface<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
 
     #[inline]
     fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
@@ -412,7 +445,7 @@ impl<O: ObjectMeta> traits::Store<O> for Store<O> {
         Self::try_insert_with(self, id, f)
     }
 
-    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::IfaceIter<'a> {
+    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a> {
         self.by_interface
             .get(interface)
             .into_iter()
@@ -444,6 +477,7 @@ macro_rules! impl_dispatch {
                         wl_display::v1 as wl_display, wl_types, AsyncBufReadWithFdExt,
                         ProtocolError,
                     },
+                    connection::traits::WriteMessage,
                     objects::DISPLAY_ID,
                 };
                 let (object_id, len, buf, fd) = match R::next_message(reader.as_mut()).await {
@@ -451,7 +485,7 @@ macro_rules! impl_dispatch {
                     // I/O error, no point sending the error to the client
                     Err(e) => return true,
                 };
-                use $crate::connection::traits::{LockableStore, WriteMessageExt};
+                use $crate::connection::traits::LockableStore;
                 let (ret, bytes_read, fds_read) =
                     <<Self as $crate::connection::traits::Client>::Object as $crate::objects::Object<
                         Self,
@@ -619,5 +653,321 @@ impl<'a, D: 'a> IntoIterator for &'a EventSerial<D> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.serials.iter().map(|(k, (d, _))| (*k, d))
+    }
+}
+
+type EventHandlerOutput =
+    Result<traits::EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>;
+#[pin_project::pin_project]
+struct PairedEventHandler<Ctx, ES: Stream, H> {
+    #[pin]
+    event_source: ES,
+    #[pin]
+    handler:      H,
+    message:      Option<ES::Item>,
+    _ctx:         PhantomData<Ctx>,
+}
+
+impl<Ctx, ES: Stream, H> Stream for PairedEventHandler<Ctx, ES, H> {
+    type Item = ();
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        if this.message.is_none() {
+            let Some(message) = ready!(this.event_source.poll_next(cx)) else {
+                return Poll::Ready(None);
+            };
+            *this.message = Some(message);
+        };
+        Poll::Ready(Some(()))
+    }
+}
+
+trait AnyEventHandler: Stream<Item = ()> {
+    type Ctx: traits::Client;
+    fn poll_handle(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        objects: &mut <Self::Ctx as traits::Client>::ObjectStore,
+        connection: &mut <Self::Ctx as traits::Client>::Connection,
+        server_context: &<Self::Ctx as traits::Client>::ServerContext,
+    ) -> Poll<EventHandlerOutput>;
+}
+
+impl<Ctx, ES, H> AnyEventHandler for PairedEventHandler<Ctx, ES, H>
+where
+    Ctx: traits::Client,
+    ES: Stream + 'static,
+    H: traits::EventHandler<Ctx, Message = ES::Item> + 'static,
+{
+    type Ctx = Ctx;
+
+    fn poll_handle(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        objects: &mut Ctx::ObjectStore,
+        connection: &mut Ctx::Connection,
+        server_context: &Ctx::ServerContext,
+    ) -> Poll<EventHandlerOutput> {
+        let this = self.project();
+        let message = this.message.as_mut().unwrap();
+        let ret = ready!(this.handler.poll_handle_event(
+            cx,
+            objects,
+            connection,
+            server_context,
+            message
+        ));
+        *this.message = None;
+        Poll::Ready(ret)
+    }
+}
+
+type BoxedAnyEventHandler<Ctx> = Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
+
+#[pin_project::pin_project(project = EventDispatcherProj)]
+pub struct EventDispatcher<Ctx> {
+    #[pin]
+    handlers:       FuturesUnordered<StreamFuture<BoxedAnyEventHandler<Ctx>>>,
+    active_handler: Option<BoxedAnyEventHandler<Ctx>>,
+    waker:          Vec<Waker>,
+}
+
+impl<Ctx> std::fmt::Debug for EventDispatcher<Ctx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventDispatcher").finish()
+    }
+}
+
+impl<Ctx> Default for EventDispatcher<Ctx> {
+    fn default() -> Self {
+        Self {
+            handlers:       FuturesUnordered::new(),
+            active_handler: None,
+            waker:          Vec::new(),
+        }
+    }
+}
+
+impl<Ctx> EventDispatcher<Ctx> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
+    pub fn add_event_handler<M: Any>(
+        &mut self,
+        event_source: impl Stream<Item = M> + 'static,
+        handler: impl traits::EventHandler<Ctx, Message = M> + 'static,
+    ) {
+        let pinned = Box::pin(PairedEventHandler {
+            event_source,
+            handler,
+            message: None,
+            _ctx: PhantomData::<Ctx>,
+        });
+        let pinned = pinned as Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
+        let pinned = pinned.into_future();
+        self.handlers.push(pinned);
+        for waker in self.waker.drain(..) {
+            waker.wake();
+        }
+    }
+
+    /// Poll for the next event, which needs to be handled with the use of the
+    /// client context.
+    pub fn poll_next<'a>(
+        self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<PendingEvent<'a, Ctx>>> {
+        let mut this = self.project();
+        loop {
+            if this.active_handler.is_some() {
+                return Poll::Ready(Some(PendingEvent { dispatcher: this }))
+            }
+            match ready!(this.handlers.as_mut().poll_next(cx)) {
+                Some((Some(()), handler)) => {
+                    *this.active_handler = Some(handler);
+                },
+                Some((None, _)) => (),
+                None => {
+                    // We have no handlers, so we sleep until a new handler is added.
+                    this.waker.push(cx.waker().clone());
+                    return Poll::Pending
+                },
+            }
+        }
+    }
+
+    pub fn next<'a>(
+        self: Pin<&'a mut Self>,
+    ) -> impl Future<Output = Option<PendingEvent<'a, Ctx>>> + 'a {
+        struct Next<'a, Ctx> {
+            dispatcher: Option<Pin<&'a mut EventDispatcher<Ctx>>>,
+        }
+        impl<'a, Ctx: traits::Client + 'static> Future for Next<'a, Ctx> {
+            type Output = Option<PendingEvent<'a, Ctx>>;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let this = self.dispatcher.as_mut().unwrap().as_mut();
+                ready!(this.poll_next(cx));
+
+                let this = self.dispatcher.take().unwrap().project();
+                Poll::Ready(Some(PendingEvent { dispatcher: this }))
+            }
+        }
+
+        Next {
+            dispatcher: Some(self),
+        }
+    }
+}
+
+pub struct PendingEvent<'a, Ctx> {
+    dispatcher: EventDispatcherProj<'a, Ctx>,
+}
+
+impl<'this, Ctx: traits::Client> PendingEvent<'this, Ctx> {
+    pub fn poll_handle(
+        &mut self,
+        cx: &mut Context<'_>,
+        objects: &mut Ctx::ObjectStore,
+        connection: &mut Ctx::Connection,
+        server_context: &Ctx::ServerContext,
+    ) -> Poll<Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>> {
+        let handler = self.dispatcher.active_handler.as_mut().unwrap();
+        let action = ready!(handler
+            .as_mut()
+            .poll_handle(cx, objects, connection, server_context))?;
+        let handler = self.dispatcher.active_handler.take().unwrap();
+        if action == traits::EventHandlerAction::Keep {
+            self.dispatcher.handlers.push(handler.into_future());
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    pub fn handle<'a>(
+        mut self,
+        objects: &'a mut Ctx::ObjectStore,
+        connection: &'a mut Ctx::Connection,
+        server_context: &'a Ctx::ServerContext,
+    ) -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>> + 'a
+    where
+        'this: 'a,
+    {
+        std::future::poll_fn(move |cx| self.poll_handle(cx, objects, connection, server_context))
+    }
+}
+
+pub mod event_handler {
+    use std::{
+        cell::Cell,
+        pin::Pin,
+        rc::Rc,
+        task::{Context, Poll},
+    };
+
+    use futures_util::task::AtomicWaker;
+
+    use super::traits;
+
+    #[derive(Debug)]
+    struct AbortableInner {
+        aborted: Cell<bool>,
+        waker:   AtomicWaker,
+    }
+    /// A wrapper around an event handler that allows itself to be aborted
+    /// via an [`AbortHandle`];
+    #[pin_project::pin_project]
+    #[derive(Debug)]
+    pub struct Abortable<E> {
+        #[pin]
+        event_handler: E,
+        inner:         Rc<AbortableInner>,
+    }
+
+    impl<E> Abortable<E> {
+        /// Wrap an event handler so it may be aborted.
+        pub fn new(event_handler: E) -> (Self, AbortHandle) {
+            let inner = Rc::new(AbortableInner {
+                aborted: Cell::new(false),
+                waker:   AtomicWaker::new(),
+            });
+            let abort_handle = AbortHandle {
+                inner: inner.clone(),
+            };
+            let abortable = Abortable {
+                event_handler,
+                inner,
+            };
+            (abortable, abort_handle)
+        }
+    }
+
+    impl<Ctx: traits::Client, E: traits::EventHandler<Ctx>> traits::EventHandler<Ctx> for Abortable<E> {
+        type Message = E::Message;
+
+        fn poll_handle_event(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            objects: &mut <Ctx as traits::Client>::ObjectStore,
+            connection: &mut <Ctx as traits::Client>::Connection,
+            server_context: &<Ctx as traits::Client>::ServerContext,
+            message: &mut Self::Message,
+        ) -> Poll<
+            Result<
+                traits::EventHandlerAction,
+                Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+            >,
+        > {
+            if self.inner.aborted.get() {
+                return Poll::Ready(Ok(traits::EventHandlerAction::Stop))
+            }
+            let this = self.project();
+            if let Poll::Ready(x) = this.event_handler.poll_handle_event(
+                cx,
+                objects,
+                connection,
+                server_context,
+                message,
+            ) {
+                return Poll::Ready(x)
+            }
+            this.inner.waker.register(cx.waker());
+            Poll::Pending
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct AbortHandle {
+        inner: Rc<AbortableInner>,
+    }
+
+    impl AbortHandle {
+        /// Abort the event handler associated with this abort handle.
+        /// This will cause the event handler to be stopped the next time
+        /// it is polled.
+        pub fn abort(&self) {
+            self.inner.aborted.set(true);
+            self.inner.waker.wake();
+        }
+
+        /// Turn this abort handle into an [`AutoAbortHandle`], which will
+        /// automatically abort the event handler when it is dropped.
+        pub fn auto_abort(self) -> AutoAbortHandle {
+            AutoAbortHandle(self)
+        }
+    }
+
+    /// An abort handle that will automatically abort the event handler
+    /// when dropped.
+    #[derive(Debug)]
+    pub struct AutoAbortHandle(AbortHandle);
+
+    impl Drop for AutoAbortHandle {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
     }
 }

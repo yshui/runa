@@ -1,29 +1,29 @@
-use std::{future::Future, num::NonZeroU32, rc::Rc};
+use std::{
+    future::Future,
+    num::NonZeroU32,
+    pin::Pin,
+    rc::Rc,
+    task::{ready, Context, Poll},
+};
 
 use derivative::Derivative;
-use futures_core::Stream;
-use futures_util::{pin_mut, FutureExt};
 use wl_protocol::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
+    connection::{
+        event_handler::{Abortable, AutoAbortHandle},
+        traits::{Client, EventHandlerAction, LockableStore, Store, WriteMessage},
+    },
     error::Error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta},
 };
 
 use crate::{
-    shell::{
-        surface::LayoutEvent,
-        xdg::{self, XdgShell},
-        HasShell, Shell, ShellOf,
-    },
-    utils::{
-        geometry::{Extent, Point, Rectangle},
-        AutoAbort,
-    },
+    shell::{surface::LayoutEvent, xdg, HasShell, Shell, ShellOf},
+    utils::geometry::{Extent, Point, Rectangle},
 };
 #[derive(Debug)]
 pub struct WmBase;
@@ -52,60 +52,13 @@ where
 
     fn get_xdg_surface(
         ctx: &mut Ctx,
-        object_id: u32,
+        _object_id: u32,
         id: wl_types::NewId,
         surface: wl_types::Object,
     ) -> Self::GetXdgSurfaceFut<'_> {
         async move {
-            async fn handle_layout_event<Object: ObjectMeta + 'static, Sh: XdgShell>(
-                object_id: u32,
-                objects: impl LockableStore<Object>,
-                mut conn: impl WriteMessage + Unpin,
-                rx: impl Stream<Item = LayoutEvent>,
-            ) {
-                use futures_util::stream::StreamExt;
-
-                pin_mut!(rx);
-                while let Some(event) = rx.next().await {
-                    let objects = objects.lock().await;
-                    use crate::shell::xdg::{Surface as XdgSurface, TopLevel};
-                    let surface = objects.get(object_id).unwrap();
-                    let surface = surface
-                        .cast::<crate::objects::compositor::Surface<Sh>>()
-                        .unwrap();
-                    if let Some(size) = event.0.extent {
-                        if let Some(role_object_id) =
-                            surface.inner.role::<TopLevel>().map(|r| r.object_id)
-                        {
-                            conn.send(role_object_id, xdg_toplevel::events::Configure {
-                                height: size.h as i32,
-                                width:  size.w as i32,
-                                states: &[],
-                            })
-                            .await
-                            .unwrap();
-                        } else {
-                            // TODO: handle PopUp role
-                            unimplemented!()
-                        }
-                    }
-                    // Send xdg_surface.configure event
-                    let (serial, role_object_id) = {
-                        let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
-                        let serial = role.serial;
-                        role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
-                        role.pending_serial.push_back(serial);
-                        (serial, role.object_id)
-                    };
-                    conn.send(role_object_id, xdg_surface::events::Configure {
-                        serial: serial.get(),
-                    })
-                    .await
-                    .unwrap();
-                    conn.flush().await.unwrap();
-                }
-            }
-            let mut objects = ctx.objects().lock().await;
+            let objects = ctx.objects().clone();
+            let mut objects = objects.lock().await;
             let surface_id = surface.0;
             let surface_obj = objects
                 .get(surface_id)
@@ -116,26 +69,12 @@ where
                 .inner
                 .clone();
 
-            let mut shell = ctx.server_context().shell().borrow_mut();
+            let server_ctx = ctx.server_context().clone();
+            let mut shell = server_ctx.shell().borrow_mut();
             let inserted = objects.try_insert_with(id.0, || {
                 let role = crate::shell::xdg::Surface::new(id);
                 surface.set_role(role, &mut shell);
-                let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
-                let (fut, handle) = futures_util::future::abortable(handle_layout_event::<
-                    _,
-                    ShellOf<Ctx::ServerContext>,
-                >(
-                    surface_id,
-                    ctx.objects().clone(),
-                    ctx.connection().clone(),
-                    rx,
-                ));
-                ctx.spawn(fut.map(|_| ()));
-                Surface {
-                    inner:      surface,
-                    event_task: AutoAbort::new(handle),
-                }
-                .into()
+                Surface { inner: surface }.into()
             });
             if !inserted {
                 Err(Error::IdExists(id.0))
@@ -154,11 +93,80 @@ where
     }
 }
 
+struct LayoutEventHandler {
+    surface_object_id: u32,
+}
+use wl_server::connection::traits::EventHandler;
+impl<Ctx: Client> EventHandler<Ctx> for LayoutEventHandler
+where
+    Ctx::ServerContext: HasShell,
+    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
+{
+    type Message = LayoutEvent;
+
+    fn poll_handle_event(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        objects: &mut Ctx::ObjectStore,
+        connection: &mut Ctx::Connection,
+        server_context: &Ctx::ServerContext,
+        message: &mut Self::Message,
+    ) -> Poll<Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>> {
+        tracing::debug!(?message, "LayoutEventHandler::poll_handle_event");
+        let objects = objects.try_lock().unwrap();
+        use crate::shell::{
+            surface::Role,
+            xdg::{Surface as XdgSurface, TopLevel},
+        };
+        let surface = objects.get(self.surface_object_id).unwrap();
+        let surface = surface
+            .cast::<crate::objects::compositor::Surface<<Ctx::ServerContext as HasShell>::Shell>>()
+            .unwrap();
+        let mut connection = Pin::new(connection);
+        if let Some(size) = message.0.extent {
+            if let Some(role_object_id) = surface.inner.role::<TopLevel>().map(|r| {
+                assert!(
+                    <TopLevel as Role<<Ctx::ServerContext as HasShell>::Shell>>::is_active(&r),
+                    "TopLevel role no longer active"
+                );
+                r.object_id
+            }) {
+                let message = xdg_toplevel::events::Configure {
+                    height: size.h as i32,
+                    width:  size.w as i32,
+                    states: &[],
+                };
+                ready!(connection.as_mut().poll_reserve(cx, &message))?;
+                connection.as_mut().start_send(role_object_id, message);
+            } else {
+                // TODO: handle PopUp role
+                unimplemented!()
+            }
+
+            // Remove the extent so we don't send the same event twice
+            message.0.extent = None;
+        }
+        // Send xdg_surface.configure event
+        let (serial, role_object_id) = {
+            let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
+            let serial = role.serial;
+            role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
+            role.pending_serial.push_back(serial);
+            (serial, role.object_id)
+        };
+        let message = xdg_surface::events::Configure {
+            serial: serial.get(),
+        };
+        ready!(connection.as_mut().poll_reserve(cx, &message))?;
+        connection.start_send(role_object_id, message);
+        Poll::Ready(Ok(EventHandlerAction::Keep))
+    }
+}
+
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<S: Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<S>>,
-    event_task:       AutoAbort,
 }
 
 #[wayland_object]
@@ -197,7 +205,8 @@ where
         id: wl_types::NewId,
     ) -> Self::GetToplevelFut<'_> {
         async move {
-            let mut objects = ctx.objects().lock().await;
+            let objects = ctx.objects().clone();
+            let mut objects = objects.lock().await;
             let surface = objects
                 .get(object_id)
                 .unwrap()
@@ -208,9 +217,20 @@ where
             let inserted = objects.try_insert_with(id.0, || {
                 let base_role = surface.role::<xdg::Surface>().unwrap().clone();
                 let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
-                let mut shell = ctx.server_context().shell().borrow_mut();
-                surface.set_role(role, &mut shell);
-                TopLevel(surface).into()
+                {
+                    let mut shell = ctx.server_context().shell().borrow_mut();
+                    surface.set_role(role, &mut shell);
+                }
+
+                // Start listening to layout events
+                let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
+                let (handler, abort) = Abortable::new(LayoutEventHandler {
+                    surface_object_id: surface.object_id(),
+                });
+                ctx.add_event_handler(rx, handler);
+                // `abort.auto_abort()` creates a handle which will stop the event handler when
+                // the TopLevel object is destroyed.
+                TopLevel(surface, abort.auto_abort()).into()
             });
             if !inserted {
                 Err(Error::IdExists(id.0))
@@ -261,7 +281,10 @@ where
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct TopLevel<S: Shell>(pub(crate) Rc<crate::shell::surface::Surface<S>>);
+pub struct TopLevel<S: Shell>(
+    pub(crate) Rc<crate::shell::surface::Surface<S>>,
+    AutoAbortHandle,
+);
 
 #[wayland_object]
 impl<Ctx: Client, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S>

@@ -6,7 +6,7 @@ use std::{
 
 use hashbrown::HashMap;
 use wl_server::{
-    connection::traits::{WriteMessage, WriteMessageExt},
+    connection::traits::WriteMessage,
     events::{BroadcastEventSource, EventSource},
 };
 

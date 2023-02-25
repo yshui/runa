@@ -1,4 +1,5 @@
 use thiserror::Error;
+use wl_protocol::wayland::wl_display::v1 as wl_display;
 
 use crate::objects::DISPLAY_ID;
 
@@ -32,6 +33,16 @@ pub enum Error {
 impl From<std::convert::Infallible> for Error {
     fn from(f: std::convert::Infallible) -> Self {
         match f {}
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
+    fn from(e: Box<dyn std::error::Error + Send + Sync + 'static>) -> Self {
+        Self::Custom {
+            object_id_and_code: Some((DISPLAY_ID, wl_display::enums::Error::Implementation as u32)),
+            fatal:              true,
+            source:             e,
+        }
     }
 }
 

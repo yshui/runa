@@ -1,12 +1,16 @@
-use std::future::Future;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{ready, Poll},
+};
 
-use futures_util::{pin_mut, FutureExt};
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
+    connection::traits::{
+        Client, EventHandler, WriteMessage, EventHandlerAction,
+    },
     events::EventSource,
-    objects::ObjectMeta,
     server::{GlobalsUpdate, Server},
 };
 
@@ -129,80 +133,77 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
+            use crate::server::Globals;
             let rx = client.server_context().globals().borrow().subscribe();
-            let (fut, handle) = futures_util::future::abortable(handle_registry_events(
-                object_id,
-                client.server_context().clone(),
-                client.connection().clone(),
-                rx,
-            ));
-            client.spawn(fut.map(|_| ()));
-            let objects = client.objects();
-            let mut objects = objects.lock().await;
-            let object = objects
-                .get_mut(object_id)
-                .unwrap()
-                .cast_mut::<Self::Object>()
-                .unwrap();
-            object.0 = Some(handle);
+            let mut connection = client.connection().clone();
+            // Send existing globals
+            let globals: Vec<_> = client
+                .server_context()
+                .globals()
+                .borrow()
+                .iter()
+                .map(|(id, global)| (id, global.clone()))
+                .collect();
+
+            for (id, global) in globals {
+                let interface = std::ffi::CString::new(global.interface()).unwrap();
+                let version = global.version();
+                connection
+                    .send(object_id, wl_registry::events::Global {
+                        name: id,
+                        interface: wl_types::Str(interface.as_c_str()),
+                        version,
+                    })
+                    .await
+                    .unwrap()
+            }
+            connection.flush().await.unwrap();
+            client.add_event_handler(rx, RegistryEventHandler {
+                registry_id: object_id,
+            });
             Ok(())
         }
     }
 }
 
-async fn handle_registry_events<SC: Server, C: WriteMessage + Unpin>(
+struct RegistryEventHandler {
     registry_id: u32,
-    server_context: SC,
-    mut connection: C,
-    rx: impl futures_util::Stream<Item = GlobalsUpdate<<SC as Server>::Global>>,
-) {
-    use futures_lite::StreamExt as _;
+}
 
-    // Allocation: Global addition and removal should be rare.
-    use crate::server::Globals;
-    // Send existing globals
-    let globals: Vec<_> = server_context
-        .globals()
-        .borrow()
-        .iter()
-        .map(|(id, global)| (id, global.clone()))
-        .collect();
+impl<Ctx: Client> EventHandler<Ctx> for RegistryEventHandler {
+    type Message = GlobalsUpdate<<Ctx::ServerContext as Server>::Global>;
 
-    for (id, global) in globals {
-        let interface = std::ffi::CString::new(global.interface()).unwrap();
-        let version = global.version();
-        connection
-            .send(registry_id, wl_registry::events::Global {
-                name: id,
-                interface: wl_types::Str(interface.as_c_str()),
-                version,
-            })
-            .await
-            .unwrap()
-    }
-    connection.flush().await.unwrap();
-    pin_mut!(rx);
-    loop {
-        match rx.next().await.unwrap() {
+    fn poll_handle_event(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        _objects: &mut Ctx::ObjectStore,
+        connection: &mut Ctx::Connection,
+        _server_context: &Ctx::ServerContext,
+        message: &mut Self::Message,
+    ) -> std::task::Poll<
+        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
+    > {
+        let mut connection = Pin::new(connection);
+        match message {
             GlobalsUpdate::Removed(name) => {
-                connection
-                    .send(registry_id, wl_registry::events::GlobalRemove { name })
-                    .await
-                    .unwrap();
+                let message = wl_registry::events::GlobalRemove { name: *name };
+                ready!(connection.as_mut().poll_reserve(cx, &message))?;
+                connection.start_send(self.registry_id, message);
             },
             GlobalsUpdate::Added(name, global) => {
                 let interface = std::ffi::CString::new(global.interface()).unwrap();
                 let version = global.version();
-                connection
-                    .send(registry_id, wl_registry::events::Global {
-                        name,
-                        interface: wl_types::Str(interface.as_c_str()),
-                        version,
-                    })
-                    .await
-                    .unwrap();
+                let message = wl_registry::events::Global {
+                    name: *name,
+                    interface: wl_types::Str(interface.as_c_str()),
+                    version,
+                };
+                ready!(connection.as_mut().poll_reserve(cx, &message))?;
+                connection.start_send(self.registry_id, message)
             },
         }
-        connection.flush().await.unwrap();
+
+        // Client can't drop the registry object, so we will never stop this listener
+        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }

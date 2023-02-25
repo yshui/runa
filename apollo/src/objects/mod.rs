@@ -1,10 +1,14 @@
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
+use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_output::v4 as wl_output,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessageExt},
+    connection::{
+        event_handler::AutoAbortHandle,
+        traits::{Client, LockableStore, Store, WriteMessage},
+    },
     objects::{wayland_object, DISPLAY_ID},
 };
 
@@ -47,15 +51,12 @@ where
 
 #[derive(Debug)]
 pub struct Output {
-    pub(crate) output:     Option<WeakPtr<ShellOutput>>,
-    pub(crate) event_task: Option<futures_util::future::AbortHandle>,
-}
-impl Drop for Output {
-    fn drop(&mut self) {
-        if let Some(handle) = self.event_task.take() {
-            handle.abort();
-        }
-    }
+    /// The corresponding shell output object.
+    pub(crate) output:              WeakPtr<ShellOutput>,
+    /// A map of all outputs to their object ids in the client owning this
+    /// output object.
+    pub(crate) all_outputs: Option<Rc<RefCell<HashMap<WeakPtr<ShellOutput>, HashSet<u32>>>>>,
+    pub(crate) event_handler_abort: Option<AutoAbortHandle>,
 }
 
 #[wayland_object]
@@ -70,12 +71,23 @@ where
 
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
+            use wl_server::objects::ObjectMeta;
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
             let mut conn = ctx.connection().clone();
-            let _ = objects.remove(object_id).unwrap();
-            conn
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
+
+            // Remove ourself from all_outputs
+            let mut object = objects.remove(object_id).unwrap();
+            let object = object.cast_mut::<Self>().unwrap();
+            let all_outputs = object.all_outputs.take().unwrap();
+            let mut all_outputs = all_outputs.borrow_mut();
+            let all_outputs_entry = all_outputs.get_mut(&object.output).unwrap();
+            all_outputs_entry.remove(&object_id);
+            if all_outputs_entry.is_empty() {
+                all_outputs.remove(&object.output);
+            }
+
+            conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
                 .await?;
             Ok(())
         }

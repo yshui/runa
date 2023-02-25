@@ -13,11 +13,15 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{cell::RefCell, future::Future, rc::Rc};
+use std::{
+    cell::RefCell,
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    task::{ready, Poll},
+};
 
-use async_lock::Mutex;
 use derivative::Derivative;
-use futures_util::{pin_mut, FutureExt};
 use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
@@ -25,7 +29,9 @@ use wl_protocol::wayland::{
     wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
+    connection::traits::{
+        Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage,
+    },
     error,
     events::EventSource,
     objects::{wayland_object, ObjectMeta, DISPLAY_ID},
@@ -35,10 +41,11 @@ use crate::{
     shell::{
         self,
         buffers::HasBuffer,
+        output::Output as ShellOutput,
         surface::{roles, OutputEvent},
         HasShell, Shell, ShellOf,
     },
-    utils::{geometry::Point, AutoAbort, WeakPtr},
+    utils::{geometry::Point, WeakPtr},
 };
 
 /// A set of buffers that are shared among all the surfaces of a client, used by
@@ -47,10 +54,9 @@ use crate::{
 pub(crate) struct SharedSurfaceBuffers {
     /// The set of outputs that overlap with the surface, used by the
     /// output_changed event handler.
-    pub(crate) new_outputs:   HashSet<WeakPtr<shell::output::Output>>,
-    /// The set of outputs that are bound to the client, used by The
-    /// output_changed event handler.
-    pub(crate) bound_outputs: HashMap<WeakPtr<shell::output::Output>, u32>,
+    pub(crate) new_outputs: HashSet<WeakPtr<shell::output::Output>>,
+    pub(crate) deleted:     Vec<u32>,
+    pub(crate) added:       Vec<u32>,
 }
 
 #[derive(Derivative)]
@@ -60,7 +66,6 @@ pub struct Surface<Shell: shell::Shell> {
     /// A queue of surface state tokens used for surface commits and
     /// destructions.
     scratch_buffer:   Rc<RefCell<Vec<Shell::Token>>>,
-    event_task:       AutoAbort,
 }
 
 fn deallocate_surface<Ctx: Client>(
@@ -145,7 +150,7 @@ where
                 let mut shell = ctx.server_context().shell().borrow_mut();
                 let state = surface.pending_mut(&mut shell);
                 state.add_frame_callback(callback.0);
-                wl_server::objects::Callback.into()
+                wl_server::objects::Callback::default().into()
             });
             if !inserted {
                 Err(error::Error::IdExists(callback.0))
@@ -334,10 +339,9 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct CompositorInner {
-    _event_task:            Rc<AutoAbort>,
-    shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
+    shared_surface_buffers: Rc<RefCell<SharedSurfaceBuffers>>,
 }
 
 /// The reference implementation of wl_compositor
@@ -347,10 +351,9 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(handle: futures_util::future::AbortHandle) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Some(CompositorInner {
-                _event_task:            Rc::new(AutoAbort::new(handle)),
                 shared_surface_buffers: Default::default(),
             }),
         }
@@ -378,56 +381,6 @@ where
         id: wl_types::NewId,
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
-
-        async fn handle_surface_output_event<Obj: ObjectMeta + 'static>(
-            object_id: u32,
-            objects: impl LockableStore<Obj>,
-            mut conn: impl WriteMessage + Unpin,
-            shared_surface_buffers: Rc<Mutex<SharedSurfaceBuffers>>,
-            rx: impl futures_util::Stream<Item = OutputEvent>,
-        ) {
-            use futures_util::StreamExt;
-            let mut current_outputs: HashSet<WeakPtr<crate::shell::output::Output>> =
-                HashSet::new();
-            pin_mut!(rx);
-            while let Some(event) = rx.next().await {
-                // Lock order: object store -> surface buffers
-                let objects = objects.lock().await;
-                let mut buffers = shared_surface_buffers.lock().await;
-                use wl_server::connection::traits::StoreExt;
-                // Update list of bound output objects.
-                for (id, output_obj) in objects.by_type::<crate::objects::Output>() {
-                    // Skip "incomplete" output objects for which we haven't sent the initial enter
-                    // events yet.
-                    let Some(output) = output_obj.output.clone() else { continue };
-                    buffers.bound_outputs.insert(output, id);
-                }
-                buffers.new_outputs.extend(event.0.borrow().iter().cloned());
-                for deleted in current_outputs.difference(&buffers.new_outputs) {
-                    if let Some(id) = buffers.bound_outputs.get(deleted) {
-                        conn.send(object_id, wl_surface::events::Leave {
-                            output: wl_types::Object(*id),
-                        })
-                        .await
-                        .unwrap();
-                    }
-                }
-                for added in buffers.new_outputs.difference(&current_outputs) {
-                    if let Some(id) = buffers.bound_outputs.get(added) {
-                        conn.send(object_id, wl_surface::events::Enter {
-                            output: wl_types::Object(*id),
-                        })
-                        .await
-                        .unwrap();
-                    }
-                }
-                current_outputs.clear();
-                current_outputs.extend(buffers.new_outputs.iter().cloned());
-                buffers.new_outputs.clear();
-                buffers.bound_outputs.clear();
-                conn.flush().await.unwrap();
-            }
-        }
         async move {
             let objects = ctx.objects();
             let mut objects = objects.lock().await;
@@ -449,7 +402,6 @@ where
                 shell.post_commit(None, current);
 
                 // Copy the shared scratch_buffer from an existing surface object
-                use wl_server::connection::traits::StoreExt;
                 let scratch_buffer = objects
                     .by_type::<Surface<ShellOf<Ctx::ServerContext>>>()
                     .next()
@@ -465,26 +417,27 @@ where
                     .expect("missing shared buffers")
                     .shared_surface_buffers
                     .clone();
-                let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
-                let conn = ctx.connection().clone();
-                let objects2 = ctx.objects().clone();
-                let (fut, handle) = futures_util::future::abortable(handle_surface_output_event(
-                    id.0,
-                    objects2,
-                    conn,
-                    shared_surface_buffers,
-                    rx,
-                ));
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
+                let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
                 objects
                     .insert(id.0, Surface {
                         inner: surface,
                         scratch_buffer,
-                        event_task: AutoAbort::new(handle),
                     })
                     .unwrap();
+                let all_outputs = objects
+                    .by_type::<super::Output>()
+                    .map(|(_, obj)| obj.all_outputs.clone().unwrap())
+                    .next();
                 drop(objects); // unlock
-                ctx.spawn(fut.map(|_| ()));
+                drop(shell);
+                ctx.add_event_handler(rx, OutputChangedEventHandler {
+                    current_outputs: Default::default(),
+                    object_id: id.0,
+                    shared_surface_buffers,
+                    in_progress: false,
+                    all_outputs,
+                });
                 Ok(())
             } else {
                 Err(error::Error::IdExists(id.0))
@@ -498,6 +451,118 @@ where
         id: wl_types::NewId,
     ) -> Self::CreateRegionFut<'_> {
         async { unimplemented!() }
+    }
+}
+
+type AllOutputs = HashMap<WeakPtr<ShellOutput>, HashSet<u32>>;
+struct OutputChangedEventHandler {
+    /// Object id of the surface
+    object_id:              u32,
+    /// Current outputs that overlap with the surface
+    current_outputs:        HashSet<WeakPtr<ShellOutput>>,
+    /// A set of buffers shared between all surfaces for calculating output
+    /// differences. To avoid allocating multiple buffers.
+    shared_surface_buffers: Rc<RefCell<SharedSurfaceBuffers>>,
+    /// All bound output objects of this client context. None if the client has
+    /// no output objects bound.
+    all_outputs:            Option<Rc<RefCell<AllOutputs>>>,
+    /// Whether the messages have been generated and sending is in progress
+    in_progress:            bool,
+}
+
+impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
+    type Message = OutputEvent;
+
+    fn poll_handle_event(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        objects: &mut <Ctx as Client>::ObjectStore,
+        connection: &mut <Ctx as Client>::Connection,
+        server_context: &<Ctx as Client>::ServerContext,
+        message: &mut Self::Message,
+    ) -> std::task::Poll<
+        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
+    > {
+        let Self {
+            object_id,
+            current_outputs,
+            shared_surface_buffers,
+            all_outputs,
+            in_progress,
+        } = self.get_mut();
+
+        let mut connection = Pin::new(connection);
+        let objects = objects.try_lock().unwrap();
+
+        // Usually we would check if the object is still alive here, and stop the event
+        // handler if it is not. But when a surface object dies, its event
+        // stream will terminate, and the event handler will be stopped
+        // automatically in that case.
+
+        let mut buffers = shared_surface_buffers.borrow_mut();
+        let SharedSurfaceBuffers {
+            new_outputs,
+            deleted: deleted_buffer,
+            added: added_buffer,
+        } = &mut *buffers;
+        // Calculate the difference between the current outputs and the new outputs,
+        // store message that will be sent to the client in the buffers. Do this
+        // only once per message.
+        if !*in_progress {
+            let mut message = message.0.borrow_mut();
+            new_outputs.extend(message.iter().cloned());
+            message.clear();
+
+            if all_outputs.is_none() {
+                *all_outputs = objects
+                    .by_type::<crate::objects::Output>()
+                    .map(|(_, obj)| obj.all_outputs.clone().unwrap())
+                    .next();
+            }
+            let Some(all_outputs) = all_outputs.as_ref() else {
+                // This client has no bound output object, so just update the current outputs, and we
+                // will be done.
+                std::mem::swap(current_outputs, new_outputs);
+                new_outputs.clear();
+                return Poll::Ready(Ok(EventHandlerAction::Keep));
+            };
+
+            // Otherwise calculate the difference between the current outputs and the new
+            // outputs
+            let all_outputs = all_outputs.borrow();
+            for deleted in current_outputs.difference(new_outputs) {
+                if let Some(ids) = all_outputs.get(deleted) {
+                    deleted_buffer.extend(ids.iter().copied());
+                }
+            }
+            for added in new_outputs.difference(current_outputs) {
+                if let Some(id) = all_outputs.get(added) {
+                    added_buffer.extend(id.iter().copied());
+                }
+            }
+            std::mem::swap(current_outputs, new_outputs);
+            new_outputs.clear();
+            *in_progress = true;
+        }
+
+        while let Some(id) = deleted_buffer.last() {
+            let message = wl_surface::events::Leave {
+                output: wl_types::Object(*id),
+            };
+            ready!(connection.as_mut().poll_reserve(cx, &message))?;
+            connection.as_mut().start_send(*object_id, message);
+            deleted_buffer.pop();
+        }
+        while let Some(id) = added_buffer.last() {
+            let message = wl_surface::events::Enter {
+                output: wl_types::Object(*id),
+            };
+            ready!(connection.as_mut().poll_reserve(cx, &message))?;
+            connection.as_mut().start_send(*object_id, message);
+            added_buffer.pop();
+        }
+        *in_progress = false;
+        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }
 

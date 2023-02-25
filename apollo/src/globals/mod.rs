@@ -1,25 +1,28 @@
 use std::{
     future::Future,
+    pin::Pin,
     rc::{Rc, Weak},
+    task::{ready, Poll},
 };
 
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use futures_util::{pin_mut, Stream};
-use hashbrown::HashSet;
+use futures_util::pin_mut;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
     wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
-    connection::traits::{Client, LockableStore, Store, StoreExt, WriteMessage, WriteMessageExt},
+    connection::{
+        event_handler::Abortable,
+        traits::{Client, EventHandler, EventHandlerAction, LockableStore, Store, WriteMessage},
+    },
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
     objects::ObjectMeta,
     renderer_capability::RendererCapability,
-    server::Server,
 };
 
 use crate::{
@@ -65,54 +68,59 @@ where
             let mut objects = client.objects().lock().await;
             // Check if we already have a compositor bound, and clone their render event
             // handler abort handle if so; otherwise start the event handler task.
-            let (fut, inner) = if let Some(compositor_inner) = objects
+            let other_compositor = objects
                 .by_type::<Self::Object>()
                 .filter_map(|(_, obj)| obj.is_complete().then_some(obj)) // skip incomplete compositor objects
                 .next()
-                .cloned()
-            {
-                (None, compositor_inner)
-            } else {
-                let rx = client.server_context().shell().borrow().subscribe();
-                let (objects, server, conn) = (
-                    client.objects().clone(),
-                    client.server_context().clone(),
-                    client.connection().clone(),
-                );
-                let (fut, handle) = futures_util::future::abortable(async move {
-                    handle_render_event(objects, server, conn, rx).await;
-                });
-                (Some(fut), Self::Object::new(handle))
-            };
+                .cloned();
             let this = objects
                 .get_mut(object_id)
                 .unwrap()
                 .cast_mut::<Self::Object>()
                 .unwrap();
-            *this = inner;
-            if let Some(fut) = fut {
-                use futures_util::FutureExt;
-                client.spawn(fut.map(|_| ()));
-            }
+            if let Some(compositor) = other_compositor {
+                *this = compositor;
+            } else {
+                *this = Self::Object::new();
+                drop(objects);
+
+                // Only start the event handler for the first completed compositor object bound.
+                let rx = client.server_context().shell().borrow().subscribe();
+                client.add_event_handler(rx, RenderEventHandler {
+                    callbacks_to_fire: Vec::new(),
+                });
+            };
+
             Ok(())
         }
     }
 }
 
-async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
-    objects: impl LockableStore<Obj>,
-    server_context: impl Server + HasShell<Shell = S>,
-    mut conn: impl WriteMessage + Unpin,
-    rx: impl Stream<Item = ShellEvent>,
-) {
-    use futures_util::StreamExt;
-    let mut callbacks_to_fire: HashSet<u32> = HashSet::new();
-    pin_mut!(rx);
-    while let Some(event) = rx.next().await {
-        assert!(matches!(event, ShellEvent::Render));
+struct RenderEventHandler {
+    callbacks_to_fire: Vec<u32>,
+}
+
+impl<S: Shell, Ctx: Client> EventHandler<Ctx> for RenderEventHandler
+where
+    Ctx::ServerContext: HasShell<Shell = S>,
+{
+    type Message = ShellEvent;
+
+    fn poll_handle_event(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        objects: &mut <Ctx as Client>::ObjectStore,
+        connection: &mut <Ctx as Client>::Connection,
+        server_context: &<Ctx as Client>::ServerContext,
+        message: &mut Self::Message,
+    ) -> Poll<
+        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
+    > {
+        assert!(matches!(message, ShellEvent::Render));
         let time = crate::time::elapsed().as_millis() as u32;
-        let mut objects = objects.lock().await;
-        {
+        let mut objects = objects.try_lock().unwrap();
+        if self.callbacks_to_fire.is_empty() {
+            // First collect all callbacks we need to fire
             let shell = server_context.shell().borrow();
             // Send frame callback for all current surface states.
             for (id, surface) in objects.by_type::<crate::objects::compositor::Surface<S>>() {
@@ -142,7 +150,7 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                         state.frame_callback_end,
                         first_frame_callback_index
                     );
-                    callbacks_to_fire.extend(
+                    self.callbacks_to_fire.extend(
                         surface.frame_callbacks().borrow_mut().drain(
                             ..(state.frame_callback_end - first_frame_callback_index) as usize,
                         ),
@@ -151,14 +159,20 @@ async fn handle_render_event<S: Shell, Obj: ObjectMeta + 'static>(
                 }
             }
         }
-        for &callback in &callbacks_to_fire {
+        while let Some(&callback) = self.callbacks_to_fire.last() {
             use std::ops::DerefMut;
-            wl_server::objects::Callback::fire(callback, time, objects.deref_mut(), &mut conn)
-                .await
-                .unwrap();
+            ready!(wl_server::objects::Callback::poll_fire(
+                cx,
+                callback,
+                time,
+                objects.deref_mut(),
+                Pin::new(&mut *connection)
+            ))?;
+            self.callbacks_to_fire.pop();
         }
-        conn.flush().await.unwrap();
-        callbacks_to_fire.clear();
+
+        // We can only ever return Ready iff callbacks_to_fire is empty.
+        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }
 
@@ -228,12 +242,11 @@ where
         async move {
             // Send known buffer formats
             for format in formats {
-                conn
-                    .send(
-                        object_id,
-                        wl_shm::Event::Format(wl_shm::events::Format { format }),
-                    )
-                    .await?;
+                conn.send(
+                    object_id,
+                    wl_shm::Event::Format(wl_shm::events::Format { format }),
+                )
+                .await?;
             }
             Ok(())
         }
@@ -241,10 +254,15 @@ where
 }
 
 #[derive(Debug)]
-pub struct Output(pub(crate) Rc<ShellOutput>);
+pub struct Output {
+    pub(crate) shell_output: Rc<ShellOutput>,
+}
+
 impl Output {
     pub fn new(output: Rc<ShellOutput>) -> Self {
-        Self(output)
+        Self {
+            shell_output: output,
+        }
     }
 }
 impl_global_for!(Output);
@@ -257,8 +275,9 @@ impl GlobalMeta for Output {
 
     fn new_object(&self) -> Self::Object {
         crate::objects::Output {
-            output:     None,
-            event_task: None,
+            output:              Rc::downgrade(&self.shell_output).into(),
+            all_outputs:         None,
+            event_handler_abort: None,
         }
     }
 
@@ -281,14 +300,12 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            use futures_util::FutureExt;
-            let rx = self.0.subscribe();
-            let objects = client.objects();
+            let objects = client.objects().clone();
             let mut objects = objects.lock().await;
-            let output: WeakPtr<_> = Rc::downgrade(&self.0).into();
+            let output: WeakPtr<_> = Rc::downgrade(&self.shell_output).into();
             let mut conn = client.connection().clone();
             // Send properties of this output
-            self.0.send_all(&mut conn, object_id).await?;
+            self.shell_output.send_all(&mut conn, object_id).await?;
             // Send enter events for surfaces already on this output
             let messages: Vec<_> = {
                 let surfaces =
@@ -309,25 +326,36 @@ where
             for (id, message) in messages {
                 conn.send(id, message).await.unwrap();
             }
-            // Sent all the enter events before finailzing the object, this is to
-            // avoid race conditions. For example, if we send the enter events
-            // _after_ we finalized the object creation, surface event handler
-            // could receive surface output change events and sent more
-            // up-to-date enter events before we do, and after that we would send
-            // the outdated enter events, and confuse the client.
+
+            // If there is an output object already bound (of any shell output), we can get
+            // the set of all bound outputs from it.
+            let all_outputs = objects
+                .by_type::<Self::Object>()
+                .filter_map(|(id, o)| (id != object_id).then(|| o.all_outputs.clone().unwrap()))
+                .next()
+                .unwrap_or_default();
+
+            // Start a new event handler for this shell output
+            let rx = self.shell_output.subscribe();
+            let handler = OutputChangeEventHandler { object_id };
+            let (handler, abort) = Abortable::new(handler);
+            let auto_abort = abort.auto_abort();
+            client.add_event_handler(rx, handler);
+
+            // Add this output to the set of all outputs
+            all_outputs
+                .borrow_mut()
+                .entry(output)
+                .or_default()
+                .insert(object_id);
             let this = objects
                 .get_mut(object_id)
                 .unwrap()
                 .cast_mut::<Self::Object>()
                 .unwrap();
-            let output2 = output.clone();
-            let connection = client.connection().clone();
-            let (fut, abort) = futures_util::future::abortable(async move {
-                handle_output_change_event(object_id, output2, connection, rx).await
-            });
-            this.event_task = Some(abort);
-            this.output = Some(output.clone());
-            client.spawn(fut.map(|_| ()));
+            // This will automatically stop the event handler when the output is destroyed
+            this.event_handler_abort = Some(auto_abort);
+            this.all_outputs = Some(all_outputs);
 
             Ok(())
         }
@@ -336,37 +364,48 @@ where
 
 use crate::shell::output::Output as ShellOutput;
 
-async fn handle_output_change_event(
+struct OutputChangeEventHandler {
     object_id: u32,
-    output: WeakPtr<crate::shell::output::Output>,
-    mut connection: impl WriteMessage + Unpin,
-    mut rx: impl futures_util::Stream<Item = OutputChangeEvent> + Unpin,
-) {
-    use futures_util::StreamExt;
-    // Send events for changes on this output
-    while let Some(event) = rx.next().await {
-        let Some(output_global) = Weak::upgrade(&event.output) else { continue };
-        if event.change.contains(OutputChange::GEOMETRY) {
-            output_global
-                .send_geometry(&mut connection, object_id)
-                .await
-                .unwrap();
+}
+
+impl<Ctx: Client> EventHandler<Ctx> for OutputChangeEventHandler {
+    type Message = OutputChangeEvent;
+
+    fn poll_handle_event(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        objects: &mut Ctx::ObjectStore,
+        connection: &mut Ctx::Connection,
+        server_context: &Ctx::ServerContext,
+        message: &mut Self::Message,
+    ) -> Poll<
+        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
+    > {
+        // Send events for changes on this output
+        // If the shell output object is gone, its event stream should have stopped and
+        // we should not have received this event.
+        let shell_output = Weak::upgrade(&message.output).unwrap();
+        if message.change.contains(OutputChange::GEOMETRY) {
+            let fut = shell_output.send_geometry(&mut *connection, self.object_id);
+            pin_mut!(fut);
+            ready!(fut.poll(cx))?;
+            message.change.remove(OutputChange::GEOMETRY);
         }
-        if event.change.contains(OutputChange::NAME) {
-            output_global
-                .send_name(&mut connection, object_id)
-                .await
-                .unwrap();
+        if message.change.contains(OutputChange::NAME) {
+            let fut = shell_output.send_name(&mut *connection, self.object_id);
+            pin_mut!(fut);
+            ready!(fut.poll(cx))?;
+            message.change.remove(OutputChange::NAME);
         }
-        if event.change.contains(OutputChange::SCALE) {
-            output_global
-                .send_scale(&mut connection, object_id)
-                .await
-                .unwrap();
+        if message.change.contains(OutputChange::SCALE) {
+            let fut = shell_output.send_scale(&mut *connection, self.object_id);
+            pin_mut!(fut);
+            ready!(fut.poll(cx))?;
+            message.change.remove(OutputChange::SCALE);
         }
-        ShellOutput::send_done(&mut connection, object_id)
-            .await
-            .unwrap();
-        connection.flush().await.unwrap();
+        let fut = ShellOutput::send_done(connection, self.object_id);
+        pin_mut!(fut);
+        ready!(fut.poll(cx))?;
+        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }

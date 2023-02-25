@@ -3,7 +3,7 @@
 //! well as a `InterfaceMeta` trait to provide information about the interface,
 //! and allowing them to be cast into trait objects and stored together.
 
-use std::{convert::Infallible, future::Future};
+use std::{convert::Infallible, future::Future, task::{Poll, ready, Context}, pin::Pin};
 
 use ::wl_protocol::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
@@ -12,7 +12,7 @@ use tracing::debug;
 pub use wl_macros::{wayland_object, Object};
 
 use crate::{
-    connection::traits::{Client, LockableStore, Store, WriteMessage, WriteMessageExt},
+    connection::traits::{Client, LockableStore, Store, WriteMessage},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -211,7 +211,9 @@ where
 }
 
 #[derive(Debug, Default)]
-pub struct Callback;
+pub struct Callback {
+    fired: bool,
+}
 impl ObjectMeta for Callback {
     fn interface(&self) -> &'static str {
         wl_protocol::wayland::wl_callback::v1::NAME
@@ -229,6 +231,34 @@ impl<Ctx> Object<Ctx> for Callback {
 }
 
 impl Callback {
+    pub fn poll_fire<O: ObjectMeta + 'static>(
+        cx: &mut Context<'_>,
+        object_id: u32,
+        data: u32,
+        objects: &mut impl Store<O>,
+        mut conn: Pin<&mut impl WriteMessage>,
+    ) -> Poll<std::io::Result<()>> {
+        let obj = objects.get_mut(object_id).unwrap();
+        let interface = obj.interface();
+        let Some(this) = obj.cast_mut::<Self>() else {
+            panic!("object is not callback, it's {interface}")
+        };
+        if !this.fired {
+            let message = wl_protocol::wayland::wl_callback::v1::events::Done {
+                callback_data: data,
+            };
+            ready!(conn.as_mut().poll_reserve(cx, &message))?;
+            conn.as_mut().start_send(object_id, message);
+            this.fired = true;
+        }
+
+        let message = wl_display::events::DeleteId { id: object_id };
+        ready!(conn.as_mut().poll_reserve(cx, &message))?;
+        conn.as_mut().start_send(DISPLAY_ID, message);
+        objects.remove(object_id).unwrap();
+        Poll::Ready(Ok(()))
+    }
+
     pub async fn fire<'a, O: ObjectMeta + 'static>(
         object_id: u32,
         data: u32,

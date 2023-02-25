@@ -727,7 +727,7 @@ pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
 #[derive(Clone, Debug)]
 pub struct OutputEvent(pub(crate) OutputSet);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct LayoutEvent(pub(crate) Layout);
 /// Maximum number of frame callbacks that can be registered on a surface.
 pub const MAX_FRAME_CALLBACKS: usize = 100;

@@ -344,12 +344,7 @@ where
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         ctx.objects_mut().remove(object_id).unwrap();
-        async move {
-            ctx.connection_mut()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
-                .await?;
-            Ok(())
-        }
+        futures_util::future::ok(())
     }
 
     fn resize(ctx: &mut Ctx, object_id: u32, size: i32) -> Self::ResizeFut<'_> {

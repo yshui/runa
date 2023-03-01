@@ -4,15 +4,13 @@ use std::{
     task::{ready, Poll},
 };
 
-use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 use wl_io::traits::WriteMessage;
+use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{
-        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction,
-    },
+    connection::traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction},
     events::EventSource,
-    server::{GlobalsUpdate, Server},
+    server::{GlobalsUpdate, Server}, objects::DISPLAY_ID,
 };
 
 pub trait GlobalMeta {
@@ -87,14 +85,59 @@ impl GlobalMeta for Display {
     }
 
     fn new_object(&self) -> Self::Object {
-        crate::objects::Display
+        crate::objects::Display::default()
     }
 }
 
-impl<Ctx> Bind<Ctx> for Display {
+impl<Ctx: Client> Bind<Ctx> for Display {
     type BindFut<'a > = impl Future<Output = std::io::Result<()>> + 'a where Self: 'a, Ctx: 'a;
 
-    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
+        use crate::{connection::traits::Store, objects::ObjectMeta};
+        let ClientParts {
+            objects,
+            event_dispatcher,
+            ..
+        } = client.as_mut_parts();
+        objects
+            .get_mut(object_id)
+            .unwrap()
+            .cast_mut::<Self::Object>()
+            .unwrap()
+            .initialized = true;
+
+        struct DisplayEventHandler;
+        impl<Ctx: Client> EventHandler<Ctx> for DisplayEventHandler {
+            type Message = crate::connection::traits::StoreEvent;
+
+            fn poll_handle_event(
+                self: Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                _objects: &mut <Ctx as Client>::ObjectStore,
+                connection: &mut <Ctx as Client>::Connection,
+                _server_context: &<Ctx as Client>::ServerContext,
+                message: &mut Self::Message,
+            ) -> Poll<
+                Result<
+                    EventHandlerAction,
+                    Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+                >,
+            > {
+                use crate::connection::traits::StoreEvent::*;
+                match message {
+                    Inserted { .. } => (),
+                    Removed { object_id, .. } => {
+                        let mut connection = Pin::new(connection);
+                        ready!(connection.as_mut().poll_ready(cx))?;
+                        connection.start_send(DISPLAY_ID, wl_display::v1::events::DeleteId {
+                            id: *object_id,
+                        });
+                    },
+                }
+                Poll::Ready(Ok(EventHandlerAction::Keep))
+            }
+        }
+        event_dispatcher.add_event_handler(objects.subscribe(), DisplayEventHandler);
         futures_util::future::ok(())
     }
 }

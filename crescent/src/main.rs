@@ -23,9 +23,9 @@ use wl_server::{
         traits::{Client, ClientParts, Store as _},
         EventDispatcher, Store,
     },
-    objects::Object,
+    objects::{Object, DISPLAY_ID},
     renderer_capability::RendererCapability,
-    server::Globals,
+    server::Globals, globals::Bind,
 };
 mod render;
 mod shell;
@@ -44,6 +44,7 @@ pub struct Crescent(Rc<CrescentState>);
 wl_server::globals! {
     type ClientContext = CrescentClient;
     pub enum AnyGlobal {
+        // Display must be the first one
         Display(wl_server::globals::Display),
         Registry(wl_server::globals::Registry),
         Compositor(apollo::globals::Compositor),
@@ -109,10 +110,20 @@ impl wl_server::server::Server for Crescent {
                     tx: Connection::new(tx, 256),
                     event_dispatcher: EventDispatcher::new(),
                 };
+                // Insert and bind the display object
                 client_ctx
                     .objects_mut()
-                    .insert(1, wl_server::objects::Display)
+                    .insert(DISPLAY_ID, wl_server::objects::Display::default())
                     .unwrap();
+                client_ctx
+                    .server_context()
+                    .clone()
+                    .globals()
+                    .borrow()
+                    .get(DISPLAY_ID)
+                    .unwrap()
+                    .bind(&mut client_ctx, DISPLAY_ID)
+                    .await?;
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
                 loop {

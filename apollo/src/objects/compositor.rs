@@ -80,7 +80,7 @@ fn deallocate_surface<Ctx: Client>(
     this.inner
         .destroy(&mut shell, &mut this.scratch_buffer.borrow_mut());
 
-    // Disconnected, no point sending DeleteId for those callbacks
+    // Disconnected, no point sending anything for those callbacks
     this.inner.frame_callbacks().borrow_mut().clear();
 }
 
@@ -349,16 +349,10 @@ where
             let mut frame_callbacks =
                 std::mem::take(&mut *this.inner.frame_callbacks().borrow_mut());
             for frame_callback in frame_callbacks.drain(..) {
-                connection
-                    .send(DISPLAY_ID, wl_display::events::DeleteId {
-                        id: frame_callback,
-                    })
-                    .await?;
+                objects.remove(frame_callback).unwrap();
             }
 
-            connection
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
-                .await?;
+            objects.remove(object_id).unwrap();
             Ok(())
         }
     }

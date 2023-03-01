@@ -39,12 +39,7 @@ where
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         ctx.objects_mut().remove(object_id);
-        async move {
-            ctx.connection_mut()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
-                .await?;
-            Ok(())
-        }
+        futures_util::future::ok(())
     }
 }
 
@@ -83,9 +78,6 @@ where
                 all_outputs.remove(&object.output);
             }
 
-            ctx.connection_mut()
-                .send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
-                .await?;
             Ok(())
         }
     }

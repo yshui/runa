@@ -86,8 +86,10 @@ pub trait Object<Ctx>: ObjectMeta {
 pub const DISPLAY_ID: u32 = 1;
 
 /// Default wl_display implementation
-#[derive(Debug, Clone, Copy)]
-pub struct Display;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Display {
+    pub(crate) initialized: bool,
+}
 
 #[wayland_object(crate = "crate")]
 impl<Ctx> wl_display::RequestDispatch<Ctx> for Display
@@ -100,11 +102,17 @@ where
     type GetRegistryFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type SyncFut<'a> = impl std::future::Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn sync(ctx: &mut Ctx, _object_id: u32, callback: wl_types::NewId) -> Self::SyncFut<'_> {
+    fn sync(ctx: &mut Ctx, object_id: u32, callback: wl_types::NewId) -> Self::SyncFut<'_> {
+        assert!(
+            ctx.objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap()
+                .initialized
+        );
         async move {
             debug!("wl_display.sync {}", callback);
-            // Lock the object store to avoid races. e.g. an object with the same
-            // ID being added between sending Done and DeleteId.
             let objects = ctx.objects();
             if objects.get(callback.0).is_some() {
                 return Err(crate::error::Error::IdExists(callback.0))
@@ -118,9 +126,11 @@ where
                 }),
             )
             .await?;
+            // We never inserted this object into the store, so we have to send DeleteId
+            // manually.
             conn.send(
                 DISPLAY_ID,
-                wl_display::Event::DeleteId(wl_display::events::DeleteId { id: callback.0 }),
+                wl_display::events::DeleteId { id: callback.0 },
             )
             .await?;
             Ok(())
@@ -129,9 +139,17 @@ where
 
     fn get_registry(
         ctx: &mut Ctx,
-        _object_id: u32,
+        object_id: u32,
         registry: wl_types::NewId,
     ) -> Self::GetRegistryFut<'_> {
+        assert!(
+            ctx.objects()
+                .get(object_id)
+                .unwrap()
+                .cast::<Self>()
+                .unwrap()
+                .initialized
+        );
         async move {
             use server::Server;
             debug!("wl_display.get_registry {}", registry);
@@ -241,6 +259,7 @@ impl<Ctx> Object<Ctx> for Callback {
 }
 
 impl Callback {
+    /// Fire the callback and remove it from object store.
     pub fn poll_fire<O: ObjectMeta + 'static>(
         cx: &mut Context<'_>,
         object_id: u32,
@@ -265,12 +284,11 @@ impl Callback {
         }
 
         ready!(conn.as_mut().poll_ready(cx))?;
-        conn.as_mut()
-            .start_send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id });
         objects.remove(object_id).unwrap();
         Poll::Ready(Ok(()))
     }
 
+    /// Fire the callback and remove it from object store.
     pub async fn fire<'a, O: ObjectMeta + 'static>(
         object_id: u32,
         data: u32,
@@ -282,7 +300,6 @@ impl Callback {
         let Some(_): Option<&Self> = obj.cast() else {
             panic!("object is not callback, it's {interface}")
         };
-        objects.remove(object_id).unwrap();
         conn.send(
             object_id,
             wl_protocol::wayland::wl_callback::v1::events::Done {
@@ -290,8 +307,7 @@ impl Callback {
             },
         )
         .await?;
-        conn.send(DISPLAY_ID, wl_display::events::DeleteId { id: object_id })
-            .await?;
+        objects.remove(object_id).unwrap();
         Ok(())
         // store unlocked here
     }

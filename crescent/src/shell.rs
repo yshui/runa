@@ -73,7 +73,7 @@ impl<B: buffers::Buffer> DefaultShell<B> {
     /// Notify the listeners that surfaces in this shell has been rendered.
     /// Should be called by your renderer implementation.
     pub fn notify_render(&self) -> impl std::future::Future<Output = ()> {
-        self.shell_event.broadcast(ShellEvent::Render)
+        self.shell_event.broadcast_owned(ShellEvent::Render)
     }
 
     fn update_subtree_outputs(

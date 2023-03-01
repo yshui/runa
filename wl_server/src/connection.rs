@@ -19,7 +19,10 @@ use hashbrown::{
     HashMap, HashSet,
 };
 
-use crate::objects::{Object, ObjectMeta};
+use crate::{
+    events::{self, BroadcastEventSource},
+    objects::{Object, ObjectMeta},
+};
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
@@ -34,7 +37,10 @@ pub mod traits {
     use futures_core::{Future, Stream};
     use wl_io::traits::WriteMessage;
 
-    use crate::objects::{ObjectMeta, StaticObjectMeta};
+    use crate::{
+        events,
+        objects::{ObjectMeta, StaticObjectMeta},
+    };
     type ByType<'a, T, O, S>
     where
         O: ObjectMeta + 'static,
@@ -42,7 +48,18 @@ pub mod traits {
         T: StaticObjectMeta + 'static,
     = impl Iterator<Item = (u32, &'a T)> + 'a;
 
-    pub trait Store<O> {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum StoreEvent {
+        Inserted {
+            interface: &'static str,
+            object_id: u32,
+        },
+        Removed {
+            interface: &'static str,
+            object_id: u32,
+        },
+    }
+    pub trait Store<O>: events::EventSource<StoreEvent> {
         /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
         type ByIface<'a>: Iterator<Item = (u32, &'a O)> + 'a
         where
@@ -187,6 +204,7 @@ pub struct Store<Object> {
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
     ids_left:     u32,
+    event_source: BroadcastEventSource<traits::StoreEvent>,
 }
 
 impl<Object: crate::objects::ObjectMeta> Store<Object> {
@@ -197,6 +215,11 @@ impl<Object: crate::objects::ObjectMeta> Store<Object> {
             Err(value)
         } else {
             self.by_interface.entry(interface).or_default().insert(id);
+            self.event_source
+                .broadcast_reserve(traits::StoreEvent::Inserted {
+                    interface,
+                    object_id: id,
+                });
             Ok(())
         }
     }
@@ -206,6 +229,11 @@ impl<Object: crate::objects::ObjectMeta> Store<Object> {
         let object = self.map.remove(&id)?;
         let interface = object.interface();
         self.by_interface.get_mut(interface).unwrap().remove(&id);
+        self.event_source
+            .broadcast_reserve(traits::StoreEvent::Removed {
+                interface,
+                object_id: id,
+            });
         Some(object)
     }
 
@@ -219,6 +247,11 @@ impl<Object: crate::objects::ObjectMeta> Store<Object> {
                 let interface = object.interface();
                 v.insert(object);
                 self.by_interface.entry(interface).or_default().insert(id);
+                self.event_source
+                    .broadcast_reserve(traits::StoreEvent::Inserted {
+                        interface,
+                        object_id: id,
+                    });
                 true
             },
         }
@@ -245,6 +278,14 @@ impl<O> Store<O> {
 impl<Object> Drop for Store<Object> {
     fn drop(&mut self) {
         assert!(self.map.is_empty(), "Store not cleared before drop");
+    }
+}
+
+impl<O: ObjectMeta> events::EventSource<traits::StoreEvent> for Store<O> {
+    type Source = impl Stream<Item = traits::StoreEvent> + 'static;
+
+    fn subscribe(&self) -> Self::Source {
+        self.event_source.subscribe()
     }
 }
 

@@ -7,7 +7,7 @@ pub trait EventSource<Event> {
 }
 
 /// An event source implementation based on the [`async_broadcast`] channels.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BroadcastEventSource<E>(
     async_broadcast::Sender<E>,
     async_broadcast::InactiveReceiver<E>,
@@ -112,16 +112,44 @@ impl<E> BroadcastEventSource<E> {
         &self.0
     }
 }
+
+pub type BroadcastOwned<E: Clone + 'static> = impl Future<Output = ()> + 'static;
 impl<E: Clone> BroadcastEventSource<E> {
-    pub fn broadcast(&self, msg: E) -> impl Future<Output = ()> {
+    pub fn broadcast(&self, msg: E) -> impl Future<Output = ()> + '_ {
         // The sender is never closed because we hold a inactive receiver.
         assert!(!self.0.is_closed());
-        let sender = self.0.clone();
 
         // Here this should only error if there is no active receiver, which
         // is fine.
         async move {
+            let _ = self.0.broadcast(msg).await;
+        }
+    }
+
+    /// Like `broadcast`, but the returned future doesn't borrow from `self`.
+    pub fn broadcast_owned(&self, msg: E) -> BroadcastOwned<E>
+    where
+        E: 'static,
+    {
+        assert!(!self.0.is_closed());
+        let sender = self.0.clone();
+
+        async move {
             let _ = sender.broadcast(msg).await;
+        }
+    }
+
+    /// Like `broadcast`, but if the queue is full, instead of waiting, this function will reserve
+    /// more space in the queue.
+    pub fn broadcast_reserve(&mut self, msg: E) {
+        use async_broadcast::TrySendError;
+        assert!(!self.0.is_closed());
+        if self.0.is_full() {
+            self.0.set_capacity(self.0.capacity() * 2);
+        }
+        match self.0.try_broadcast(msg) {
+            Err(TrySendError::Full(_)) => unreachable!(),
+            _ => ()
         }
     }
 }

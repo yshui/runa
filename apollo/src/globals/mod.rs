@@ -1,14 +1,11 @@
 use std::{
     future::Future,
-    pin::Pin,
     rc::{Rc, Weak},
-    task::{ready, Poll},
 };
 
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use futures_util::pin_mut;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
     wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
@@ -109,19 +106,23 @@ where
 {
     type Message = ShellEvent;
 
-    fn poll_handle_event(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        objects: &mut <Ctx as Client>::ObjectStore,
-        connection: &mut <Ctx as Client>::Connection,
-        server_context: &<Ctx as Client>::ServerContext,
-        message: &mut Self::Message,
-    ) -> Poll<
-        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
-    > {
+    type Future<'ctx> = impl Future<
+            Output = Result<
+                EventHandlerAction,
+                Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+            >,
+        > + 'ctx;
+
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut <Ctx as Client>::ObjectStore,
+        connection: &'ctx mut <Ctx as Client>::Connection,
+        server_context: &'ctx <Ctx as Client>::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
         assert!(matches!(message, ShellEvent::Render));
         let time = crate::time::elapsed().as_millis() as u32;
-        if self.callbacks_to_fire.is_empty() {
+        {
             // First collect all callbacks we need to fire
             let shell = server_context.shell().borrow();
             // Send frame callback for all current surface states.
@@ -161,19 +162,15 @@ where
                 }
             }
         }
-        while let Some(&callback) = self.callbacks_to_fire.last() {
-            ready!(wl_server::objects::Callback::poll_fire(
-                cx,
-                callback,
-                time,
-                objects,
-                Pin::new(&mut *connection)
-            ))?;
-            self.callbacks_to_fire.pop();
-        }
+        async move {
+            for callback in self.callbacks_to_fire.drain(..) {
+                wl_server::objects::Callback::fire(callback, time, objects, &mut *connection)
+                    .await?;
+            }
 
-        // We can only ever return Ready iff callbacks_to_fire is empty.
-        Poll::Ready(Ok(EventHandlerAction::Keep))
+            // We can only ever return Ready iff callbacks_to_fire is empty.
+            Ok(EventHandlerAction::Keep)
+        }
     }
 }
 
@@ -375,41 +372,42 @@ struct OutputChangeEventHandler {
 impl<Ctx: Client> EventHandler<Ctx> for OutputChangeEventHandler {
     type Message = OutputChangeEvent;
 
-    fn poll_handle_event(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        objects: &mut Ctx::ObjectStore,
-        connection: &mut Ctx::Connection,
-        server_context: &Ctx::ServerContext,
-        message: &mut Self::Message,
-    ) -> Poll<
-        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
-    > {
-        // Send events for changes on this output
-        // If the shell output object is gone, its event stream should have stopped and
-        // we should not have received this event.
-        let shell_output = Weak::upgrade(&message.output).unwrap();
-        if message.change.contains(OutputChange::GEOMETRY) {
-            let fut = shell_output.send_geometry(&mut *connection, self.object_id);
-            pin_mut!(fut);
-            ready!(fut.poll(cx))?;
-            message.change.remove(OutputChange::GEOMETRY);
+    type Future<'ctx> = impl Future<
+            Output = Result<
+                EventHandlerAction,
+                Box<dyn std::error::Error + std::marker::Send + Sync>,
+            >,
+        > + 'ctx;
+
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        server_context: &'ctx Ctx::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
+        async move {
+            // Send events for changes on this output
+            // If the shell output object is gone, its event stream should have stopped and
+            // we should not have received this event.
+            let shell_output = Weak::upgrade(&message.output).unwrap();
+            if message.change.contains(OutputChange::GEOMETRY) {
+                shell_output
+                    .send_geometry(&mut *connection, self.object_id)
+                    .await?;
+            }
+            if message.change.contains(OutputChange::NAME) {
+                shell_output
+                    .send_name(&mut *connection, self.object_id)
+                    .await?;
+            }
+            if message.change.contains(OutputChange::SCALE) {
+                shell_output
+                    .send_scale(&mut *connection, self.object_id)
+                    .await?;
+            }
+            ShellOutput::send_done(connection, self.object_id).await?;
+            Ok(EventHandlerAction::Keep)
         }
-        if message.change.contains(OutputChange::NAME) {
-            let fut = shell_output.send_name(&mut *connection, self.object_id);
-            pin_mut!(fut);
-            ready!(fut.poll(cx))?;
-            message.change.remove(OutputChange::NAME);
-        }
-        if message.change.contains(OutputChange::SCALE) {
-            let fut = shell_output.send_scale(&mut *connection, self.object_id);
-            pin_mut!(fut);
-            ready!(fut.poll(cx))?;
-            message.change.remove(OutputChange::SCALE);
-        }
-        let fut = ShellOutput::send_done(connection, self.object_id);
-        pin_mut!(fut);
-        ready!(fut.poll(cx))?;
-        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }

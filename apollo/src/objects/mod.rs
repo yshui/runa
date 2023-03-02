@@ -1,16 +1,13 @@
 use std::{cell::RefCell, rc::Rc};
 
 use hashbrown::{HashMap, HashSet};
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{
-    wl_buffer::v1 as wl_buffer, wl_display::v1 as wl_display, wl_output::v4 as wl_output,
-};
+use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
 use wl_server::{
     connection::{
         event_handler::AutoAbortHandle,
         traits::{Client, Store},
     },
-    objects::{wayland_object, DISPLAY_ID},
+    objects::wayland_object,
 };
 
 use crate::{

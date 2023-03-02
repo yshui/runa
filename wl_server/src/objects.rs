@@ -120,10 +120,10 @@ where
             let conn = ctx.connection_mut();
             conn.send(
                 callback.0,
-                wl_callback::v1::Event::Done(wl_callback::v1::events::Done {
+                wl_callback::v1::events::Done {
                     // TODO: setup event serial
                     callback_data: 0,
-                }),
+                },
             )
             .await?;
             // We never inserted this object into the store, so we have to send DeleteId

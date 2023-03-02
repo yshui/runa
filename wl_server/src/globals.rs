@@ -1,8 +1,4 @@
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{ready, Poll},
-};
+use std::{future::Future, pin::Pin};
 
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
@@ -10,7 +6,8 @@ use wl_protocol::wayland::{wl_display, wl_registry::v1 as wl_registry};
 use crate::{
     connection::traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction},
     events::EventSource,
-    server::{GlobalsUpdate, Server}, objects::DISPLAY_ID,
+    objects::DISPLAY_ID,
+    server::{GlobalsUpdate, Server},
 };
 
 pub trait GlobalMeta {
@@ -110,31 +107,34 @@ impl<Ctx: Client> Bind<Ctx> for Display {
         impl<Ctx: Client> EventHandler<Ctx> for DisplayEventHandler {
             type Message = crate::connection::traits::StoreEvent;
 
-            fn poll_handle_event(
-                self: Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-                _objects: &mut <Ctx as Client>::ObjectStore,
-                connection: &mut <Ctx as Client>::Connection,
-                _server_context: &<Ctx as Client>::ServerContext,
-                message: &mut Self::Message,
-            ) -> Poll<
-                Result<
-                    EventHandlerAction,
-                    Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
-                >,
-            > {
-                use crate::connection::traits::StoreEvent::*;
-                match message {
-                    Inserted { .. } => (),
-                    Removed { object_id, .. } => {
-                        let mut connection = Pin::new(connection);
-                        ready!(connection.as_mut().poll_ready(cx))?;
-                        connection.start_send(DISPLAY_ID, wl_display::v1::events::DeleteId {
-                            id: *object_id,
-                        });
-                    },
+            type Future<'ctx> = impl Future<
+                    Output = Result<
+                        EventHandlerAction,
+                        Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+                    >,
+                > + 'ctx;
+
+            fn handle_event<'ctx>(
+                &'ctx mut self,
+                _objects: &'ctx mut <Ctx as Client>::ObjectStore,
+                connection: &'ctx mut <Ctx as Client>::Connection,
+                _server_context: &'ctx <Ctx as Client>::ServerContext,
+                message: &'ctx mut Self::Message,
+            ) -> Self::Future<'ctx> {
+                async move {
+                    use crate::connection::traits::StoreEvent::*;
+                    match message {
+                        Inserted { .. } => (),
+                        Removed { object_id, .. } => {
+                            Pin::new(connection)
+                                .send(DISPLAY_ID, wl_display::v1::events::DeleteId {
+                                    id: *object_id,
+                                })
+                                .await?;
+                        },
+                    }
+                    Ok(EventHandlerAction::Keep)
                 }
-                Poll::Ready(Ok(EventHandlerAction::Keep))
             }
         }
         event_dispatcher.add_event_handler(objects.subscribe(), DisplayEventHandler);
@@ -221,37 +221,45 @@ struct RegistryEventHandler {
 impl<Ctx: Client> EventHandler<Ctx> for RegistryEventHandler {
     type Message = GlobalsUpdate<<Ctx::ServerContext as Server>::Global>;
 
-    fn poll_handle_event(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        _objects: &mut Ctx::ObjectStore,
-        connection: &mut Ctx::Connection,
-        _server_context: &Ctx::ServerContext,
-        message: &mut Self::Message,
-    ) -> std::task::Poll<
-        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
-    > {
-        let mut connection = Pin::new(connection);
-        match message {
-            GlobalsUpdate::Removed(name) => {
-                ready!(connection.as_mut().poll_ready(cx))?;
-                connection.start_send(self.registry_id, wl_registry::events::GlobalRemove {
-                    name: *name,
-                });
-            },
-            GlobalsUpdate::Added(name, global) => {
-                let interface = std::ffi::CString::new(global.interface()).unwrap();
-                let version = global.version();
-                ready!(connection.as_mut().poll_ready(cx))?;
-                connection.start_send(self.registry_id, wl_registry::events::Global {
-                    name: *name,
-                    interface: wl_types::Str(interface.as_c_str()),
-                    version,
-                })
-            },
-        }
+    type Future<'ctx> = impl Future<
+            Output = Result<
+                EventHandlerAction,
+                Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+            >,
+        > + 'ctx;
 
-        // Client can't drop the registry object, so we will never stop this listener
-        Poll::Ready(Ok(EventHandlerAction::Keep))
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        _objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        _server_context: &'ctx Ctx::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
+        async move {
+            let mut connection = Pin::new(connection);
+            match message {
+                GlobalsUpdate::Removed(name) => {
+                    connection
+                        .send(self.registry_id, wl_registry::events::GlobalRemove {
+                            name: *name,
+                        })
+                        .await?;
+                },
+                GlobalsUpdate::Added(name, global) => {
+                    let interface = std::ffi::CString::new(global.interface()).unwrap();
+                    let version = global.version();
+                    connection
+                        .send(self.registry_id, wl_registry::events::Global {
+                            name: *name,
+                            interface: wl_types::Str(interface.as_c_str()),
+                            version,
+                        })
+                        .await?;
+                },
+            }
+
+            // Client can't drop the registry object, so we will never stop this listener
+            Ok(EventHandlerAction::Keep)
+        }
     }
 }

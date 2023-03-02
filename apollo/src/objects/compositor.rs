@@ -13,21 +13,15 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{
-    cell::RefCell,
-    future::Future,
-    pin::Pin,
-    rc::Rc,
-    task::{ready, Poll},
-};
+use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
 use hashbrown::{HashMap, HashSet};
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_display::v1 as wl_display,
-    wl_output::v4 as wl_output, wl_subcompositor::v1 as wl_subcompositor,
-    wl_subsurface::v1 as wl_subsurface, wl_surface::v5 as wl_surface,
+    wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
+    wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
+    wl_surface::v5 as wl_surface,
 };
 use wl_server::{
     connection::traits::{
@@ -35,7 +29,7 @@ use wl_server::{
     },
     error,
     events::EventSource,
-    objects::{wayland_object, ObjectMeta, DISPLAY_ID},
+    objects::{wayland_object, ObjectMeta},
 };
 
 use crate::{
@@ -456,7 +450,6 @@ where
                     current_outputs: Default::default(),
                     object_id: id.0,
                     shared_surface_buffers,
-                    in_progress: false,
                     all_outputs,
                 });
                 Ok(())
@@ -487,51 +480,50 @@ struct OutputChangedEventHandler {
     /// All bound output objects of this client context. None if the client has
     /// no output objects bound.
     all_outputs:            Option<Rc<RefCell<AllOutputs>>>,
-    /// Whether the messages have been generated and sending is in progress
-    in_progress:            bool,
 }
 
 impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
     type Message = OutputEvent;
 
-    fn poll_handle_event(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        objects: &mut <Ctx as Client>::ObjectStore,
-        connection: &mut <Ctx as Client>::Connection,
-        server_context: &<Ctx as Client>::ServerContext,
-        message: &mut Self::Message,
-    ) -> std::task::Poll<
-        Result<EventHandlerAction, Box<dyn std::error::Error + std::marker::Send + Sync + 'static>>,
-    > {
-        let Self {
-            object_id,
-            current_outputs,
-            shared_surface_buffers,
-            all_outputs,
-            in_progress,
-        } = self.get_mut();
+    type Future<'ctx> = impl Future<
+            Output = Result<
+                EventHandlerAction,
+                Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+            >,
+        > + 'ctx;
 
-        let mut connection = Pin::new(connection);
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut <Ctx as Client>::ObjectStore,
+        connection: &'ctx mut <Ctx as Client>::Connection,
+        server_context: &'ctx <Ctx as Client>::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
+        async move {
+            let Self {
+                object_id,
+                current_outputs,
+                shared_surface_buffers,
+                all_outputs,
+            } = self;
 
-        // Usually we would check if the object is still alive here, and stop the event
-        // handler if it is not. But when a surface object dies, its event
-        // stream will terminate, and the event handler will be stopped
-        // automatically in that case.
+            let mut connection = Pin::new(connection);
 
-        let mut buffers = shared_surface_buffers.borrow_mut();
-        let SharedSurfaceBuffers {
-            new_outputs,
-            deleted: deleted_buffer,
-            added: added_buffer,
-        } = &mut *buffers;
-        // Calculate the difference between the current outputs and the new outputs,
-        // store message that will be sent to the client in the buffers. Do this
-        // only once per message.
-        if !*in_progress {
-            let mut message = message.0.borrow_mut();
-            new_outputs.extend(message.iter().cloned());
-            message.clear();
+            // Usually we would check if the object is still alive here, and stop the event
+            // handler if it is not. But when a surface object dies, its event
+            // stream will terminate, and the event handler will be stopped
+            // automatically in that case.
+
+            let mut buffers = shared_surface_buffers.borrow_mut();
+            let SharedSurfaceBuffers {
+                new_outputs,
+                deleted: deleted_buffer,
+                added: added_buffer,
+            } = &mut *buffers;
+            // Calculate the difference between the current outputs and the new outputs,
+            // store message that will be sent to the client in the buffers. Do this
+            // only once per message.
+            let message = message.0.borrow();
 
             if all_outputs.is_none() {
                 *all_outputs = objects
@@ -542,49 +534,39 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
             let Some(all_outputs) = all_outputs.as_ref() else {
                 // This client has no bound output object, so just update the current outputs, and we
                 // will be done.
-                std::mem::swap(current_outputs, new_outputs);
-                new_outputs.clear();
-                return Poll::Ready(Ok(EventHandlerAction::Keep));
+                current_outputs.clone_from(&message);
+                return Ok(EventHandlerAction::Keep);
             };
 
             // Otherwise calculate the difference between the current outputs and the new
             // outputs
             let all_outputs = all_outputs.borrow();
-            for deleted in current_outputs.difference(new_outputs) {
+            for deleted in current_outputs.difference(&message) {
                 if let Some(ids) = all_outputs.get(deleted) {
-                    deleted_buffer.extend(ids.iter().copied());
+                    for id in ids {
+                        connection
+                            .as_mut()
+                            .send(*object_id, wl_surface::events::Leave {
+                                output: wl_types::Object(*id),
+                            })
+                            .await?;
+                    }
                 }
             }
-            for added in new_outputs.difference(current_outputs) {
-                if let Some(id) = all_outputs.get(added) {
-                    added_buffer.extend(id.iter().copied());
+            for added in message.difference(current_outputs) {
+                if let Some(ids) = all_outputs.get(added) {
+                    for id in ids {
+                        connection
+                            .as_mut()
+                            .send(*object_id, wl_surface::events::Enter {
+                                output: wl_types::Object(*id),
+                            })
+                            .await?;
+                    }
                 }
             }
-            std::mem::swap(current_outputs, new_outputs);
-            new_outputs.clear();
-            *in_progress = true;
+            Ok(EventHandlerAction::Keep)
         }
-
-        while let Some(id) = deleted_buffer.last() {
-            ready!(connection.as_mut().poll_ready(cx))?;
-            connection
-                .as_mut()
-                .start_send(*object_id, wl_surface::events::Leave {
-                    output: wl_types::Object(*id),
-                });
-            deleted_buffer.pop();
-        }
-        while let Some(id) = added_buffer.last() {
-            ready!(connection.as_mut().poll_ready(cx))?;
-            connection
-                .as_mut()
-                .start_send(*object_id, wl_surface::events::Enter {
-                    output: wl_types::Object(*id),
-                });
-            added_buffer.pop();
-        }
-        *in_progress = false;
-        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }
 

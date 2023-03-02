@@ -22,17 +22,13 @@ use hashbrown::{
 use crate::{
     events::{self, BroadcastEventSource},
     objects::{Object, ObjectMeta},
+    utils::one_shot_signal,
 };
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
 pub mod traits {
-    use std::{
-        any::Any,
-        error::Error,
-        pin::Pin,
-        task::{Context, Poll},
-    };
+    use std::{any::Any, error::Error, pin::Pin};
 
     use futures_core::{Future, Stream};
     use wl_io::traits::WriteMessage;
@@ -111,14 +107,19 @@ pub mod traits {
     /// have an associated event source. Whenever a new event is received,
     /// the event source will be polled, and the event handler will be
     /// called with the received event.
-    pub trait EventHandler<Ctx: Client> {
+    pub trait EventHandler<Ctx: Client>: 'static {
         type Message;
-        /// Poll to handle an event. Every time an event is received, this will
-        /// be called until it returns `Poll::Ready(_)`. The returned
-        /// value indicates whether this event handler should be removed, i.e.
-        /// if true is returned, the event handler will be removed from
-        /// the client context. Event handler is also removed if the event
-        /// stream has terminated.
+        type Future<'ctx>: Future<
+                Output = Result<
+                    EventHandlerAction,
+                    Box<dyn Error + std::marker::Send + Sync + 'static>,
+                >,
+            > + 'ctx;
+        /// Handle an event. Every time an event is received, this will be
+        /// called, and the returned future will be driven to
+        /// completion. The returned value indicates whether this event
+        /// handler should be removed. Event handler is also removed if the
+        /// event stream has terminated.
         ///
         /// This function is not passed a `&mut Ctx`, because handling events
         /// may require exclusive access to the set of event handlers.
@@ -127,14 +128,25 @@ pub mod traits {
         ///
         /// If an error is returned, the client connection should be closed with
         /// an error.
-        fn poll_handle_event(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            objects: &mut Ctx::ObjectStore,
-            connection: &mut Ctx::Connection,
-            server_context: &Ctx::ServerContext,
-            message: &mut Self::Message,
-        ) -> Poll<Result<EventHandlerAction, Box<dyn Error + std::marker::Send + Sync + 'static>>>;
+        ///
+        /// # Notes
+        ///
+        /// As a compositor author, if you are using this interface, you have to
+        /// make sure this future DOES NOT race with other futures
+        /// running in the same client context. This includes spawning this
+        /// future on some executor,  adding this future to a FuturesUnordered,
+        /// use this future in a `select!` branch, etc. Instead you have to
+        /// `.await` this future alone till completion.
+        ///
+        /// You probably shouldn't use this interface directly anyways, have a
+        /// look at [`super::EventDispatcher`]
+        fn handle_event<'ctx>(
+            &'ctx mut self,
+            objects: &'ctx mut Ctx::ObjectStore,
+            connection: &'ctx mut Ctx::Connection,
+            server_context: &'ctx Ctx::ServerContext,
+            message: &'ctx mut Self::Message,
+        ) -> Self::Future<'ctx>;
     }
 
     pub trait EventDispatcher<Ctx: Client> {
@@ -524,19 +536,54 @@ impl<'a, D: 'a> IntoIterator for &'a EventSerial<D> {
     }
 }
 
+type PairedEventHandlerFut<'a, H, Ctx>
+where
+    H: traits::EventHandler<Ctx>,
+    Ctx: traits::Client,
+= impl Future<Output = Result<(EventHandlerOutput, H), (H::Message, H)>> + 'a;
+
+fn paired_event_handler_driver<'ctx, H, Ctx: traits::Client>(
+    mut handler: H,
+    mut stop_signal: one_shot_signal::Receiver,
+    mut message: H::Message,
+    objects: &'ctx mut Ctx::ObjectStore,
+    connection: &'ctx mut Ctx::Connection,
+    server_context: &'ctx Ctx::ServerContext,
+) -> PairedEventHandlerFut<'ctx, H, Ctx>
+where
+    H: traits::EventHandler<Ctx>,
+{
+    async move {
+        use futures_util::{select, FutureExt};
+        select! {
+            () = stop_signal => {
+                Err((message, handler))
+            }
+            ret = handler.handle_event(objects, connection, server_context, &mut message).fuse() => {
+                Ok((ret, handler))
+            }
+        }
+    }
+}
+
 type EventHandlerOutput =
     Result<traits::EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>;
 #[pin_project::pin_project]
-struct PairedEventHandler<Ctx, ES: Stream, H> {
+struct PairedEventHandler<'fut, Ctx: traits::Client, ES: Stream, H: traits::EventHandler<Ctx>> {
     #[pin]
-    event_source: ES,
+    event_source:  ES,
+    should_retain: bool,
+    handler:       Option<H>,
+    message:       Option<ES::Item>,
     #[pin]
-    handler:      H,
-    message:      Option<ES::Item>,
-    _ctx:         PhantomData<Ctx>,
+    fut:           Option<PairedEventHandlerFut<'fut, H, Ctx>>,
+    stop_signal:   Option<one_shot_signal::Sender>,
+    _ctx:          PhantomData<Ctx>,
 }
 
-impl<Ctx, ES: Stream, H> Stream for PairedEventHandler<Ctx, ES, H> {
+impl<Ctx: traits::Client, ES: Stream, H: traits::EventHandler<Ctx>> Stream
+    for PairedEventHandler<'_, Ctx, ES, H>
+{
     type Item = ();
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -553,16 +600,52 @@ impl<Ctx, ES: Stream, H> Stream for PairedEventHandler<Ctx, ES, H> {
 
 trait AnyEventHandler: Stream<Item = ()> {
     type Ctx: traits::Client;
-    fn poll_handle(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        objects: &mut <Self::Ctx as traits::Client>::ObjectStore,
-        connection: &mut <Self::Ctx as traits::Client>::Connection,
-        server_context: &<Self::Ctx as traits::Client>::ServerContext,
-    ) -> Poll<EventHandlerOutput>;
+    fn poll_handle(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<EventHandlerOutput>;
+
+    fn start_handle<'a>(
+        self: Pin<Box<Self>>,
+        objects: &'a mut <Self::Ctx as traits::Client>::ObjectStore,
+        connection: &'a mut <Self::Ctx as traits::Client>::Connection,
+        server_context: &'a <Self::Ctx as traits::Client>::ServerContext,
+    ) -> Pin<Box<dyn AnyEventHandler<Ctx = Self::Ctx> + 'a>>;
+
+    fn stop_handle(
+        self: Pin<Box<Self>>,
+    ) -> (
+        Pin<Box<dyn AnyEventHandler<Ctx = Self::Ctx>>>,
+        traits::EventHandlerAction,
+    );
 }
 
-impl<Ctx, ES, H> AnyEventHandler for PairedEventHandler<Ctx, ES, H>
+impl<Ctx, ES, H> PairedEventHandler<'_, Ctx, ES, H>
+where
+    Ctx: traits::Client,
+    ES: Stream + 'static,
+    H: traits::EventHandler<Ctx> + 'static,
+{
+    /// Lengthen or shorten the lifetime parameter of the returned
+    /// `PairedEventHandler`.
+    ///
+    /// This function is safe because it verifies the `fut` field of `Self` is
+    /// None, which means `Self` does not contain any references.
+    fn coerce_lifetime<'a>(self: Pin<Box<Self>>) -> Pin<Box<PairedEventHandler<'a, Ctx, ES, H>>> {
+        fn cast_ptr<T, U>(i: *mut T) -> *mut U {
+            // We have this because Rust checks direct cast of `*mut T<'a>` to `*mut T<'static>`
+            // and rejects then because `'a` is shorter than `'static`. However Rust cannot check
+            // cast in generic functions.
+            i as _
+        }
+        assert!(self.fut.is_none());
+        // Safety: this is safe because `fut` is `None` and thus does not contain any
+        // references.
+        unsafe {
+            let raw = Box::into_raw(Pin::into_inner_unchecked(self));
+            Pin::new_unchecked(Box::from_raw(cast_ptr(raw)))
+        }
+    }
+}
+
+impl<Ctx, ES, H> AnyEventHandler for PairedEventHandler<'_, Ctx, ES, H>
 where
     Ctx: traits::Client,
     ES: Stream + 'static,
@@ -570,24 +653,109 @@ where
 {
     type Ctx = Ctx;
 
-    fn poll_handle(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        objects: &mut Ctx::ObjectStore,
-        connection: &mut Ctx::Connection,
-        server_context: &Ctx::ServerContext,
-    ) -> Poll<EventHandlerOutput> {
-        let this = self.project();
-        let message = this.message.as_mut().unwrap();
-        let ret = ready!(this.handler.poll_handle_event(
-            cx,
+    fn poll_handle(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<EventHandlerOutput> {
+        let mut this = self.project();
+        let fut = this.fut.as_mut().as_pin_mut().unwrap();
+        let (ret, handler) = ready!(fut
+            .poll(cx)
+            .map(|ret| ret.unwrap_or_else(|_| unreachable!("future stopped unexpectedly"))));
+        *this.handler = Some(handler);
+        *this.stop_signal = None;
+        this.fut.set(None);
+        // EventHandlerAction::Stop or Err() means we should stop handling events
+        *this.should_retain =
+            *this.should_retain && matches!(ret, Ok(traits::EventHandlerAction::Keep));
+        Poll::Ready(ret)
+    }
+
+    fn start_handle<'a>(
+        self: Pin<Box<Self>>,
+        objects: &'a mut <Self::Ctx as traits::Client>::ObjectStore,
+        connection: &'a mut <Self::Ctx as traits::Client>::Connection,
+        server_context: &'a <Self::Ctx as traits::Client>::ServerContext,
+    ) -> Pin<Box<dyn AnyEventHandler<Ctx = Self::Ctx> + 'a>> {
+        // Shorten the lifetime of `Self`. So we can store `fut` with lifetime `'a` in
+        // it.
+        let mut shortened = self.coerce_lifetime();
+        let mut this = shortened.as_mut().project();
+        let message = this.message.take().unwrap();
+        let handler = this.handler.take().unwrap();
+        assert!(this.stop_signal.is_none());
+        assert!(*this.should_retain);
+        let (tx, stop_signal) = one_shot_signal::new_pair();
+        *this.stop_signal = Some(tx);
+
+        let new_fut = paired_event_handler_driver(
+            handler,
+            stop_signal,
+            message,
             objects,
             connection,
             server_context,
-            message
-        ));
-        *this.message = None;
-        Poll::Ready(ret)
+        );
+        // Safety: we erase the lifetime from the future so we can store it. The borrow
+        // is captured in the return type signature of this function. So even
+        // though we erased the lifetime internally, the caller still sees that
+        // we have captured this lifetime.
+        this.fut.set(Some(new_fut));
+        shortened
+    }
+
+    fn stop_handle(
+        mut self: Pin<Box<Self>>,
+    ) -> (
+        Pin<Box<dyn AnyEventHandler<Ctx = Self::Ctx>>>,
+        traits::EventHandlerAction,
+    ) {
+        use futures_util::task::noop_waker_ref;
+        let mut this = self.as_mut().project();
+        // Stop the handler, so when we poll it, it will give us the handler back.
+        let Some(stop_signal) = this.stop_signal.take() else {
+            // Already stopped
+            let should_retain = *this.should_retain;
+            assert!(self.handler.is_some());
+            return (self.coerce_lifetime(), if should_retain {
+                traits::EventHandlerAction::Keep
+            } else {
+                traits::EventHandlerAction::Stop
+            });
+        };
+        stop_signal.send();
+
+        let mut cx = Context::from_waker(noop_waker_ref());
+        let mut fut = this.fut.as_mut().as_pin_mut().unwrap();
+        let result = loop {
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => break result,
+                Poll::Pending => {},
+            }
+        };
+        match result {
+            Ok((ret, handler)) => {
+                // The handler completed before it was stopped by `stop_signal`
+                *this.handler = Some(handler);
+                this.fut.set(None);
+                *this.should_retain =
+                    *this.should_retain && matches!(ret, Ok(traits::EventHandlerAction::Keep));
+                let should_retain = *this.should_retain;
+                (
+                    self.coerce_lifetime(),
+                    if should_retain {
+                        traits::EventHandlerAction::Keep
+                    } else {
+                        traits::EventHandlerAction::Stop
+                    },
+                )
+            },
+            Err((msg, handler)) => {
+                // The handler was stopped by `stop_signal`
+                *this.handler = Some(handler);
+                *this.message = Some(msg);
+                // The handler was not completed, so it's inconlusive whether it would have
+                // returned `EventHandlerAction::Keep` or not. So we keep it just in case.
+                (self.coerce_lifetime(), traits::EventHandlerAction::Keep)
+            },
+        }
     }
 }
 
@@ -631,8 +799,11 @@ impl<Ctx: traits::Client + 'static> traits::EventDispatcher<Ctx> for EventDispat
     ) {
         let pinned = Box::pin(PairedEventHandler {
             event_source,
-            handler,
+            handler: Some(handler),
+            should_retain: true,
             message: None,
+            fut: None,
+            stop_signal: None,
             _ctx: PhantomData::<Ctx>,
         });
         let pinned = pinned as Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
@@ -661,13 +832,15 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
             if this.active_handler.is_some() {
                 return Poll::Ready(Some(PendingEvent { dispatcher: this }))
             }
-            match ready!(this.handlers.as_mut().poll_next(cx)) {
-                Some((Some(()), handler)) => {
+            match this.handlers.as_mut().poll_next(cx) {
+                Poll::Ready(Some((Some(()), handler))) => {
                     *this.active_handler = Some(handler);
                 },
-                Some((None, _)) => (),
-                None => {
-                    // We have no handlers, so we sleep until a new handler is added.
+                Poll::Ready(Some((None, _))) => (),
+                Poll::Ready(None) | Poll::Pending => {
+                    // There is no active handler. `FuturesUnordered` will wake us up if there are
+                    // handlers that are ready. But we also need to wake up if there are new
+                    // handlers added. So we store the waker.
                     if let Some(w) = this.waker.take() {
                         if w.will_wake(cx.waker()) {
                             *this.waker = Some(w);
@@ -676,6 +849,8 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
                             w.wake();
                             *this.waker = Some(cx.waker().clone());
                         }
+                    } else {
+                        *this.waker = Some(cx.waker().clone());
                     }
                     return Poll::Pending
                 },
@@ -711,78 +886,80 @@ pub struct PendingEvent<'a, Ctx> {
     dispatcher: EventDispatcherProj<'a, Ctx>,
 }
 
-impl<'this, Ctx: traits::Client> PendingEvent<'this, Ctx> {
-    pub fn poll_handle(
-        &mut self,
-        cx: &mut Context<'_>,
-        objects: &mut Ctx::ObjectStore,
-        connection: &mut Ctx::Connection,
-        server_context: &Ctx::ServerContext,
-    ) -> Poll<Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>> {
-        let handler = self.dispatcher.active_handler.as_mut().unwrap();
-        let action = ready!(handler
-            .as_mut()
-            .poll_handle(cx, objects, connection, server_context))?;
-        let handler = self.dispatcher.active_handler.take().unwrap();
-        if action == traits::EventHandlerAction::Keep {
-            self.dispatcher.handlers.push(handler.into_future());
-        }
-        Poll::Ready(Ok(()))
-    }
+pub struct PendingEventFut<'dispatcher, 'ctx, Ctx: traits::Client> {
+    dispatcher: EventDispatcherProj<'dispatcher, Ctx>,
+    fut:        Option<Pin<Box<dyn AnyEventHandler<Ctx = Ctx> + 'ctx>>>,
+}
 
+impl<'dispatcher, 'ctx, Ctx: traits::Client> Future for PendingEventFut<'dispatcher, 'ctx, Ctx> {
+    type Output = EventHandlerOutput;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.fut.as_mut().unwrap().as_mut().poll_handle(cx)
+    }
+}
+
+impl<'dispatcher, 'ctx, Ctx: traits::Client> Drop for PendingEventFut<'dispatcher, 'ctx, Ctx> {
+    fn drop(&mut self) {
+        if let Some(fut) = self.fut.take() {
+            let (fut, action) = fut.stop_handle();
+            if action == traits::EventHandlerAction::Keep {
+                self.dispatcher.handlers.push(fut.into_future());
+                if let Some(w) = self.dispatcher.waker.take() {
+                    w.wake();
+                }
+            }
+        }
+    }
+}
+
+impl<'this, Ctx: traits::Client> PendingEvent<'this, Ctx> {
+    /// Start handling the event.
+    ///
+    /// # Notes
+    ///
+    /// Like [`traits::EventHandler::handle_event`], the future returned cannot
+    /// race with other future in the same client context.
     pub fn handle<'a>(
-        mut self,
+        self,
         objects: &'a mut Ctx::ObjectStore,
         connection: &'a mut Ctx::Connection,
         server_context: &'a Ctx::ServerContext,
-    ) -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>> + 'a
+    ) -> PendingEventFut<'this, 'a, Ctx>
     where
         'this: 'a,
     {
-        std::future::poll_fn(move |cx| self.poll_handle(cx, objects, connection, server_context))
+        let fut = self.dispatcher.active_handler.take().unwrap();
+        let fut = fut.start_handle(objects, connection, server_context);
+        PendingEventFut {
+            dispatcher: self.dispatcher,
+            fut:        Some(fut),
+        }
     }
 }
 
 pub mod event_handler {
-    use std::{
-        cell::Cell,
-        pin::Pin,
-        rc::Rc,
-        task::{Context, Poll},
-    };
-
-    use futures_util::task::AtomicWaker;
+    use std::future::Future;
 
     use super::traits;
+    use crate::utils::one_shot_signal;
 
-    #[derive(Debug)]
-    struct AbortableInner {
-        aborted: Cell<bool>,
-        waker:   AtomicWaker,
-    }
     /// A wrapper around an event handler that allows itself to be aborted
     /// via an [`AbortHandle`];
-    #[pin_project::pin_project]
     #[derive(Debug)]
     pub struct Abortable<E> {
-        #[pin]
         event_handler: E,
-        inner:         Rc<AbortableInner>,
+        stop_signal:   Option<one_shot_signal::Receiver>,
     }
 
     impl<E> Abortable<E> {
         /// Wrap an event handler so it may be aborted.
         pub fn new(event_handler: E) -> (Self, AbortHandle) {
-            let inner = Rc::new(AbortableInner {
-                aborted: Cell::new(false),
-                waker:   AtomicWaker::new(),
-            });
-            let abort_handle = AbortHandle {
-                inner: inner.clone(),
-            };
+            let (tx, rx) = one_shot_signal::new_pair();
+            let abort_handle = AbortHandle { inner: tx };
             let abortable = Abortable {
                 event_handler,
-                inner,
+                stop_signal: Some(rx),
             };
             (abortable, abort_handle)
         }
@@ -791,40 +968,34 @@ pub mod event_handler {
     impl<Ctx: traits::Client, E: traits::EventHandler<Ctx>> traits::EventHandler<Ctx> for Abortable<E> {
         type Message = E::Message;
 
-        fn poll_handle_event(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            objects: &mut <Ctx as traits::Client>::ObjectStore,
-            connection: &mut <Ctx as traits::Client>::Connection,
-            server_context: &<Ctx as traits::Client>::ServerContext,
-            message: &mut Self::Message,
-        ) -> Poll<
-            Result<
-                traits::EventHandlerAction,
-                Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
-            >,
-        > {
-            if self.inner.aborted.get() {
-                return Poll::Ready(Ok(traits::EventHandlerAction::Stop))
+        type Future<'ctx> = impl Future<Output = super::EventHandlerOutput> + 'ctx;
+
+        fn handle_event<'ctx>(
+            &'ctx mut self,
+            objects: &'ctx mut <Ctx as traits::Client>::ObjectStore,
+            connection: &'ctx mut <Ctx as traits::Client>::Connection,
+            server_context: &'ctx <Ctx as traits::Client>::ServerContext,
+            message: &'ctx mut Self::Message,
+        ) -> Self::Future<'ctx> {
+            async move {
+                use futures_util::{select, FutureExt};
+                let mut stop_signal = self.stop_signal.take().unwrap();
+                select! {
+                    () = stop_signal => {
+                        Ok(super::traits::EventHandlerAction::Stop)
+                    },
+                    res = self.event_handler.handle_event(objects, connection, server_context, message).fuse() => {
+                        self.stop_signal = Some(stop_signal);
+                        res
+                    }
+                }
             }
-            let this = self.project();
-            if let Poll::Ready(x) = this.event_handler.poll_handle_event(
-                cx,
-                objects,
-                connection,
-                server_context,
-                message,
-            ) {
-                return Poll::Ready(x)
-            }
-            this.inner.waker.register(cx.waker());
-            Poll::Pending
         }
     }
 
     #[derive(Debug)]
     pub struct AbortHandle {
-        inner: Rc<AbortableInner>,
+        inner: one_shot_signal::Sender,
     }
 
     impl AbortHandle {
@@ -832,25 +1003,26 @@ pub mod event_handler {
         /// This will cause the event handler to be stopped the next time
         /// it is polled.
         pub fn abort(&self) {
-            self.inner.aborted.set(true);
-            self.inner.waker.wake();
+            self.inner.send();
         }
 
         /// Turn this abort handle into an [`AutoAbortHandle`], which will
         /// automatically abort the event handler when it is dropped.
         pub fn auto_abort(self) -> AutoAbortHandle {
-            AutoAbortHandle(self)
+            AutoAbortHandle { inner: self.inner }
         }
     }
 
     /// An abort handle that will automatically abort the event handler
     /// when dropped.
     #[derive(Debug)]
-    pub struct AutoAbortHandle(AbortHandle);
+    pub struct AutoAbortHandle {
+        inner: one_shot_signal::Sender,
+    }
 
     impl Drop for AutoAbortHandle {
         fn drop(&mut self) {
-            self.0.abort();
+            self.inner.send();
         }
     }
 }

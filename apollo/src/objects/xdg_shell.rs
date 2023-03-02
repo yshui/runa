@@ -1,10 +1,4 @@
-use std::{
-    future::Future,
-    num::NonZeroU32,
-    pin::Pin,
-    rc::Rc,
-    task::{ready, Context, Poll},
-};
+use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
 use wl_io::traits::WriteMessage;
@@ -107,14 +101,17 @@ where
 {
     type Message = LayoutEvent;
 
-    fn poll_handle_event(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        objects: &mut Ctx::ObjectStore,
-        connection: &mut Ctx::Connection,
-        server_context: &Ctx::ServerContext,
-        message: &mut Self::Message,
-    ) -> Poll<Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>> {
+    type Future<'ctx> = impl Future<
+            Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync + 'static>>,
+        > + 'ctx;
+
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        server_context: &'ctx Ctx::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
         tracing::debug!(?message, "LayoutEventHandler::poll_handle_event");
         use crate::shell::{
             surface::Role,
@@ -125,43 +122,43 @@ where
             .cast::<crate::objects::compositor::Surface<<Ctx::ServerContext as HasShell>::Shell>>()
             .unwrap();
         let mut connection = Pin::new(connection);
-        if let Some(size) = message.0.extent {
-            if let Some(role_object_id) = surface.inner.role::<TopLevel>().map(|r| {
-                assert!(
-                    <TopLevel as Role<<Ctx::ServerContext as HasShell>::Shell>>::is_active(&r),
-                    "TopLevel role no longer active"
-                );
-                r.object_id
-            }) {
-                ready!(connection.as_mut().poll_ready(cx))?;
-                connection
-                    .as_mut()
-                    .start_send(role_object_id, xdg_toplevel::events::Configure {
-                        height: size.h as i32,
-                        width:  size.w as i32,
-                        states: &[],
-                    });
-            } else {
-                // TODO: handle PopUp role
-                unimplemented!()
+        async move {
+            if let Some(size) = message.0.extent {
+                if let Some(role_object_id) = surface.inner.role::<TopLevel>().map(|r| {
+                    assert!(
+                        <TopLevel as Role<<Ctx::ServerContext as HasShell>::Shell>>::is_active(&r),
+                        "TopLevel role no longer active"
+                    );
+                    r.object_id
+                }) {
+                    connection
+                        .as_mut()
+                        .send(role_object_id, xdg_toplevel::events::Configure {
+                            height: size.h as i32,
+                            width:  size.w as i32,
+                            states: &[],
+                        })
+                        .await?;
+                } else {
+                    // TODO: handle PopUp role
+                    unimplemented!()
+                }
             }
-
-            // Remove the extent so we don't send the same event twice
-            message.0.extent = None;
+            // Send xdg_surface.configure event
+            let (serial, role_object_id) = {
+                let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
+                let serial = role.serial;
+                role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
+                role.pending_serial.push_back(serial);
+                (serial, role.object_id)
+            };
+            connection
+                .send(role_object_id, xdg_surface::events::Configure {
+                    serial: serial.get(),
+                })
+                .await?;
+            Ok(EventHandlerAction::Keep)
         }
-        // Send xdg_surface.configure event
-        let (serial, role_object_id) = {
-            let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
-            let serial = role.serial;
-            role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
-            role.pending_serial.push_back(serial);
-            (serial, role.object_id)
-        };
-        ready!(connection.as_mut().poll_ready(cx))?;
-        connection.start_send(role_object_id, xdg_surface::events::Configure {
-            serial: serial.get(),
-        });
-        Poll::Ready(Ok(EventHandlerAction::Keep))
     }
 }
 

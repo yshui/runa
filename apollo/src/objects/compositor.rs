@@ -13,7 +13,7 @@
 //!
 //! We deal with this requirement with COW (copy-on-write) techniques. Details
 //! are documented in the types' document.
-use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
+use std::{future::Future, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
 use hashbrown::HashSet;
@@ -29,7 +29,7 @@ use wl_server::{
     },
     error,
     events::EventSource,
-    objects::{wayland_object, AnyObject},
+    objects::wayland_object,
 };
 
 use crate::{
@@ -43,23 +43,31 @@ use crate::{
     utils::{geometry::Point, WeakPtr},
 };
 
+#[derive(Derivative, Debug)]
+#[derivative(Default(bound = ""))]
+pub struct SurfaceState<Token> {
+    /// A queue of surface state tokens used for surface commits and
+    /// destructions.
+    scratch_buffer: Vec<Token>,
+}
+
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Shell: shell::Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<Shell>>,
-    /// A queue of surface state tokens used for surface commits and
-    /// destructions.
-    scratch_buffer:   Rc<RefCell<Vec<Shell::Token>>>,
 }
 
-fn deallocate_surface<ServerCtx: HasShell>(
-    this: &mut Surface<ServerCtx::Shell>,
+fn deallocate_surface<S: Shell, ServerCtx: HasShell<Shell = S>>(
+    this: &mut Surface<S>,
     server_context: &mut ServerCtx,
-    _state: Option<&mut dyn std::any::Any>,
+    state: Option<&mut dyn std::any::Any>,
 ) {
+    let state = state
+        .unwrap()
+        .downcast_mut::<SurfaceState<S::Token>>()
+        .unwrap();
     let mut shell = server_context.shell().borrow_mut();
-    this.inner
-        .destroy(&mut shell, &mut this.scratch_buffer.borrow_mut());
+    this.inner.destroy(&mut shell, &mut state.scratch_buffer);
 
     // Disconnected, no point sending anything for those callbacks
     this.inner.frame_callbacks().borrow_mut().clear();
@@ -97,7 +105,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
     }
 }
 
-#[wayland_object(on_disconnect = "deallocate_surface")]
+#[wayland_object(on_disconnect = "deallocate_surface", state = "SurfaceState<S::Token>")]
 impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
@@ -201,15 +209,20 @@ where
 
     fn commit(ctx: &mut Ctx, object_id: u32) -> Self::CommitFut<'_> {
         async move {
-            let this = ctx.objects().get::<Self>(object_id).unwrap();
+            let ClientParts {
+                objects,
+                server_context,
+                ..
+            } = ctx.as_mut_parts();
+            let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
+            let state = state.unwrap();
 
             use crate::shell::buffers::Buffer;
-            let server_context = ctx.server_context().clone();
             let released_buffer = {
                 let mut shell = server_context.shell().borrow_mut();
                 let old_buffer = this.inner.current(&shell).buffer().cloned();
                 this.inner
-                    .commit(&mut shell, &mut this.scratch_buffer.borrow_mut())
+                    .commit(&mut shell, &mut state.scratch_buffer)
                     .map_err(wl_server::error::Error::UnknownFatalError)?;
 
                 let new_buffer = this.inner.current(&shell).buffer().cloned();
@@ -282,12 +295,12 @@ where
                 connection,
                 ..
             } = ctx.as_mut_parts();
-            let this = objects.remove(object_id).unwrap();
-            let this: &Self = this.cast().unwrap();
+            let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
+            let state = state.unwrap();
 
             this.inner.destroy(
                 &mut server_context.shell().borrow_mut(),
-                &mut this.scratch_buffer.borrow_mut(),
+                &mut state.scratch_buffer,
             );
 
             let mut frame_callbacks =
@@ -352,20 +365,9 @@ where
                 surface.set_pending(current);
                 shell.post_commit(None, current);
 
-                // Copy the shared scratch_buffer from an existing surface object
-                let scratch_buffer = objects
-                    .by_type::<Surface<ShellOf<Ctx::ServerContext>>>()
-                    .next()
-                    .map(|(_, obj)| obj.scratch_buffer.clone())
-                    .unwrap_or_default();
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
-                objects
-                    .insert(id.0, Surface {
-                        inner: surface,
-                        scratch_buffer,
-                    })
-                    .unwrap();
+                objects.insert(id.0, Surface { inner: surface }).unwrap();
                 event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id:       id.0,

@@ -14,7 +14,7 @@ use wl_protocol::wayland::{
 use wl_server::{
     connection::traits::{Client, Store},
     error,
-    objects::{wayland_object, ObjectMeta, DISPLAY_ID},
+    objects::{wayland_object, DISPLAY_ID},
 };
 
 use crate::{
@@ -310,12 +310,7 @@ where
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
-            let pool = {
-                use wl_server::objects::ObjectMeta;
-                let this = ctx.objects().get(object_id).unwrap();
-                let this = this.cast::<Self>().unwrap();
-                this.inner.clone()
-            };
+            let pool = ctx.objects().get::<Self>(object_id).unwrap().inner.clone();
 
             let inserted = ctx.objects_mut().try_insert_with(id.0, || {
                 let buffer: BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer> = BufferObj {
@@ -350,14 +345,7 @@ where
     fn resize(ctx: &mut Ctx, object_id: u32, size: i32) -> Self::ResizeFut<'_> {
         async move {
             let len = size as usize;
-            let pool = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap()
-                .inner
-                .clone();
+            let pool = ctx.objects().get::<Self>(object_id).unwrap().inner.clone();
             let mut inner = pool.borrow_mut();
             tracing::debug!("resize shm_pool {:p} to {}", &*inner, size);
             if len > inner.len {

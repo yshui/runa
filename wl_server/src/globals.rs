@@ -90,16 +90,14 @@ impl<Ctx: Client> Bind<Ctx> for Display {
     type BindFut<'a > = impl Future<Output = std::io::Result<()>> + 'a where Self: 'a, Ctx: 'a;
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
-        use crate::{connection::traits::Store, objects::ObjectMeta};
+        use crate::connection::traits::Store;
         let ClientParts {
             objects,
             event_dispatcher,
             ..
         } = client.as_mut_parts();
         objects
-            .get_mut(object_id)
-            .unwrap()
-            .cast_mut::<Self::Object>()
+            .get_mut::<Self::Object>(object_id)
             .unwrap()
             .initialized = true;
 

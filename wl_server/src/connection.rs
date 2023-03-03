@@ -4,7 +4,7 @@
 //! Here are also some default implementations of these traits.
 
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     future::Future,
     marker::PhantomData,
     pin::Pin,
@@ -14,14 +14,11 @@ use std::{
 use derivative::Derivative;
 use futures_core::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
-use hashbrown::{
-    hash_map::{self, OccupiedError},
-    HashMap, HashSet,
-};
+use hashbrown::{hash_map, HashMap, HashSet};
 
 use crate::{
     events::{self, BroadcastEventSource},
-    objects::{Object, ObjectMeta},
+    objects::{AnyObject, Object},
     utils::one_shot_signal,
 };
 
@@ -35,13 +32,13 @@ pub mod traits {
 
     use crate::{
         events,
-        objects::{ObjectMeta, StaticObjectMeta},
+        objects::{AnyObject, MonoObject},
     };
     type ByType<'a, T, O, S>
     where
-        O: ObjectMeta + 'static,
+        O: AnyObject + 'static,
         S: Store<O> + 'a,
-        T: StaticObjectMeta + 'static,
+        T: MonoObject + 'static,
     = impl Iterator<Item = (u32, &'a T)> + 'a;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,6 +51,13 @@ pub mod traits {
             interface: &'static str,
             object_id: u32,
         },
+    }
+    #[derive(Debug)]
+    pub enum GetError {
+        // The ID is not found
+        IdNotFound(u32),
+        // The object is not of the requested type
+        TypeMismatch(u32),
     }
     pub trait Store<O>: events::EventSource<StoreEvent> {
         /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
@@ -68,19 +72,55 @@ pub mod traits {
         /// According to the wayland spec, the ID must start from 0xff000000
         fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
         fn remove(&mut self, id: u32) -> Option<O>;
-        /// Get an object from the store.
-        fn get(&self, id: u32) -> Option<&O>;
-        fn get_mut(&mut self, id: u32) -> Option<&mut O>;
+        /// Returns the singleton state associated with an object type. Returns
+        /// `None` if no object of that type is in the store, or if the
+        /// object type does not have a singleton state.
+        ///
+        /// # Panics
+        ///
+        /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
+        /// is not properly implemented for `O`.
+        fn get_state<T: MonoObject>(&self) -> Option<&T::SingletonState>;
+        /// See [`Store::get_state`]
+        fn get_state_mut<T: MonoObject>(&mut self) -> Option<&mut T::SingletonState>;
+        /// Get a reference an object with its associated singleton state
+        ///
+        /// # Panics
+        ///
+        /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
+        /// is not properly implemented for `O`.
+        fn get_with_state<T: MonoObject>(
+            &self,
+            id: u32,
+        ) -> Result<(&T, Option<&T::SingletonState>), GetError>;
+        /// Get a unique reference to an object with its associated singleton
+        /// state
+        ///
+        /// # Panics
+        ///
+        /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
+        /// is not properly implemented for `O`.
+        fn get_with_state_mut<T: MonoObject>(
+            &mut self,
+            id: u32,
+        ) -> Result<(&mut T, Option<&mut T::SingletonState>), GetError>;
+        /// Get a reference to an object from the store, and cast it down to the
+        /// concrete type.
+        fn get<T: 'static>(&self, id: u32) -> Result<&T, GetError>;
+        /// Get a unique reference to an object from the store, and cast it down
+        /// to the concrete type.
+        fn get_mut<T: 'static>(&mut self, id: u32) -> Result<&mut T, GetError>;
+        fn contains(&self, id: u32) -> bool;
         fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool;
         /// Return an `AsIterator` for all objects in the store with a specific
         /// interface An `Iterator` can be obtain from an `AsIterator` by
         /// calling `as_iter()`
         fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a>;
 
-        fn by_type<T: StaticObjectMeta + 'static>(&self) -> ByType<'_, T, O, Self>
+        fn by_type<T: MonoObject + 'static>(&self) -> ByType<'_, T, O, Self>
         where
             Self: Sized,
-            O: ObjectMeta + 'static,
+            O: AnyObject + 'static,
         {
             self.by_interface(T::INTERFACE)
                 .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
@@ -208,38 +248,32 @@ pub mod traits {
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""))]
 pub struct Store<Object> {
-    map:          HashMap<u32, Object>,
-    by_interface: HashMap<&'static str, HashSet<u32>>,
+    map:              HashMap<u32, Object>,
+    singleton_states: HashMap<TypeId, (Box<dyn Any>, u64)>,
+    by_interface:     HashMap<&'static str, HashSet<u32>>,
     /// Next ID to use for server side object allocation
     #[derivative(Default(value = "CLIENT_MAX_ID + 1"))]
-    next_id:      u32,
+    next_id:          u32,
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
-    ids_left:     u32,
-    event_source: BroadcastEventSource<traits::StoreEvent>,
+    ids_left:         u32,
+    event_source:     BroadcastEventSource<traits::StoreEvent>,
 }
 
-impl<Object: crate::objects::ObjectMeta> Store<Object> {
-    #[inline]
-    fn insert(&mut self, id: u32, object: Object) -> Result<(), Object> {
-        let interface = object.interface();
-        if let Err(OccupiedError { value, .. }) = self.map.try_insert(id, object) {
-            Err(value)
-        } else {
-            self.by_interface.entry(interface).or_default().insert(id);
-            self.event_source
-                .broadcast_reserve(traits::StoreEvent::Inserted {
-                    interface,
-                    object_id: id,
-                });
-            Ok(())
-        }
-    }
-
+impl<Object: crate::objects::AnyObject> Store<Object> {
     #[inline]
     fn remove(&mut self, id: u32) -> Option<Object> {
         let object = self.map.remove(&id)?;
         let interface = object.interface();
+        if let hash_map::Entry::Occupied(mut e) =
+            self.singleton_states.entry(AnyObject::type_id(&object))
+        {
+            let (_, count) = e.get_mut();
+            *count -= 1;
+            if *count == 0 {
+                e.remove();
+            }
+        }
         self.by_interface.get_mut(interface).unwrap().remove(&id);
         self.event_source
             .broadcast_reserve(traits::StoreEvent::Removed {
@@ -250,13 +284,20 @@ impl<Object: crate::objects::ObjectMeta> Store<Object> {
     }
 
     #[inline]
-    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> Object) -> bool {
+    fn try_insert_with<F: FnOnce() -> Object>(&mut self, id: u32, f: F) -> bool {
         let entry = self.map.entry(id);
         match entry {
             hash_map::Entry::Occupied(_) => false,
             hash_map::Entry::Vacant(v) => {
                 let object = f();
                 let interface = object.interface();
+                if let Some(state) = object.singleton_state() {
+                    let (_, count) = self
+                        .singleton_states
+                        .entry(AnyObject::type_id(&object))
+                        .or_insert((state, 0));
+                    *count += 1;
+                }
                 v.insert(object);
                 self.by_interface.entry(interface).or_default().insert(id);
                 self.event_source
@@ -293,7 +334,7 @@ impl<Object> Drop for Store<Object> {
     }
 }
 
-impl<O: ObjectMeta> events::EventSource<traits::StoreEvent> for Store<O> {
+impl<O: AnyObject> events::EventSource<traits::StoreEvent> for Store<O> {
     type Source = impl Stream<Item = traits::StoreEvent> + 'static;
 
     fn subscribe(&self) -> Self::Source {
@@ -301,7 +342,7 @@ impl<O: ObjectMeta> events::EventSource<traits::StoreEvent> for Store<O> {
     }
 }
 
-impl<O: ObjectMeta> traits::Store<O> for Store<O> {
+impl<O: AnyObject> traits::Store<O> for Store<O> {
     type ByIface<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
 
     #[inline]
@@ -347,7 +388,8 @@ impl<O: ObjectMeta> traits::Store<O> for Store<O> {
         };
         self.ids_left -= 1;
 
-        Self::insert(self, curr, object.into()).unwrap_or_else(|_| unreachable!());
+        let inserted = Self::try_insert_with(self, curr, || object.into());
+        assert!(inserted);
         Ok(curr)
     }
 
@@ -358,12 +400,67 @@ impl<O: ObjectMeta> traits::Store<O> for Store<O> {
         Self::remove(self, object_id)
     }
 
-    fn get(&self, object_id: u32) -> Option<&O> {
-        self.map.get(&object_id)
+    fn get_state<T: crate::objects::MonoObject>(&self) -> Option<&T::SingletonState> {
+        self.singleton_states
+            .get(&std::any::TypeId::of::<T>())
+            .map(|(s, _)| s.downcast_ref().unwrap())
     }
 
-    fn get_mut(&mut self, id: u32) -> Option<&mut O> {
-        self.map.get_mut(&id)
+    fn get_state_mut<T: crate::objects::MonoObject>(&mut self) -> Option<&mut T::SingletonState> {
+        self.singleton_states
+            .get_mut(&std::any::TypeId::of::<T>())
+            .map(|(s, _)| s.downcast_mut().unwrap())
+    }
+
+    fn get_with_state<T: crate::objects::MonoObject>(
+        &self,
+        id: u32,
+    ) -> Result<(&T, Option<&T::SingletonState>), traits::GetError> {
+        let o = self.map.get(&id).ok_or(traits::GetError::IdNotFound(id))?;
+        let obj = o.cast::<T>().ok_or(traits::GetError::TypeMismatch(id))?;
+        let state = self
+            .singleton_states
+            .get(&std::any::TypeId::of::<T>())
+            .map(|(s, _)| s.downcast_ref().unwrap());
+        Ok((obj, state))
+    }
+
+    fn get_with_state_mut<'a, T: crate::objects::MonoObject>(
+        &'a mut self,
+        id: u32,
+    ) -> Result<(&'a mut T, Option<&'a mut T::SingletonState>), traits::GetError> {
+        let o: &'a mut O = self
+            .map
+            .get_mut(&id)
+            .ok_or(traits::GetError::IdNotFound(id))?;
+        let obj = o
+            .cast_mut::<T>()
+            .ok_or(traits::GetError::TypeMismatch(id))?;
+        let state = self
+            .singleton_states
+            .get_mut(&std::any::TypeId::of::<T>())
+            .map(|(s, _)| s.downcast_mut().unwrap());
+        Ok((obj, state))
+    }
+
+    fn get<T: 'static>(&self, object_id: u32) -> Result<&T, traits::GetError> {
+        let o = self
+            .map
+            .get(&object_id)
+            .ok_or(traits::GetError::IdNotFound(object_id))?;
+        o.cast().ok_or(traits::GetError::TypeMismatch(object_id))
+    }
+
+    fn get_mut<T: 'static>(&mut self, id: u32) -> Result<&mut T, traits::GetError> {
+        let o = self
+            .map
+            .get_mut(&id)
+            .ok_or(traits::GetError::IdNotFound(id))?;
+        o.cast_mut().ok_or(traits::GetError::TypeMismatch(id))
+    }
+
+    fn contains(&self, id: u32) -> bool {
+        self.map.contains_key(&id)
     }
 
     fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool {
@@ -442,14 +539,15 @@ macro_rules! impl_dispatch {
                         .is_err();
                 }
                 if !fatal {
-                    use $crate::{objects::ObjectMeta, connection::Store};
+                    use $crate::{objects::AnyObject, connection::Store};
                     if bytes_read != len as usize {
                         let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
                         let opcode = len_opcode & 0xffff;
                         tracing::error!(
                             "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
                              {}@{object_id}, opcode: {opcode}",
-                            self.objects().get(object_id).map(|o| o.interface()).unwrap_or("unknown")
+                            self.objects().get::<Self::Object>(object_id)
+                                .map(|o| o.interface()).unwrap_or("unknown")
                         );
                         fatal = true;
                     }
@@ -542,6 +640,14 @@ where
     Ctx: traits::Client,
 = impl Future<Output = Result<(EventHandlerOutput, H), (H::Message, H)>> + 'a;
 
+/// A helper function for storing the event handler's future.
+///
+/// Event handler's generate a future that references the event handler itself,
+/// if we store that directly in [`PairedEventHandler`] we would have a
+/// self-referential struct, so we use this async fn to get around that.
+///
+/// The stop signal is needed so when the future can to be stopped early, for
+/// example when a [`PendingEventFut`] is dropped.
 fn paired_event_handler_driver<'ctx, H, Ctx: traits::Client>(
     mut handler: H,
     mut stop_signal: one_shot_signal::Receiver,
@@ -630,9 +736,9 @@ where
     /// None, which means `Self` does not contain any references.
     fn coerce_lifetime<'a>(self: Pin<Box<Self>>) -> Pin<Box<PairedEventHandler<'a, Ctx, ES, H>>> {
         fn cast_ptr<T, U>(i: *mut T) -> *mut U {
-            // We have this because Rust checks direct cast of `*mut T<'a>` to `*mut T<'static>`
-            // and rejects then because `'a` is shorter than `'static`. However Rust cannot check
-            // cast in generic functions.
+            // We have this because Rust checks direct cast of `*mut T<'a>` to `*mut
+            // T<'static>` and rejects then because `'a` is shorter than
+            // `'static`. However Rust cannot check cast in generic functions.
             i as _
         }
         assert!(self.fut.is_none());
@@ -693,10 +799,6 @@ where
             connection,
             server_context,
         );
-        // Safety: we erase the lifetime from the future so we can store it. The borrow
-        // is captured in the return type signature of this function. So even
-        // though we erased the lifetime internally, the caller still sees that
-        // we have captured this lifetime.
         this.fut.set(Some(new_fut));
         shortened
     }
@@ -918,8 +1020,11 @@ impl<'this, Ctx: traits::Client> PendingEvent<'this, Ctx> {
     ///
     /// # Notes
     ///
+    /// If you `std::mem::forget` the returned future, the event handler will be
+    /// permanently removed from the event dispatcher.
+    ///
     /// Like [`traits::EventHandler::handle_event`], the future returned cannot
-    /// race with other future in the same client context.
+    /// race with other futures in the same client context.
     pub fn handle<'a>(
         self,
         objects: &'a mut Ctx::ObjectStore,

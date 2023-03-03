@@ -62,7 +62,7 @@ where
 
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
-            use wl_server::objects::ObjectMeta;
+            use wl_server::objects::AnyObject;
 
             // Remove ourself from all_outputs
             let mut object = ctx.objects_mut().remove(object_id).unwrap();

@@ -19,7 +19,6 @@ use wl_server::{
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
-    objects::ObjectMeta,
     renderer_capability::RendererCapability,
 };
 
@@ -71,11 +70,7 @@ where
                 .filter_map(|(_, obj)| obj.is_complete().then_some(obj)) // skip incomplete compositor objects
                 .next()
                 .cloned();
-            let this = objects
-                .get_mut(object_id)
-                .unwrap()
-                .cast_mut::<Self::Object>()
-                .unwrap();
+            let this = objects.get_mut::<Self::Object>(object_id).unwrap();
             if let Some(compositor) = other_compositor {
                 *this = compositor;
             } else {
@@ -350,9 +345,7 @@ where
                 .or_default()
                 .insert(object_id);
             let this = objects
-                .get_mut(object_id)
-                .unwrap()
-                .cast_mut::<Self::Object>()
+                .get_mut::<Self::Object>(object_id)
                 .unwrap();
             // This will automatically stop the event handler when the output is destroyed
             this.event_handler_abort = Some(auto_abort);

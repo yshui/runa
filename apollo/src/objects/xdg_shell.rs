@@ -13,7 +13,7 @@ use wl_server::{
     },
     error::Error,
     events::EventSource,
-    objects::{wayland_object, ObjectMeta},
+    objects::wayland_object,
 };
 
 use crate::{
@@ -51,6 +51,7 @@ where
         id: wl_types::NewId,
         surface: wl_types::Object,
     ) -> Self::GetXdgSurfaceFut<'_> {
+        use crate::objects::compositor;
         async move {
             let ClientParts {
                 objects,
@@ -58,14 +59,9 @@ where
                 ..
             } = ctx.as_mut_parts();
             let surface_id = surface.0;
-            let surface_obj = objects
-                .get(surface_id)
-                .ok_or_else(|| Error::UnknownObject(surface.0))?;
-            let surface = surface_obj
-                .cast::<crate::objects::compositor::Surface<ShellOf<Ctx::ServerContext>>>()
-                .ok_or_else(|| Error::UnknownObject(surface_id))?
-                .inner
-                .clone();
+            let surface_obj =
+                objects.get::<compositor::Surface<ShellOf<Ctx::ServerContext>>>(surface_id)?;
+            let surface = surface_obj.inner.clone();
 
             let mut shell = server_context.shell().borrow_mut();
             let inserted = objects.try_insert_with(id.0, || {
@@ -117,9 +113,10 @@ where
             surface::Role,
             xdg::{Surface as XdgSurface, TopLevel},
         };
-        let surface = objects.get(self.surface_object_id).unwrap();
-        let surface = surface
-            .cast::<crate::objects::compositor::Surface<<Ctx::ServerContext as HasShell>::Shell>>()
+        let surface = objects
+            .get::<crate::objects::compositor::Surface<<Ctx::ServerContext as HasShell>::Shell>>(
+                self.surface_object_id,
+            )
             .unwrap();
         let mut connection = Pin::new(connection);
         async move {
@@ -210,13 +207,7 @@ where
                 event_dispatcher,
                 ..
             } = ctx.as_mut_parts();
-            let surface = objects
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap()
-                .inner
-                .clone();
+            let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects.try_insert_with(id.0, || {
                 let base_role = surface.role::<xdg::Surface>().unwrap().clone();
                 let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
@@ -242,12 +233,7 @@ where
 
     fn ack_configure(ctx: &mut Ctx, object_id: u32, serial: u32) -> Self::AckConfigureFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
             while let Some(front) = role.pending_serial.front() {
                 if front.get() > serial {
@@ -271,12 +257,7 @@ where
         height: i32,
     ) -> Self::SetWindowGeometryFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
             role.pending_geometry = Some(Rectangle {
                 loc:  Point::new(x, y),
@@ -347,12 +328,7 @@ where
         title: wl_types::Str<'a>,
     ) -> Self::SetTitleFut<'a> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.title = Some(String::from_utf8_lossy(title.0.to_bytes()).into_owned());
             Ok(())
@@ -373,12 +349,7 @@ where
         app_id: wl_types::Str<'a>,
     ) -> Self::SetAppIdFut<'a> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.app_id = Some(String::from_utf8_lossy(app_id.0.to_bytes()).into_owned());
             Ok(())
@@ -392,12 +363,7 @@ where
         height: i32,
     ) -> Self::SetMaxSizeFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.pending.max_size = Some(Extent::new(width, height));
             Ok(())
@@ -411,12 +377,7 @@ where
         height: i32,
     ) -> Self::SetMinSizeFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
             role.pending.min_size = Some(Extent::new(width, height));
             Ok(())

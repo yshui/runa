@@ -29,7 +29,7 @@ use wl_server::{
     },
     error,
     events::EventSource,
-    objects::{wayland_object, ObjectMeta},
+    objects::{wayland_object, AnyObject},
 };
 
 use crate::{
@@ -137,13 +137,7 @@ where
                 server_context,
                 ..
             } = ctx.as_mut_parts();
-            let surface = objects
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap()
-                .inner
-                .clone();
+            let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects.try_insert_with(callback.0, || {
                 let mut shell = server_context.shell().borrow_mut();
                 let state = surface.pending_mut(&mut shell);
@@ -172,24 +166,13 @@ where
                     kind: wl_surface::enums::Error::InvalidOffset,
                 }))
             }
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let buffer_id = buffer.0;
-            let Some(buffer) = ctx.objects().get(buffer.0) else {
-                return Err(error::Error::UnknownObject(buffer_id));
-            };
-            if buffer.interface() != wl_buffer::NAME {
-                return Err(error::Error::InvalidObject(buffer_id))
-            }
+            let buffer = ctx.objects().get::<crate::objects::Buffer<
+                <Ctx::ServerContext as HasBuffer>::Buffer,
+            >>(buffer.0)?;
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
-            let buffer = buffer
-                .cast::<crate::objects::Buffer<<Ctx::ServerContext as HasBuffer>::Buffer>>()
-                .unwrap();
             state.set_buffer(Some(buffer.buffer.clone()));
             Ok(())
         }
@@ -204,12 +187,7 @@ where
         height: i32,
     ) -> Self::DamageFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
@@ -226,12 +204,7 @@ where
         height: i32,
     ) -> Self::DamageBufferFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
             state.damage_buffer();
@@ -241,12 +214,7 @@ where
 
     fn commit(ctx: &mut Ctx, object_id: u32) -> Self::CommitFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
 
             use crate::shell::buffers::Buffer;
             let server_context = ctx.server_context().clone();
@@ -282,12 +250,7 @@ where
 
     fn set_buffer_scale(ctx: &mut Ctx, object_id: u32, scale: i32) -> Self::SetBufferScaleFut<'_> {
         async move {
-            let this = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap();
+            let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let pending_mut = this.inner.pending_mut(&mut shell);
 
@@ -395,7 +358,7 @@ where
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
         async move {
-            if ctx.objects().get(id.0).is_none() {
+            if !ctx.objects().contains(id.0) {
                 let ClientParts {
                     server_context,
                     objects,
@@ -425,10 +388,8 @@ where
                     .map(|(_, obj)| obj.scratch_buffer.clone())
                     .unwrap_or_default();
                 let shared_surface_buffers = objects
-                    .get(object_id)
-                    .expect("missing object")
-                    .cast::<Self>()
-                    .expect("wrong type")
+                    .get::<Self>(object_id)
+                    .unwrap()
                     .inner
                     .as_ref()
                     .expect("missing shared buffers")
@@ -618,14 +579,7 @@ where
 
     fn set_position(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::SetPositionFut<'_> {
         async move {
-            let surface = ctx
-                .objects()
-                .get(object_id)
-                .unwrap()
-                .cast::<Self>()
-                .unwrap()
-                .0
-                .clone();
+            let surface = ctx.objects().get::<Self>(object_id).unwrap().0.clone();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let role = surface
                 .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
@@ -712,31 +666,27 @@ where
             let surface_id = surface.0;
             let surface = ctx
                 .objects()
-                .get(surface.0)
-                .and_then(|r| {
-                    r.cast()
-                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.inner.clone())
-                })
-                .ok_or_else(|| {
+                .get::<Surface<ShellOf<Ctx::ServerContext>>>(surface.0)
+                .map_err(|e| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       surface.0,
                         subsurface_object: object_id,
                     })
-                })?;
+                })?
+                .inner
+                .clone();
             let parent = ctx
                 .objects()
-                .get(parent.0)
-                .and_then(|r| {
-                    r.cast()
-                        .map(|sur: &Surface<ShellOf<Ctx::ServerContext>>| sur.inner.clone())
-                })
-                .ok_or_else(|| {
+                .get::<Surface<ShellOf<Ctx::ServerContext>>>(parent.0)
+                .map_err(|e| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       parent.0,
                         subsurface_object: object_id,
                     })
-                })?;
-            if ctx.objects().get(id.0).is_none() {
+                })?
+                .inner
+                .clone();
+            if !ctx.objects().contains(id.0) {
                 let shell = ctx.server_context().shell();
                 let mut shell = shell.borrow_mut();
                 if !crate::shell::surface::roles::Subsurface::attach(

@@ -52,13 +52,11 @@ pub struct Surface<Shell: shell::Shell> {
     scratch_buffer:   Rc<RefCell<Vec<Shell::Token>>>,
 }
 
-fn deallocate_surface<Ctx: Client>(
-    this: &mut Surface<<Ctx::ServerContext as HasShell>::Shell>,
-    ctx: &mut Ctx,
-) where
-    Ctx::ServerContext: HasShell,
-{
-    let server_context = ctx.server_context().clone();
+fn deallocate_surface<ServerCtx: HasShell>(
+    this: &mut Surface<ServerCtx::Shell>,
+    server_context: &mut ServerCtx,
+    _state: Option<&mut dyn std::any::Any>,
+) {
     let mut shell = server_context.shell().borrow_mut();
     this.inner
         .destroy(&mut shell, &mut this.scratch_buffer.borrow_mut());

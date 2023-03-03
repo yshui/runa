@@ -494,8 +494,8 @@ pub fn wayland_object(
     };
     let on_disconnect = if let Some(on_disconnect) = attr.on_disconnect {
         quote! {
-            fn on_disconnect(&mut self, ctx: &mut Ctx) {
-                #on_disconnect(self, ctx)
+            fn on_disconnect(&mut self, server_ctx: &mut Ctx::ServerContext, state: Option<&mut dyn ::std::any::Any>) {
+                #on_disconnect(self, server_ctx, state)
             }
         }
     } else {
@@ -727,7 +727,7 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(f) => <#ty_ as #crate_::objects::Object<#context_param>>::on_disconnect(f, ctx),
+            Self::#v(f) => <#ty_ as #crate_::objects::Object<#context_param>>::on_disconnect(f, server_ctx, state),
         }
     });
     let additional_bounds2 = body.iter().enumerate().map(|(i, v)| {
@@ -838,7 +838,11 @@ pub fn interface_message_dispatch_for_enum(
                 #ctx_lifetime_bound;
             type Request<'a> = (&'a [u8], &'a [::std::os::unix::io::RawFd]) where Self: 'a, #ctx_lifetime_bound;
             #[inline]
-            fn on_disconnect(&mut self, ctx: &mut #context_param) {
+            fn on_disconnect(
+                &mut self, 
+                server_ctx: &mut <#context_param as #crate_::connection::traits::Client>::ServerContext, 
+                state: Option<&mut dyn ::std::any::Any>
+            ) {
                 match self {
                     #(#disconnects)*
                 }

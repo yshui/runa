@@ -314,15 +314,19 @@ impl<Object: crate::objects::AnyObject> Store<Object> {
 impl<O> Store<O> {
     /// Remove all objects from the store. MUST be called before the store is
     /// dropped, to ensure on_disconnect is called for all objects.
-    pub fn clear_for_disconnect<Ctx>(&mut self, ctx: &mut Ctx)
+    pub fn clear_for_disconnect<Ctx>(&mut self, server_ctx: &mut Ctx::ServerContext)
     where
+        Ctx: traits::Client,
         O: Object<Ctx>,
     {
         tracing::debug!("Clearing store for disconnect");
         for (_, ref mut obj) in self.map.drain() {
             tracing::debug!("Calling on_disconnect for {obj:p}");
-            obj.on_disconnect(ctx);
+            let state = self.singleton_states.get_mut(&AnyObject::type_id(obj));
+            obj.on_disconnect(server_ctx, state.map(|(s, _)| s.as_mut()));
         }
+        self.singleton_states.clear();
+        self.by_interface.clear();
         self.ids_left = u32::MAX - CLIENT_MAX_ID;
         self.next_id = CLIENT_MAX_ID + 1;
     }

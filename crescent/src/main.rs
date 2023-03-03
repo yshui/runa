@@ -105,7 +105,7 @@ impl wl_server::server::Server for Crescent {
             .spawn(async move {
                 let (rx, tx) = ::wl_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
-                    store: Some(Default::default()),
+                    store: Default::default(),
                     state,
                     tx: Connection::new(tx, 256),
                     event_dispatcher: EventDispatcher::new(),
@@ -156,7 +156,7 @@ impl wl_server::server::Server for Crescent {
                         event = Pin::new(event_dispatcher).next().fuse() => {
                             match event {
                                 Some(event) => {
-                                    event.handle(store.as_mut().unwrap(), tx, state).await?;
+                                    event.handle(store, tx, state).await?;
                                     tx.flush().await?;
                                 },
                                 None => {
@@ -198,7 +198,7 @@ impl RendererCapability for Crescent {
 
 #[derive(Debug)]
 pub struct CrescentClient {
-    store:            Option<Store<AnyObject>>,
+    store:            Store<AnyObject>,
     state:            Crescent,
     tx:               Connection<wl_io::WriteWithFd>,
     event_dispatcher: EventDispatcher<Self>,
@@ -207,9 +207,8 @@ pub struct CrescentClient {
 impl CrescentClient {
     /// Finalize the client context after the client has disconnected.
     async fn disconnect(&mut self) {
-        if let Some(mut store) = self.store.take() {
-            store.clear_for_disconnect(self);
-        }
+        let Self { store, state, .. } = self;
+        store.clear_for_disconnect(state);
     }
 }
 
@@ -227,14 +226,14 @@ impl Client for CrescentClient {
     }
 
     fn objects(&self) -> &Self::ObjectStore {
-        self.store.as_ref().unwrap()
+        &self.store
     }
 
     fn as_mut_parts(&mut self) -> ClientParts<'_, Self> {
         ClientParts {
             server_context:   &self.state,
             connection:       &mut self.tx,
-            objects:          self.store.as_mut().unwrap(),
+            objects:          &mut self.store,
             event_dispatcher: &mut self.event_dispatcher,
         }
     }

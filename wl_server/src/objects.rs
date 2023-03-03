@@ -88,7 +88,7 @@ pub trait MonoObject: AnyObject {
 /// If a object is a proxy of a global, it has to recognize if the global's
 /// lifetime has ended, and turn all message sent to it to no-ops. This can
 /// often be achieved by holding a Weak reference to the global object.
-pub trait Object<Ctx>: AnyObject {
+pub trait Object<Ctx: crate::connection::traits::Client>: AnyObject {
     type Request<'a>: wl_io::traits::de::Deserialize<'a>
     where
         Ctx: 'a;
@@ -97,12 +97,25 @@ pub trait Object<Ctx>: AnyObject {
     where
         Ctx: 'a;
     /// A function that will be called when the client disconnects. It should
-    /// free up allocated resources if any. This function should not try to
-    /// send anything to the client, as it has already disconnected.
+    /// free up allocated resources if any. This function only gets reference to
+    /// the server context, because:
     ///
-    /// The context object is passed as a `dyn Any` to make this function object
-    /// safe.
-    fn on_disconnect(&mut self, _ctx: &mut Ctx) {}
+    ///   - It cannot send anything to the client, as it has already
+    ///     disconnected. So no `Ctx::Connection`.
+    ///   - The object store will be borrowed mutably when this is called, to
+    ///     iterate over all objects and calling their on_disconnect. So no
+    ///     `Ctx::ObjectStore`.
+    ///   - Adding more event handlers at this point doesn't make sense. So no
+    ///     `Ctx::EventDispatcher`.
+    ///
+    /// This function also gets access to the singleton state associated with
+    /// this object type, if there is any.
+    fn on_disconnect(
+        &mut self,
+        _server_ctx: &mut Ctx::ServerContext,
+        _state: Option<&mut dyn std::any::Any>,
+    ) {
+    }
     /// Dispatch requests to the interface implementation. Returns a future,
     /// that resolves to (Result, usize, usize), which are the result of the
     /// request, the number of bytes and file descriptors in the message,
@@ -265,7 +278,7 @@ impl AnyObject for Callback {
         None
     }
 }
-impl<Ctx> Object<Ctx> for Callback {
+impl<Ctx: crate::connection::traits::Client> Object<Ctx> for Callback {
     type Error = crate::error::Error;
     type Request<'a> = Infallible where Ctx: 'a;
 

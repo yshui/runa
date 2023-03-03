@@ -526,6 +526,7 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
                     }
                 }
             }
+            current_outputs.clone_from(&message);
             Ok(EventHandlerAction::Keep)
         }
     }

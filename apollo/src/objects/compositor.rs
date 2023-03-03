@@ -16,7 +16,7 @@
 use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
     wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
@@ -368,14 +368,9 @@ where
                         scratch_buffer,
                     })
                     .unwrap();
-                let all_outputs = objects
-                    .by_type::<super::Output>()
-                    .map(|(_, obj)| obj.all_outputs.clone().unwrap())
-                    .next();
                 event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
-                    object_id: id.0,
-                    all_outputs,
+                    object_id:       id.0,
                 });
                 Ok(())
             } else {
@@ -393,15 +388,11 @@ where
     }
 }
 
-type AllOutputs = HashMap<WeakPtr<ShellOutput>, HashSet<u32>>;
 struct OutputChangedEventHandler {
     /// Object id of the surface
     object_id:       u32,
     /// Current outputs that overlap with the surface
     current_outputs: HashSet<WeakPtr<ShellOutput>>,
-    /// All bound output objects of this client context. None if the client has
-    /// no output objects bound.
-    all_outputs:     Option<Rc<RefCell<AllOutputs>>>,
 }
 
 impl<S: Shell, Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler
@@ -428,7 +419,6 @@ where
             let Self {
                 object_id,
                 current_outputs,
-                all_outputs,
             } = self;
 
             let mut connection = Pin::new(connection);
@@ -440,13 +430,7 @@ where
 
             let message = message.0.borrow();
 
-            if all_outputs.is_none() {
-                *all_outputs = objects
-                    .by_type::<crate::objects::Output>()
-                    .map(|(_, obj)| obj.all_outputs.clone().unwrap())
-                    .next();
-            }
-            let Some(all_outputs) = all_outputs.as_ref() else {
+            let Some(output_state) = objects.get_state::<crate::objects::Output>() else {
                 // This client has no bound output object, so just update the current outputs, and we
                 // will be done.
                 current_outputs.clone_from(&message);
@@ -455,7 +439,7 @@ where
 
             // Otherwise calculate the difference between the current outputs and the new
             // outputs
-            let all_outputs = all_outputs.borrow();
+            let all_outputs = &output_state.all_outputs;
             for deleted in current_outputs.difference(&message) {
                 if let Some(ids) = all_outputs.get(deleted) {
                     for id in ids {

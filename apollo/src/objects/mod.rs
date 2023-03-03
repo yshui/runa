@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use hashbrown::{HashMap, HashSet};
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
@@ -40,17 +40,20 @@ where
     }
 }
 
+#[derive(Debug, Default)]
+pub struct OutputState {
+    /// A map of shell outputs to their set of object ids
+    pub(crate) all_outputs: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
+}
+
 #[derive(Debug)]
 pub struct Output {
     /// The corresponding shell output object.
     pub(crate) output:              WeakPtr<ShellOutput>,
-    /// A map of all outputs to their object ids in the client owning this
-    /// output object.
-    pub(crate) all_outputs: Option<Rc<RefCell<HashMap<WeakPtr<ShellOutput>, HashSet<u32>>>>>,
     pub(crate) event_handler_abort: Option<AutoAbortHandle>,
 }
 
-#[wayland_object]
+#[wayland_object(state = "OutputState")]
 impl<Ctx> wl_output::RequestDispatch<Ctx> for Output
 where
     Ctx::ServerContext: HasShell,
@@ -63,16 +66,25 @@ where
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
             use wl_server::objects::AnyObject;
+            let objects = ctx.objects_mut();
+            let object = objects.remove(object_id).unwrap();
+            let object = object.cast::<Self>().unwrap();
 
             // Remove ourself from all_outputs
-            let mut object = ctx.objects_mut().remove(object_id).unwrap();
-            let object = object.cast_mut::<Self>().unwrap();
-            let all_outputs = object.all_outputs.take().unwrap();
-            let mut all_outputs = all_outputs.borrow_mut();
-            let all_outputs_entry = all_outputs.get_mut(&object.output).unwrap();
-            all_outputs_entry.remove(&object_id);
-            if all_outputs_entry.is_empty() {
-                all_outputs.remove(&object.output);
+            let Some(state) = objects.get_state_mut::<Self>() else {
+                // No bound output objects left anymore
+                return Ok(());
+            };
+
+            use hashbrown::hash_map::Entry;
+            let Entry::Occupied(mut all_outputs_entry) = state.all_outputs.entry(object.output.clone()) else {
+                panic!("Output object not found in all_outputs");
+            };
+
+            let ids = all_outputs_entry.get_mut();
+            ids.remove(&object_id);
+            if ids.is_empty() {
+                all_outputs_entry.remove();
             }
 
             Ok(())

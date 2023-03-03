@@ -261,7 +261,6 @@ impl GlobalMeta for Output {
     fn new_object(&self) -> Self::Object {
         crate::objects::Output {
             output:              Rc::downgrade(&self.shell_output).into(),
-            all_outputs:         None,
             event_handler_abort: None,
         }
     }
@@ -315,14 +314,6 @@ where
                 connection.send(id, message).await.unwrap();
             }
 
-            // If there is an output object already bound (of any shell output), we can get
-            // the set of all bound outputs from it.
-            let all_outputs = objects
-                .by_type::<Self::Object>()
-                .filter_map(|(id, o)| (id != object_id).then(|| o.all_outputs.clone().unwrap()))
-                .next()
-                .unwrap_or_default();
-
             // Start a new event handler for this shell output
             let rx = self.shell_output.subscribe();
             let handler = OutputChangeEventHandler { object_id };
@@ -331,15 +322,15 @@ where
             event_dispatcher.add_event_handler(rx, handler);
 
             // Add this output to the set of all outputs
-            all_outputs
-                .borrow_mut()
+            let state = objects.get_state_mut::<Self::Object>().unwrap();
+            state
+                .all_outputs
                 .entry(output)
                 .or_default()
                 .insert(object_id);
             let this = objects.get_mut::<Self::Object>(object_id).unwrap();
             // This will automatically stop the event handler when the output is destroyed
             this.event_handler_abort = Some(auto_abort);
-            this.all_outputs = Some(all_outputs);
 
             Ok(())
         }

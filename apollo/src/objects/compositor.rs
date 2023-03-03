@@ -49,6 +49,8 @@ pub struct SurfaceState<Token> {
     /// A queue of surface state tokens used for surface commits and
     /// destructions.
     scratch_buffer: Vec<Token>,
+    /// A buffer used for handling output changed event for surfaces.
+    new_outputs:                             HashSet<WeakPtr<ShellOutput>>,
 }
 
 #[derive(Derivative)]
@@ -423,24 +425,32 @@ where
 
             let mut connection = Pin::new(connection);
 
+            let surface_state = objects.get_state_mut::<Surface<S>>().unwrap();
+
+            {
+                let message = message.0.borrow();
+                surface_state.new_outputs.clone_from(&message);
+            }
+
             // Usually we would check if the object is still alive here, and stop the event
             // handler if it is not. But when a surface object dies, its event
             // stream will terminate, and the event handler will be stopped
             // automatically in that case.
 
-            let message = message.0.borrow();
-
             let Some(output_state) = objects.get_state::<crate::objects::Output>() else {
                 // This client has no bound output object, so just update the current outputs, and we
                 // will be done.
-                current_outputs.clone_from(&message);
+                let surface_state = objects.get_state_mut::<Surface<S>>().unwrap();
+                std::mem::swap(current_outputs, &mut surface_state.new_outputs);
                 return Ok(EventHandlerAction::Keep);
             };
 
             // Otherwise calculate the difference between the current outputs and the new
             // outputs
+            let surface_state = objects.get_state::<Surface<S>>().unwrap();
+            let new_outputs = &surface_state.new_outputs;
             let all_outputs = &output_state.all_outputs;
-            for deleted in current_outputs.difference(&message) {
+            for deleted in current_outputs.difference(new_outputs) {
                 if let Some(ids) = all_outputs.get(deleted) {
                     for id in ids {
                         connection
@@ -452,7 +462,7 @@ where
                     }
                 }
             }
-            for added in message.difference(current_outputs) {
+            for added in new_outputs.difference(current_outputs) {
                 if let Some(ids) = all_outputs.get(added) {
                     for id in ids {
                         connection
@@ -464,7 +474,9 @@ where
                     }
                 }
             }
-            current_outputs.clone_from(&message);
+
+            let surface_state = objects.get_state_mut::<Surface<S>>().unwrap();
+            std::mem::swap(current_outputs, &mut surface_state.new_outputs);
             Ok(EventHandlerAction::Keep)
         }
     }

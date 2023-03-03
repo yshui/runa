@@ -43,17 +43,6 @@ use crate::{
     utils::{geometry::Point, WeakPtr},
 };
 
-/// A set of buffers that are shared among all the surfaces of a client, used by
-/// the event handling tasks.
-#[derive(Debug, Default)]
-pub(crate) struct SharedSurfaceBuffers {
-    /// The set of outputs that overlap with the surface, used by the
-    /// output_changed event handler.
-    pub(crate) new_outputs: HashSet<WeakPtr<shell::output::Output>>,
-    pub(crate) deleted:     Vec<u32>,
-    pub(crate) added:       Vec<u32>,
-}
-
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Shell: shell::Shell> {
@@ -315,32 +304,16 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct CompositorInner {
-    shared_surface_buffers: Rc<RefCell<SharedSurfaceBuffers>>,
-}
-
 /// The reference implementation of wl_compositor
 #[derive(Debug, Default, Clone)]
-pub struct Compositor {
-    inner: Option<CompositorInner>,
+pub struct Compositor;
+
+#[derive(Default, Debug)]
+pub struct CompositorState {
+    pub(crate) render_event_handler_started: bool,
 }
 
-impl Compositor {
-    pub fn new() -> Self {
-        Self {
-            inner: Some(CompositorInner {
-                shared_surface_buffers: Default::default(),
-            }),
-        }
-    }
-
-    pub fn is_complete(&self) -> bool {
-        self.inner.is_some()
-    }
-}
-
-#[wayland_object]
+#[wayland_object(state = "CompositorState")]
 impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell,
@@ -387,14 +360,6 @@ where
                     .next()
                     .map(|(_, obj)| obj.scratch_buffer.clone())
                     .unwrap_or_default();
-                let shared_surface_buffers = objects
-                    .get::<Self>(object_id)
-                    .unwrap()
-                    .inner
-                    .as_ref()
-                    .expect("missing shared buffers")
-                    .shared_surface_buffers
-                    .clone();
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
                 objects
@@ -410,7 +375,6 @@ where
                 event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id: id.0,
-                    shared_surface_buffers,
                     all_outputs,
                 });
                 Ok(())
@@ -432,18 +396,18 @@ where
 type AllOutputs = HashMap<WeakPtr<ShellOutput>, HashSet<u32>>;
 struct OutputChangedEventHandler {
     /// Object id of the surface
-    object_id:              u32,
+    object_id:       u32,
     /// Current outputs that overlap with the surface
-    current_outputs:        HashSet<WeakPtr<ShellOutput>>,
-    /// A set of buffers shared between all surfaces for calculating output
-    /// differences. To avoid allocating multiple buffers.
-    shared_surface_buffers: Rc<RefCell<SharedSurfaceBuffers>>,
+    current_outputs: HashSet<WeakPtr<ShellOutput>>,
     /// All bound output objects of this client context. None if the client has
     /// no output objects bound.
-    all_outputs:            Option<Rc<RefCell<AllOutputs>>>,
+    all_outputs:     Option<Rc<RefCell<AllOutputs>>>,
 }
 
-impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
+impl<S: Shell, Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler
+where
+    Ctx::ServerContext: HasShell<Shell = S>,
+{
     type Message = OutputEvent;
 
     type Future<'ctx> = impl Future<
@@ -464,7 +428,6 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
             let Self {
                 object_id,
                 current_outputs,
-                shared_surface_buffers,
                 all_outputs,
             } = self;
 
@@ -475,15 +438,6 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangedEventHandler {
             // stream will terminate, and the event handler will be stopped
             // automatically in that case.
 
-            let mut buffers = shared_surface_buffers.borrow_mut();
-            let SharedSurfaceBuffers {
-                new_outputs,
-                deleted: deleted_buffer,
-                added: added_buffer,
-            } = &mut *buffers;
-            // Calculate the difference between the current outputs and the new outputs,
-            // store message that will be sent to the client in the buffers. Do this
-            // only once per message.
             let message = message.0.borrow();
 
             if all_outputs.is_none() {

@@ -62,30 +62,22 @@ where
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            let objects = client.objects_mut();
-            // Check if we already have a compositor bound, and clone their render event
-            // handler abort handle if so; otherwise start the event handler task.
-            let other_compositor = objects
-                .by_type::<Self::Object>()
-                .filter_map(|(_, obj)| obj.is_complete().then_some(obj)) // skip incomplete compositor objects
-                .next()
-                .cloned();
-            let this = objects.get_mut::<Self::Object>(object_id).unwrap();
-            if let Some(compositor) = other_compositor {
-                *this = compositor;
-            } else {
-                *this = Self::Object::new();
-                drop(objects);
-
-                // Only start the event handler for the first completed compositor object bound.
-                let rx = client.server_context().shell().borrow().subscribe();
-                client
-                    .event_dispatcher_mut()
-                    .add_event_handler(rx, RenderEventHandler {
-                        callbacks_to_fire: Vec::new(),
-                    });
+            let ClientParts {
+                server_context,
+                objects,
+                event_dispatcher,
+                ..
+            } = client.as_mut_parts();
+            // Check if the render event handler is already started, if not start it.
+            let state = objects.get_state_mut::<Self::Object>().unwrap();
+            if !state.render_event_handler_started {
+                tracing::debug!("Starting render event handler");
+                let rx = server_context.shell().borrow().subscribe();
+                event_dispatcher.add_event_handler(rx, RenderEventHandler {
+                    callbacks_to_fire: Vec::new(),
+                });
+                state.render_event_handler_started = true;
             };
-
             Ok(())
         }
     }
@@ -344,9 +336,7 @@ where
                 .entry(output)
                 .or_default()
                 .insert(object_id);
-            let this = objects
-                .get_mut::<Self::Object>(object_id)
-                .unwrap();
+            let this = objects.get_mut::<Self::Object>(object_id).unwrap();
             // This will automatically stop the event handler when the output is destroyed
             this.event_handler_abort = Some(auto_abort);
             this.all_outputs = Some(all_outputs);

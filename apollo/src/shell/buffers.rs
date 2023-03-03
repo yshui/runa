@@ -79,8 +79,14 @@ pub enum Buffers {
 
 #[derive(Debug)]
 pub struct RendererBuffer<Data> {
-    pub buffer: Buffers,
+    buffer: Buffers,
     pub data:   Data,
+}
+
+impl<Data> RendererBuffer<Data> {
+    pub fn buffer(&self) -> &Buffers {
+        &self.buffer
+    }
 }
 
 impl From<crate::objects::shm::Buffer> for Buffers {

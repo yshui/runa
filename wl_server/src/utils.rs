@@ -1,5 +1,10 @@
 pub(crate) mod one_shot_signal {
     //! A simple signal that can only be sent once.
+    //!
+    //! A pair of `Sender` and `Receiver` can created with `new_pair()`.
+    //! The `Sender` can be used to signal the `Receiver`, which is a `Future`
+    //! that is resolved when signaled. For simplicity, dropping the `Sender`
+    //! will cause `Receiver` to never resolve.
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,

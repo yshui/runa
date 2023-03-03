@@ -47,7 +47,7 @@ fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
 
 fn get_buffer_format<Data>(buffer: &RendererBuffer<Data>) -> wgpu::TextureFormat {
     use apollo::shell::buffers::Buffers;
-    match &buffer.buffer {
+    match buffer.buffer() {
         Buffers::Shm(buffer) => shm_format_to_wgpu(buffer.format()),
     }
 }
@@ -301,7 +301,7 @@ impl Renderer {
                 if buffer.get_damage() {
                     // Upload the texture
                     buffer.clear_damage();
-                    match &buffer.buffer {
+                    match buffer.buffer() {
                         apollo::shell::buffers::Buffers::Shm(shm_buffer) => {
                             let pool = shm_buffer.pool();
                             let data = unsafe { pool.map() };

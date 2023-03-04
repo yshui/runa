@@ -78,13 +78,13 @@ pub enum Buffers {
 }
 
 #[derive(Debug)]
-pub struct RendererBuffer<Data> {
-    buffer:   Buffers,
+pub struct RendererBuffer<B, Data> {
+    buffer:   B,
     pub data: Data,
 }
 
-impl<Data> RendererBuffer<Data> {
-    pub fn buffer(&self) -> &Buffers {
+impl<B, Data> RendererBuffer<B, Data> {
+    pub fn buffer(&self) -> &B {
         &self.buffer
     }
 }
@@ -132,7 +132,7 @@ impl Buffer for Buffers {
     }
 }
 
-impl<T, Data: Default> From<T> for RendererBuffer<Data>
+impl<T, Data: Default> From<T> for RendererBuffer<Buffers, Data>
 where
     Buffers: From<T>,
 {
@@ -143,7 +143,7 @@ where
         }
     }
 }
-impl<Data: std::fmt::Debug + 'static> Buffer for RendererBuffer<Data> {
+impl<B: Buffer, Data: std::fmt::Debug + 'static> Buffer for RendererBuffer<B, Data> {
     #[inline]
     fn damage(&self) {
         self.buffer.damage()

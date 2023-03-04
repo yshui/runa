@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
 use apollo::{
     shell::{
-        buffers::{Buffer, RendererBuffer},
+        buffers::{self, Buffer as _},
         Shell,
     },
     utils::geometry::{coords, Extent, Scale},
@@ -19,6 +19,7 @@ use crate::shell::DefaultShell;
 pub struct BufferData {
     texture: RefCell<Option<wgpu::Texture>>,
 }
+pub type Buffer = buffers::RendererBuffer<buffers::Buffers, BufferData>;
 pub struct Renderer {
     device:         wgpu::Device,
     surface:        Option<wgpu::Surface>,
@@ -32,7 +33,7 @@ pub struct Renderer {
     textures:       Vec<wgpu::BindGroup>,
     uniform:        wgpu::BindGroup,
     sampler:        wgpu::Sampler,
-    shell:          Rc<RefCell<DefaultShell<RendererBuffer<BufferData>>>>,
+    shell:          Rc<RefCell<DefaultShell<Buffer>>>,
     format:         wgpu::TextureFormat,
     frame_count:    usize,
 }
@@ -45,7 +46,7 @@ fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
     }
 }
 
-fn get_buffer_format<Data>(buffer: &RendererBuffer<Data>) -> wgpu::TextureFormat {
+fn get_buffer_format(buffer: &Buffer) -> wgpu::TextureFormat {
     use apollo::shell::buffers::Buffers;
     match buffer.buffer() {
         Buffers::Shm(buffer) => shm_format_to_wgpu(buffer.format()),
@@ -92,7 +93,7 @@ impl Renderer {
     pub async fn new<H: HasRawDisplayHandle + HasRawWindowHandle>(
         handle: &H,
         size: PhysicalSize<u32>,
-        shell: Rc<RefCell<DefaultShell<RendererBuffer<BufferData>>>>,
+        shell: Rc<RefCell<DefaultShell<Buffer>>>,
     ) -> Renderer {
         let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
         let surface = unsafe { instance.create_surface(handle) };

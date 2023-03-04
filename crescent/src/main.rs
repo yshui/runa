@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use apollo::{
     shell::{
-        buffers::{HasBuffer, RendererBuffer},
+        buffers::HasBuffer,
         HasShell,
     },
     utils::geometry::{Extent, Point},
@@ -84,7 +84,7 @@ pub enum AnyObject {
     ShmPool(apollo::objects::shm::ShmPool),
 
     // === buffer ===
-    Buffer(apollo::objects::Buffer<RendererBuffer<render::BufferData>>),
+    Buffer(apollo::objects::Buffer<render::Buffer>),
 }
 
 impl wl_server::server::Server for Crescent {
@@ -179,7 +179,7 @@ impl wl_server::server::Server for Crescent {
     }
 }
 impl HasBuffer for Crescent {
-    type Buffer = RendererBuffer<render::BufferData>;
+    type Buffer = render::Buffer;
 }
 
 impl HasShell for Crescent {

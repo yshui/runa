@@ -351,9 +351,11 @@ fn filter_generics(generics: &syn::Generics, ty: &syn::Type) -> Result<syn::Gene
 /// * `state` - The type of the singleton state associated with the object. See
 ///   [`wl_server::objects::MonoObject::SingletonState`] for more information.
 ///   If not set, this will be a never type (e.g. `!`).
-/// * `state_init` - An expression to create the initial value of the state. By
-///   default, if `state` is not set, this will be `None`; otherwise this will
-///   be `Default::default()`. Note you don't need to wrap this in `Some`.
+/// * `state_init` - An expression to create the initial value of the state.
+///   This expression must be evaluate-able in const context. By default, if
+///   `state` is not set, this will be `None`; otherwise this will be
+///   `<state>::INIT`, which must be defined as an associated constant. Note you
+///   don't need to wrap this in `Some`.
 #[proc_macro_attribute]
 pub fn wayland_object(
     attr: proc_macro::TokenStream,
@@ -513,11 +515,11 @@ pub fn wayland_object(
 
     let state_init = if let Some(state_init) = attr.state_init {
         quote! {
-            Some(Box::new(#state_init) as _)
+            Some(#state_init)
         }
     } else if attr.state.is_some() {
         quote! {
-            Some(Box::new(<#singleton_state_type as Default>::default()) as _)
+            Some(Default::default())
         }
     } else {
         quote! {
@@ -532,21 +534,13 @@ pub fn wayland_object(
     quote! {
         #orig_item
         const _: () = {
-            impl #filtered_generics #crate_::objects::AnyObject for #self_ty {
-                #[inline]
-                fn interface(&self) -> &'static str {
-                    #interface_tokens
-                }
-
-                #[inline]
-                fn singleton_state(&self) -> Option<Box<dyn ::std::any::Any>> {
-                    #state_init
-                }
-            }
-
             impl #filtered_generics #crate_::objects::MonoObject for #self_ty {
                 type SingletonState = #singleton_state_type;
                 const INTERFACE: &'static str = #interface_tokens;
+                #[inline]
+                fn new_singleton_state() -> Option<Self::SingletonState> {
+                    #state_init
+                }
             }
 
             impl #generics #our_trait for #self_ty #where_clause {
@@ -699,19 +693,17 @@ pub fn interface_message_dispatch_for_enum(
         }
     });
     let casts = body.iter().map(|v| {
-        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
-        let ty_ = &fields.unnamed.first().unwrap().ty;
+        let syn::Fields::Unnamed(_) = &v.fields else { panic!() };
         let v = &v.ident;
         quote! {
-            #ident::#v(f) => <#ty_ as #crate_::objects::AnyObject>::cast(f)
+            #ident::#v(f) => (f as &dyn ::std::any::Any).downcast_ref()
         }
     });
     let cast_muts = body.iter().map(|v| {
-        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
-        let ty_ = &fields.unnamed.first().unwrap().ty;
+        let syn::Fields::Unnamed(_) = &v.fields else { panic!() };
         let v = &v.ident;
         quote! {
-            #ident::#v(f) => <#ty_ as #crate_::objects::AnyObject>::cast_mut(f)
+            #ident::#v(f) => (f as &mut dyn ::std::any::Any).downcast_mut()
         }
     });
     let interfaces = body.iter().map(|v| {
@@ -719,7 +711,7 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(f) => <#ty_ as #crate_::objects::AnyObject>::interface(f),
+            Self::#v(_) => <#ty_ as #crate_::objects::MonoObject>::INTERFACE,
         }
     });
     let disconnects = body.iter().map(|v| {
@@ -775,7 +767,8 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(f) => <#ty_ as #crate_::objects::AnyObject>::singleton_state(f),
+            Self::#v(_) => <#ty_ as #crate_::objects::MonoObject>::new_singleton_state()
+                               .map(|init| Box::new(init) as _),
         }
     });
     let type_ids = body.iter().map(|v| {
@@ -783,7 +776,7 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(f) => <#ty_ as #crate_::objects::AnyObject>::type_id(f),
+            Self::#v(_) => ::std::any::TypeId::of::<#ty_>(),
         }
     });
     quote! {
@@ -819,7 +812,7 @@ pub fn interface_message_dispatch_for_enum(
             }
 
             #[inline]
-            fn singleton_state(&self) -> Option<Box<dyn ::std::any::Any>> {
+            fn new_singleton_state(&self) -> Option<Box<dyn ::std::any::Any>> {
                 match self {
                     #(#singleton_states)*
                 }
@@ -839,8 +832,8 @@ pub fn interface_message_dispatch_for_enum(
             type Request<'a> = (&'a [u8], &'a [::std::os::unix::io::RawFd]) where Self: 'a, #ctx_lifetime_bound;
             #[inline]
             fn on_disconnect(
-                &mut self, 
-                server_ctx: &mut <#context_param as #crate_::connection::traits::Client>::ServerContext, 
+                &mut self,
+                server_ctx: &mut <#context_param as #crate_::connection::traits::Client>::ServerContext,
                 state: Option<&mut dyn ::std::any::Any>
             ) {
                 match self {

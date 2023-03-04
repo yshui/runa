@@ -68,8 +68,8 @@ pub trait ProtocolError: std::error::Error + Send + Sync + 'static {
     fn fatal(&self) -> bool;
 }
 
-pub use bytes::{BytesMut, BufMut};
 pub use bitflags::bitflags;
+pub use bytes::{BufMut, BytesMut};
 pub use futures_lite::ready;
 pub use num_enum;
 pub use wl_types as wayland_types;

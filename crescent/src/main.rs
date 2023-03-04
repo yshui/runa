@@ -23,9 +23,10 @@ use wl_server::{
         traits::{Client, ClientParts, Store as _},
         EventDispatcher, Store,
     },
+    globals::Bind,
     objects::{Object, DISPLAY_ID},
     renderer_capability::RendererCapability,
-    server::Globals, globals::Bind,
+    server::Globals,
 };
 mod render;
 mod shell;

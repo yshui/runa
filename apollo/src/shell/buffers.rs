@@ -79,8 +79,8 @@ pub enum Buffers {
 
 #[derive(Debug)]
 pub struct RendererBuffer<Data> {
-    buffer: Buffers,
-    pub data:   Data,
+    buffer:   Buffers,
+    pub data: Data,
 }
 
 impl<Data> RendererBuffer<Data> {

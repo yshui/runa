@@ -18,7 +18,7 @@ use hashbrown::{hash_map, HashMap, HashSet};
 
 use crate::{
     events::{self, BroadcastEventSource},
-    objects::{AnyObject, Object},
+    objects,
     utils::one_shot_signal,
 };
 
@@ -30,15 +30,12 @@ pub mod traits {
     use futures_core::{Future, Stream};
     use wl_io::traits::WriteMessage;
 
-    use crate::{
-        events,
-        objects::{AnyObject, MonoObject},
-    };
+    use crate::{events, objects};
     type ByType<'a, T, O, S>
     where
-        O: AnyObject + 'static,
+        O: objects::AnyObject + 'static,
         S: Store<O> + 'a,
-        T: MonoObject + 'static,
+        T: objects::MonoObject + 'static,
     = impl Iterator<Item = (u32, &'a T)> + 'a;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,16 +77,16 @@ pub mod traits {
         ///
         /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
         /// is not properly implemented for `O`.
-        fn get_state<T: MonoObject>(&self) -> Option<&T::SingletonState>;
+        fn get_state<T: objects::MonoObject>(&self) -> Option<&T::SingletonState>;
         /// See [`Store::get_state`]
-        fn get_state_mut<T: MonoObject>(&mut self) -> Option<&mut T::SingletonState>;
+        fn get_state_mut<T: objects::MonoObject>(&mut self) -> Option<&mut T::SingletonState>;
         /// Get a reference an object with its associated singleton state
         ///
         /// # Panics
         ///
         /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
         /// is not properly implemented for `O`.
-        fn get_with_state<T: MonoObject>(
+        fn get_with_state<T: objects::MonoObject>(
             &self,
             id: u32,
         ) -> Result<(&T, Option<&T::SingletonState>), GetError>;
@@ -100,7 +97,7 @@ pub mod traits {
         ///
         /// Panics if [`AnyObject::type_id`] or [`AnyObject::singleton_state`]
         /// is not properly implemented for `O`.
-        fn get_with_state_mut<T: MonoObject>(
+        fn get_with_state_mut<T: objects::MonoObject>(
             &mut self,
             id: u32,
         ) -> Result<(&mut T, Option<&mut T::SingletonState>), GetError>;
@@ -117,10 +114,10 @@ pub mod traits {
         /// calling `as_iter()`
         fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a>;
 
-        fn by_type<T: MonoObject + 'static>(&self) -> ByType<'_, T, O, Self>
+        fn by_type<T: objects::MonoObject + 'static>(&self) -> ByType<'_, T, O, Self>
         where
             Self: Sized,
-            O: AnyObject + 'static,
+            O: objects::AnyObject + 'static,
         {
             self.by_interface(T::INTERFACE)
                 .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
@@ -209,7 +206,7 @@ pub mod traits {
         type ServerContext: crate::server::Server<ClientContext = Self> + 'static;
         type ObjectStore: Store<Self::Object>;
         type Connection: WriteMessage + Unpin + 'static;
-        type Object: crate::objects::Object<Self> + std::fmt::Debug;
+        type Object: objects::Object<Self> + objects::AnyObject + std::fmt::Debug;
         type EventDispatcher: EventDispatcher<Self> + 'static;
         type DispatchFut<'a, R>: Future<Output = bool> + 'a
         where
@@ -260,13 +257,14 @@ pub struct Store<Object> {
     event_source:     BroadcastEventSource<traits::StoreEvent>,
 }
 
-impl<Object: crate::objects::AnyObject> Store<Object> {
+impl<Object: objects::AnyObject> Store<Object> {
     #[inline]
     fn remove(&mut self, id: u32) -> Option<Object> {
         let object = self.map.remove(&id)?;
         let interface = object.interface();
-        if let hash_map::Entry::Occupied(mut e) =
-            self.singleton_states.entry(AnyObject::type_id(&object))
+        if let hash_map::Entry::Occupied(mut e) = self
+            .singleton_states
+            .entry(objects::AnyObject::type_id(&object))
         {
             let (_, count) = e.get_mut();
             *count -= 1;
@@ -291,10 +289,10 @@ impl<Object: crate::objects::AnyObject> Store<Object> {
             hash_map::Entry::Vacant(v) => {
                 let object = f();
                 let interface = object.interface();
-                if let Some(state) = object.singleton_state() {
+                if let Some(state) = object.new_singleton_state() {
                     let (_, count) = self
                         .singleton_states
-                        .entry(AnyObject::type_id(&object))
+                        .entry(objects::AnyObject::type_id(&object))
                         .or_insert((state, 0));
                     *count += 1;
                 }
@@ -317,12 +315,14 @@ impl<O> Store<O> {
     pub fn clear_for_disconnect<Ctx>(&mut self, server_ctx: &mut Ctx::ServerContext)
     where
         Ctx: traits::Client,
-        O: Object<Ctx>,
+        O: objects::AnyObject + objects::Object<Ctx>,
     {
         tracing::debug!("Clearing store for disconnect");
         for (_, ref mut obj) in self.map.drain() {
             tracing::debug!("Calling on_disconnect for {obj:p}");
-            let state = self.singleton_states.get_mut(&AnyObject::type_id(obj));
+            let state = self
+                .singleton_states
+                .get_mut(&objects::AnyObject::type_id(obj));
             obj.on_disconnect(server_ctx, state.map(|(s, _)| s.as_mut()));
         }
         self.singleton_states.clear();
@@ -338,7 +338,7 @@ impl<Object> Drop for Store<Object> {
     }
 }
 
-impl<O: AnyObject> events::EventSource<traits::StoreEvent> for Store<O> {
+impl<O: objects::AnyObject> events::EventSource<traits::StoreEvent> for Store<O> {
     type Source = impl Stream<Item = traits::StoreEvent> + 'static;
 
     fn subscribe(&self) -> Self::Source {
@@ -346,7 +346,7 @@ impl<O: AnyObject> events::EventSource<traits::StoreEvent> for Store<O> {
     }
 }
 
-impl<O: AnyObject> traits::Store<O> for Store<O> {
+impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
     type ByIface<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
 
     #[inline]
@@ -404,19 +404,19 @@ impl<O: AnyObject> traits::Store<O> for Store<O> {
         Self::remove(self, object_id)
     }
 
-    fn get_state<T: crate::objects::MonoObject>(&self) -> Option<&T::SingletonState> {
+    fn get_state<T: objects::MonoObject>(&self) -> Option<&T::SingletonState> {
         self.singleton_states
             .get(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_ref().unwrap())
     }
 
-    fn get_state_mut<T: crate::objects::MonoObject>(&mut self) -> Option<&mut T::SingletonState> {
+    fn get_state_mut<T: objects::MonoObject>(&mut self) -> Option<&mut T::SingletonState> {
         self.singleton_states
             .get_mut(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_mut().unwrap())
     }
 
-    fn get_with_state<T: crate::objects::MonoObject>(
+    fn get_with_state<T: objects::MonoObject>(
         &self,
         id: u32,
     ) -> Result<(&T, Option<&T::SingletonState>), traits::GetError> {
@@ -429,7 +429,7 @@ impl<O: AnyObject> traits::Store<O> for Store<O> {
         Ok((obj, state))
     }
 
-    fn get_with_state_mut<'a, T: crate::objects::MonoObject>(
+    fn get_with_state_mut<'a, T: objects::MonoObject>(
         &'a mut self,
         id: u32,
     ) -> Result<(&'a mut T, Option<&'a mut T::SingletonState>), traits::GetError> {
@@ -736,21 +736,18 @@ where
     /// Lengthen or shorten the lifetime parameter of the returned
     /// `PairedEventHandler`.
     ///
-    /// This function is safe because it verifies the `fut` field of `Self` is
-    /// None, which means `Self` does not contain any references.
+    /// # Panics
+    ///
+    /// This function verifies the `fut` field of `Self` is `None`, i.e. `Self`
+    /// does not contain any references. If this is not the case, this function
+    /// panics.
     fn coerce_lifetime<'a>(self: Pin<Box<Self>>) -> Pin<Box<PairedEventHandler<'a, Ctx, ES, H>>> {
-        fn cast_ptr<T, U>(i: *mut T) -> *mut U {
-            // We have this because Rust checks direct cast of `*mut T<'a>` to `*mut
-            // T<'static>` and rejects then because `'a` is shorter than
-            // `'static`. However Rust cannot check cast in generic functions.
-            i as _
-        }
         assert!(self.fut.is_none());
         // Safety: this is safe because `fut` is `None` and thus does not contain any
-        // references.
+        // references. And we do not move `self` out of the `Pin<Box<Self>>`.
         unsafe {
             let raw = Box::into_raw(Pin::into_inner_unchecked(self));
-            Pin::new_unchecked(Box::from_raw(cast_ptr(raw)))
+            Pin::new_unchecked(Box::from_raw(raw.cast()))
         }
     }
 }

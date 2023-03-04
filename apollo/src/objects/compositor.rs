@@ -50,7 +50,7 @@ pub struct SurfaceState<Token> {
     /// destructions.
     scratch_buffer: Vec<Token>,
     /// A buffer used for handling output changed event for surfaces.
-    new_outputs:                             HashSet<WeakPtr<ShellOutput>>,
+    new_outputs:    HashSet<WeakPtr<ShellOutput>>,
 }
 
 #[derive(Derivative)]

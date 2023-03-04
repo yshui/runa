@@ -139,8 +139,8 @@ impl<E: Clone> BroadcastEventSource<E> {
         }
     }
 
-    /// Like `broadcast`, but if the queue is full, instead of waiting, this function will reserve
-    /// more space in the queue.
+    /// Like `broadcast`, but if the queue is full, instead of waiting, this
+    /// function will reserve more space in the queue.
     pub fn broadcast_reserve(&mut self, msg: E) {
         use async_broadcast::TrySendError;
         assert!(!self.0.is_closed());
@@ -149,7 +149,7 @@ impl<E: Clone> BroadcastEventSource<E> {
         }
         match self.0.try_broadcast(msg) {
             Err(TrySendError::Full(_)) => unreachable!(),
-            _ => ()
+            _ => (),
         }
     }
 }

@@ -19,7 +19,7 @@ use derivative::Derivative;
 use hashbrown::HashSet;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_buffer::v1 as wl_buffer, wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
+    wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
     wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
     wl_surface::v5 as wl_surface,
 };
@@ -170,7 +170,7 @@ where
             >>(buffer.0)?;
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
-            state.set_buffer(Some(buffer.buffer.clone()));
+            state.set_buffer_from_object(&buffer);
             Ok(())
         }
     }
@@ -219,33 +219,11 @@ where
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
             let state = state.unwrap();
 
-            use crate::shell::buffers::Buffer;
-            let released_buffer = {
-                let mut shell = server_context.shell().borrow_mut();
-                let old_buffer = this.inner.current(&shell).buffer().cloned();
-                this.inner
-                    .commit(&mut shell, &mut state.scratch_buffer)
-                    .map_err(wl_server::error::Error::UnknownFatalError)?;
+            let mut shell = server_context.shell().borrow_mut();
+            this.inner
+                .commit(&mut shell, &mut state.scratch_buffer)
+                .map_err(wl_server::error::Error::UnknownFatalError)?;
 
-                let new_buffer = this.inner.current(&shell).buffer().cloned();
-                drop(shell);
-
-                // TODO: this released_buffer calculation is wrong.
-                if let Some(old_buffer) = old_buffer {
-                    if new_buffer.map_or(true, |new_buffer| !Rc::ptr_eq(&old_buffer, &new_buffer)) {
-                        Some(old_buffer.object_id())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some(released_buffer) = released_buffer {
-                ctx.connection_mut()
-                    .send(released_buffer, wl_buffer::events::Release {})
-                    .await?;
-            }
             Ok(())
         }
     }

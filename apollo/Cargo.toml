@@ -26,3 +26,4 @@ num-traits = "0.2.15"
 async-lock = "2.6.0"
 futures-core = "0.3.26"
 tinyvecdeq = { version = "0.1", features = ["std"] }
+enum_dispatch = "0.3.11"

@@ -20,7 +20,7 @@ use wl_server::events::{BroadcastEventSource, EventSource};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
-pub struct DefaultShell<S: buffers::Buffer> {
+pub struct DefaultShell<S: buffers::BufferLike> {
     storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     stack:           VecList<Window>,
     shell_event:     BroadcastEventSource<ShellEvent>,
@@ -28,7 +28,7 @@ pub struct DefaultShell<S: buffers::Buffer> {
     screen:          apollo::shell::output::Screen,
 }
 
-impl<B: buffers::Buffer> DefaultShell<B> {
+impl<B: buffers::BufferLike> DefaultShell<B> {
     pub fn new(output: &Rc<apollo::shell::output::Output>) -> Self {
         Self {
             storage:         Default::default(),
@@ -65,7 +65,7 @@ pub struct DefaultShellData {
     pub is_current:  bool,
     pub stack_index: Option<Index<Window>>,
 }
-impl<B: buffers::Buffer> DefaultShell<B> {
+impl<B: buffers::BufferLike> DefaultShell<B> {
     pub fn stack(&self) -> impl DoubleEndedIterator<Item = &Window> {
         self.stack.iter()
     }
@@ -170,7 +170,7 @@ impl<B: buffers::Buffer> DefaultShell<B> {
     }
 }
 
-impl<B: buffers::Buffer> Shell for DefaultShell<B> {
+impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
     type Buffer = B;
     type Token = DefaultKey;
 
@@ -276,7 +276,7 @@ impl<B: buffers::Buffer> Shell for DefaultShell<B> {
     }
 }
 
-impl<S: buffers::Buffer> EventSource<ShellEvent> for DefaultShell<S> {
+impl<S: buffers::BufferLike> EventSource<ShellEvent> for DefaultShell<S> {
     type Source = <BroadcastEventSource<ShellEvent> as EventSource<ShellEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
@@ -284,7 +284,7 @@ impl<S: buffers::Buffer> EventSource<ShellEvent> for DefaultShell<S> {
     }
 }
 
-impl<B: buffers::Buffer> XdgShell for super::DefaultShell<B> {
+impl<B: buffers::BufferLike> XdgShell for super::DefaultShell<B> {
     fn layout(&self, _key: Self::Token) -> Layout {
         Layout {
             position: None,

@@ -1,17 +1,20 @@
-use std::rc::Rc;
-
 use hashbrown::{HashMap, HashSet};
+use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
 use wl_server::{
     connection::{
-        event_handler::AutoAbortHandle,
-        traits::{Client, Store},
+        event_handler::{Abortable, AutoAbortHandle},
+        traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, Store},
     },
     objects::wayland_object,
 };
 
 use crate::{
-    shell::{buffers::HasBuffer, output::Output as ShellOutput, HasShell},
+    shell::{
+        buffers::{AttachableBuffer, BufferEvent, BufferLike, HasBuffer},
+        output::Output as ShellOutput,
+        HasShell,
+    },
     utils::WeakPtr,
 };
 
@@ -21,7 +24,56 @@ pub mod xdg_shell;
 
 #[derive(Debug)]
 pub struct Buffer<B> {
-    pub buffer: Rc<B>,
+    pub(crate) buffer:   AttachableBuffer<B>,
+    _event_handler_abort: AutoAbortHandle,
+}
+
+impl<B: BufferLike> Buffer<B> {
+    pub fn new<Ctx: Client, B2: Into<B>, E: EventDispatcher<Ctx>>(
+        buffer: B2,
+        event_dispatcher: &mut E,
+    ) -> Self {
+        struct BufferEventHandler {
+            object_id: u32,
+        }
+        impl<Ctx: Client> EventHandler<Ctx> for BufferEventHandler {
+            type Message = BufferEvent;
+
+            type Future<'ctx> = impl std::future::Future<
+                    Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync>>,
+                > + 'ctx;
+
+            fn handle_event<'ctx>(
+                &'ctx mut self,
+                objects: &'ctx mut Ctx::ObjectStore,
+                connection: &'ctx mut Ctx::Connection,
+                server_context: &'ctx Ctx::ServerContext,
+                message: &'ctx mut Self::Message,
+            ) -> Self::Future<'ctx> {
+                async move {
+                    connection
+                        .send(self.object_id, wl_buffer::events::Release {})
+                        .await?;
+                    Ok(EventHandlerAction::Keep)
+                }
+            }
+        }
+        let buffer = buffer.into();
+        let object_id = buffer.object_id();
+        let event_handler = BufferEventHandler { object_id };
+        let (event_handler, abort_handle) = Abortable::new(event_handler);
+        let ret = Self {
+            buffer:              AttachableBuffer::new(buffer),
+            _event_handler_abort: abort_handle.auto_abort(),
+        };
+        let rx = ret.buffer.inner.subscribe();
+        event_dispatcher.add_event_handler(rx, event_handler);
+        ret
+    }
+
+    pub fn buffer(&self) -> &B {
+        &self.buffer.inner
+    }
 }
 
 #[wayland_object]

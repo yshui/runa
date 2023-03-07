@@ -2,7 +2,7 @@ use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
 use apollo::{
     shell::{
-        buffers::{self, Buffer as _},
+        buffers::{self, BufferLike as _},
         Shell,
     },
     utils::geometry::{coords, Extent, Scale},
@@ -19,7 +19,7 @@ use crate::shell::DefaultShell;
 pub struct BufferData {
     texture: RefCell<Option<wgpu::Texture>>,
 }
-pub type Buffer = buffers::RendererBuffer<buffers::Buffers, BufferData>;
+pub type Buffer = buffers::UserBuffer<buffers::Buffer<buffers::BufferBase>, BufferData>;
 pub struct Renderer {
     device:         wgpu::Device,
     surface:        Option<wgpu::Surface>,
@@ -47,9 +47,9 @@ fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
 }
 
 fn get_buffer_format(buffer: &Buffer) -> wgpu::TextureFormat {
-    use apollo::shell::buffers::Buffers;
-    match buffer.buffer() {
-        Buffers::Shm(buffer) => shm_format_to_wgpu(buffer.format()),
+    use apollo::shell::buffers::BufferBase;
+    match buffer.buffer().base() {
+        BufferBase::Shm(base) => shm_format_to_wgpu(base.format()),
     }
 }
 
@@ -301,9 +301,10 @@ impl Renderer {
                 });
                 if buffer.get_damage() {
                     // Upload the texture
+                    tracing::trace!("uploading texture for buffer {}", buffer.object_id());
                     buffer.clear_damage();
-                    match buffer.buffer() {
-                        apollo::shell::buffers::Buffers::Shm(shm_buffer) => {
+                    match buffer.buffer().base() {
+                        buffers::BufferBase::Shm(shm_buffer) => {
                             let pool = shm_buffer.pool();
                             let data = unsafe { pool.map() };
                             let offset = shm_buffer.offset() as usize;
@@ -353,6 +354,7 @@ impl Renderer {
                             );
                         },
                     }
+                    buffer.buffer().release();
                 }
                 let texture_bind_group =
                     self.device.create_bind_group(&wgpu::BindGroupDescriptor {

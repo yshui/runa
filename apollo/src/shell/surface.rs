@@ -14,10 +14,13 @@ use wl_server::{
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
 
-use super::{output::Output, xdg::Layout, Shell};
-use crate::utils::{
-    geometry::{coords, Point},
-    WeakPtr,
+use super::{buffers::AttachedBuffer, output::Output, xdg::Layout, Shell};
+use crate::{
+    objects,
+    utils::{
+        geometry::{coords, Point},
+        WeakPtr,
+    },
 };
 
 pub trait Role<S: Shell>: Any {
@@ -440,7 +443,7 @@ pub struct SurfaceState<S: Shell> {
     /// The position of this surface state in its own stack.
     /// None if the stack is just self.
     pub(crate) stack_index:        Option<Index<SurfaceStackEntry<S>>>,
-    buffer:                        Option<Rc<S::Buffer>>,
+    buffer:                        Option<AttachedBuffer<S::Buffer>>,
     /// Scale of the buffer, a fraction with a denominator of 120
     buffer_scale:                  u32,
     role_state:                    Option<Box<dyn RoleState>>,
@@ -448,13 +451,13 @@ pub struct SurfaceState<S: Shell> {
 
 impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use crate::shell::buffers::Buffer;
+        use crate::shell::buffers::BufferLike;
         f.debug_struct("SurfaceState")
             .field("flags", &self.flags)
             .field("surface", &self.surface.upgrade().map(|s| s.object_id()))
             .field("frame_callback_end", &self.frame_callback_end)
             .field("stack", &self.stack)
-            .field("buffer", &self.buffer.as_ref().map(|b| b.object_id()))
+            .field("buffer", &self.buffer.as_ref().map(|b| b.inner.object_id()))
             .field("buffer_scale", &self.buffer_scale_f32())
             .field("role_state", &self.role_state)
             .finish()
@@ -644,19 +647,23 @@ impl<S: Shell> SurfaceState<S> {
     /// Mark the surface's buffer as damaged. No-op if the surface has no
     /// buffer.
     pub fn damage_buffer(&mut self) {
-        use super::buffers::Buffer;
+        use super::buffers::BufferLike;
         if let Some(buffer) = self.buffer.as_ref() {
-            buffer.damage();
+            buffer.inner.damage();
         }
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn set_buffer(&mut self, buffer: Option<Rc<S::Buffer>>) {
+    pub(crate) fn set_buffer(&mut self, buffer: Option<AttachedBuffer<S::Buffer>>) {
         self.buffer = buffer;
     }
 
+    pub fn set_buffer_from_object(&mut self, buffer: &objects::Buffer<S::Buffer>) {
+        self.buffer = Some(buffer.buffer.attach());
+    }
+
     pub fn buffer(&self) -> Option<&Rc<S::Buffer>> {
-        self.buffer.as_ref()
+        self.buffer.as_ref().map(|b| &b.inner)
     }
 
     pub fn add_frame_callback(&mut self, callback: u32) {
@@ -921,6 +928,15 @@ impl<S: Shell> Surface<S> {
     ///   time.
     ///
     /// Returns if the commit is successful.
+    ///
+    /// TODO: FIXME: this implementation of commit is inaccurate. Per wayland
+    /// spec, the pending state is not a shadow state, where changes are
+    /// applied to. Instead it's a collection of pending changes, that are
+    /// applied to the current state when commited. The difference is
+    /// subtle. For example, if buffer transform changes between two
+    /// damage_buffer requests, both requests should use the new transform;
+    /// instead of the first using the old transform and the second using
+    /// the new transform.
     pub fn commit(
         &self,
         shell: &mut S,
@@ -933,6 +949,15 @@ impl<S: Shell> Surface<S> {
         }
         let new_current = self.pending_key();
         let old_current = self.current_key();
+
+        let new_state = shell.get(new_current);
+        if shell.get(old_current).buffer != new_state.buffer {
+            // We have a new buffer, we need to call acquire on it.
+            if let Some(buffer) = &new_state.buffer {
+                use crate::shell::buffers::BufferLike;
+                buffer.inner.acquire();
+            }
+        }
 
         self.apply_pending(shell, scratch_buffer);
 

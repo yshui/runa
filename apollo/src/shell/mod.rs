@@ -27,7 +27,7 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     /// A buffer type. We allow a user supplied buffer type instead of `dyn
     /// Buffer` to avoid virutal call overhead, and allow for a more
     /// flexible Buffer trait.
-    type Buffer: buffers::Buffer;
+    type Buffer: buffers::BufferLike;
 
     /// Allocate a SurfaceState and returns a handle to it.
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token;

@@ -12,15 +12,15 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::traits::{Client, Store},
+    connection::traits::{Client, Store, ClientParts},
     error,
     objects::{wayland_object, DISPLAY_ID},
 };
 
 use crate::{
-    objects::Buffer as BufferObj,
-    shell::buffers::{BufferBase, HasBuffer},
-    utils::geometry::{coords, Extent},
+    objects,
+    shell::buffers::{self, HasBuffer},
+    utils::geometry::Extent,
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -286,12 +286,12 @@ impl ShmPool {
 }
 
 #[wayland_object]
-impl<Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
+impl<B: buffers::BufferLike, Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
     Ctx: Client,
-    Ctx::ServerContext: HasBuffer,
-    <Ctx::ServerContext as HasBuffer>::Buffer: From<Buffer>,
-    Ctx::Object: From<BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer>>,
+    Ctx::ServerContext: HasBuffer<Buffer = B>,
+    B: From<buffers::Buffer<BufferBase>>,
+    Ctx::Object: From<objects::Buffer<B>>,
 {
     type Error = error::Error;
 
@@ -310,23 +310,22 @@ where
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
-            let pool = ctx.objects().get::<Self>(object_id).unwrap().inner.clone();
+            let ClientParts { objects, event_dispatcher, .. } = ctx.as_mut_parts();
+            let pool = objects.get::<Self>(object_id).unwrap().inner.clone();
 
-            let inserted = ctx.objects_mut().try_insert_with(id.0, || {
-                let buffer: BufferObj<<Ctx::ServerContext as HasBuffer>::Buffer> = BufferObj {
-                    buffer: Rc::new(
-                        Buffer {
-                            base: BufferBase::new(id.0),
-                            pool,
-                            offset,
-                            width,
-                            height,
-                            stride,
-                            format,
-                        }
-                        .into(),
-                    ),
-                };
+            let inserted = objects.try_insert_with(id.0, || {
+                let buffer: objects::Buffer<B> = objects::Buffer::new(buffers::Buffer::new(
+                    Extent::new(width as u32, height as u32),
+                    id.0,
+                    BufferBase {
+                        pool,
+                        offset,
+                        width,
+                        height,
+                        stride,
+                        format,
+                    },
+                ), event_dispatcher);
                 buffer.into()
             });
             if !inserted {
@@ -378,8 +377,7 @@ where
 }
 
 #[derive(Debug)]
-pub struct Buffer {
-    base:   BufferBase,
+pub struct BufferBase {
     pool:   Rc<RefCell<ShmPoolInner>>,
     offset: i32,
     width:  i32,
@@ -388,29 +386,7 @@ pub struct Buffer {
     format: wl_shm::enums::Format,
 }
 
-impl crate::shell::buffers::Buffer for Buffer {
-    fn damage(&self) {
-        self.base.damage();
-    }
-
-    fn clear_damage(&self) {
-        self.base.clear_damage();
-    }
-
-    fn get_damage(&self) -> bool {
-        self.base.get_damage()
-    }
-
-    fn dimension(&self) -> Extent<u32, coords::Buffer> {
-        Extent::new(self.width as u32, self.height as u32)
-    }
-
-    fn object_id(&self) -> u32 {
-        self.base.object_id()
-    }
-}
-
-impl Buffer {
+impl BufferBase {
     pub fn pool(&self) -> ShmPool {
         ShmPool {
             inner: self.pool.clone(),

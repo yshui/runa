@@ -444,6 +444,8 @@ pub struct SurfaceState<S: Shell> {
     /// None if the stack is just self.
     pub(crate) stack_index:        Option<Index<SurfaceStackEntry<S>>>,
     buffer:                        Option<AttachedBuffer<S::Buffer>>,
+    // HACK! TODO: properly implement pending commit
+    buffer_changed:                bool,
     /// Scale of the buffer, a fraction with a denominator of 120
     buffer_scale:                  u32,
     role_state:                    Option<Box<dyn RoleState>>,
@@ -473,6 +475,7 @@ impl<S: Shell> SurfaceState<S> {
             stack:              Default::default(),
             stack_index:        None,
             buffer:             None,
+            buffer_changed:     false,
             buffer_scale:       120,
             role_state:         None,
         }
@@ -495,6 +498,7 @@ impl<S: Shell> Clone for SurfaceState<S> {
             stack:              self.stack.clone(),
             stack_index:        self.stack_index,
             buffer:             self.buffer.clone(),
+            buffer_changed:     self.buffer_changed,
             buffer_scale:       self.buffer_scale,
             role_state:         self.role_state.as_ref().map(|x| dyn_clone::clone_box(&**x)),
         }
@@ -655,11 +659,12 @@ impl<S: Shell> SurfaceState<S> {
 
     #[tracing::instrument(level = "debug", skip(self))]
     pub(crate) fn set_buffer(&mut self, buffer: Option<AttachedBuffer<S::Buffer>>) {
+        self.buffer_changed = true;
         self.buffer = buffer;
     }
 
     pub fn set_buffer_from_object(&mut self, buffer: &objects::Buffer<S::Buffer>) {
-        self.buffer = Some(buffer.buffer.attach());
+        self.set_buffer(Some(buffer.buffer.attach()));
     }
 
     pub fn buffer(&self) -> Option<&Rc<S::Buffer>> {
@@ -951,7 +956,7 @@ impl<S: Shell> Surface<S> {
         let old_current = self.current_key();
 
         let new_state = shell.get(new_current);
-        if shell.get(old_current).buffer != new_state.buffer {
+        if new_state.buffer_changed {
             // We have a new buffer, we need to call acquire on it.
             if let Some(buffer) = &new_state.buffer {
                 use crate::shell::buffers::BufferLike;
@@ -1026,6 +1031,7 @@ impl<S: Shell> Surface<S> {
                 .find(|e| e.token == current_key)
                 .unwrap()
                 .token = new_pending_key;
+            new_pending_state.buffer_changed = false;
             self.set_pending(new_pending_key);
         }
         shell.get_mut(self.pending_key())

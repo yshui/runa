@@ -17,18 +17,17 @@ use wl_server::{
 };
 
 use crate::{
-    shell::{surface::LayoutEvent, xdg, HasShell, Shell, ShellOf},
+    shell::{surface::LayoutEvent, xdg, HasShell, Shell},
     utils::geometry::{Extent, Point, Rectangle},
 };
 #[derive(Debug)]
 pub struct WmBase;
 
 #[wayland_object]
-impl<Ctx: Client> xdg_wm_base::RequestDispatch<Ctx> for WmBase
+impl<S: xdg::XdgShell, Ctx: Client> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
-    Ctx::ServerContext: HasShell,
-    Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
-    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    Ctx::ServerContext: HasShell<Shell = S>,
+    Ctx::Object: From<Surface<S>>,
 {
     type Error = Error;
 
@@ -60,7 +59,7 @@ where
             } = ctx.as_mut_parts();
             let surface_id = surface.0;
             let surface_obj =
-                objects.get::<compositor::Surface<ShellOf<Ctx::ServerContext>>>(surface_id)?;
+                objects.get::<compositor::Surface<S>>(surface_id)?;
             let surface = surface_obj.inner.clone();
 
             let mut shell = server_context.shell().borrow_mut();

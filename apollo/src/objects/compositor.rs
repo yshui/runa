@@ -38,7 +38,7 @@ use crate::{
         buffers::HasBuffer,
         output::Output as ShellOutput,
         surface::{roles, OutputEvent},
-        HasShell, Shell, ShellOf,
+        HasShell, Shell,
     },
     utils::{geometry::Point, WeakPtr},
 };
@@ -564,10 +564,10 @@ impl wl_protocol::ProtocolError for Error {
 }
 
 #[wayland_object]
-impl<Ctx: Client> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
+impl<S: Shell, Ctx: Client> wl_subcompositor::RequestDispatch<Ctx> for Subcompositor
 where
-    Ctx::ServerContext: HasShell,
-    Ctx::Object: From<Subsurface<<Ctx::ServerContext as HasShell>::Shell>>,
+    Ctx::ServerContext: HasShell<Shell = S>,
+    Ctx::Object: From<Subsurface<S>>,
 {
     type Error = wl_server::error::Error;
 
@@ -595,7 +595,7 @@ where
             let surface_id = surface.0;
             let surface = ctx
                 .objects()
-                .get::<Surface<ShellOf<Ctx::ServerContext>>>(surface.0)
+                .get::<Surface<S>>(surface.0)
                 .map_err(|e| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       surface.0,
@@ -606,7 +606,7 @@ where
                 .clone();
             let parent = ctx
                 .objects()
-                .get::<Surface<ShellOf<Ctx::ServerContext>>>(parent.0)
+                .get::<Surface<S>>(parent.0)
                 .map_err(|e| {
                     Self::Error::custom(Error::BadSurface {
                         bad_surface:       parent.0,

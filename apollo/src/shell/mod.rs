@@ -86,5 +86,3 @@ pub trait HasShell: buffers::HasBuffer {
     type Shell: Shell<Buffer = <Self as buffers::HasBuffer>::Buffer>;
     fn shell(&self) -> &RefCell<Self::Shell>;
 }
-
-pub type ShellOf<T> = <T as HasShell>::Shell;

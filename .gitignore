@@ -1,2 +1,9 @@
 /target
 /testbench
+/Cargo.lock
+.gdb_history
+*.skip
+vgcore.*
+dhat.out.*
+perf.data
+perf.data.old

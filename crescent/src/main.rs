@@ -151,19 +151,19 @@ impl wl_server::server::Server for Crescent {
                                 },
                             }
                         },
-                        event = Pin::new(event_dispatcher).next().fuse() => {
-                            match event {
-                                Some(event) => {
-                                    event.handle(store, tx, state).await?;
-                                    tx.flush().await?;
-                                },
-                                None => {
-                                    tracing::trace!("Event dispatcher returned None");
-                                    break
-                                }
-                            }
+                        event = event_dispatcher.next() => {
+                            event.handle(store, tx, state).await?;
                         },
                     }
+                    // Dispatch all pending events before we start handling new requests.
+                    client_ctx
+                        .event_dispatcher
+                        .handle_queued_events(
+                            &mut client_ctx.store,
+                            &mut client_ctx.tx,
+                            &client_ctx.state,
+                        )
+                        .await?;
                 }
                 // Try to flush the connection, ok if it fails, as the connection could have
                 // been broken at this point.

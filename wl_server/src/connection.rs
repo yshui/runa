@@ -12,7 +12,7 @@ use std::{
 };
 
 use derivative::Derivative;
-use futures_core::Stream;
+use futures_core::{FusedFuture, Stream};
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
 use hashbrown::{hash_map, HashMap, HashSet};
 
@@ -864,9 +864,7 @@ where
 
 type BoxedAnyEventHandler<Ctx> = Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
 
-#[pin_project::pin_project(project = EventDispatcherProj)]
 pub struct EventDispatcher<Ctx> {
-    #[pin]
     handlers:       FuturesUnordered<StreamFuture<BoxedAnyEventHandler<Ctx>>>,
     active_handler: Option<BoxedAnyEventHandler<Ctx>>,
     waker:          Option<Waker>,
@@ -926,34 +924,30 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
     ///
     /// If this is called from multiple tasks, those tasks will just keep waking
     /// up each other and waste CPU cycles.
-    pub fn poll_next<'a>(
-        self: Pin<&'a mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<PendingEvent<'a, Ctx>>> {
-        let mut this = self.project();
+    pub fn poll_next<'a>(&'a mut self, cx: &mut Context<'_>) -> Poll<PendingEvent<'a, Ctx>> {
         loop {
-            if this.active_handler.is_some() {
-                return Poll::Ready(Some(PendingEvent { dispatcher: this }))
+            if self.active_handler.is_some() {
+                return Poll::Ready(PendingEvent { dispatcher: self })
             }
-            match this.handlers.as_mut().poll_next(cx) {
+            match Pin::new(&mut self.handlers).poll_next(cx) {
                 Poll::Ready(Some((Some(()), handler))) => {
-                    *this.active_handler = Some(handler);
+                    self.active_handler = Some(handler);
                 },
                 Poll::Ready(Some((None, _))) => (),
                 Poll::Ready(None) | Poll::Pending => {
                     // There is no active handler. `FuturesUnordered` will wake us up if there are
                     // handlers that are ready. But we also need to wake up if there are new
                     // handlers added. So we store the waker.
-                    if let Some(w) = this.waker.take() {
+                    if let Some(w) = self.waker.take() {
                         if w.will_wake(cx.waker()) {
-                            *this.waker = Some(w);
+                            self.waker = Some(w);
                         } else {
                             // Wake the previous waker, because it's going to be replaced.
                             w.wake();
-                            *this.waker = Some(cx.waker().clone());
+                            self.waker = Some(cx.waker().clone());
                         }
                     } else {
-                        *this.waker = Some(cx.waker().clone());
+                        self.waker = Some(cx.waker().clone());
                     }
                     return Poll::Pending
                 },
@@ -961,21 +955,25 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
         }
     }
 
-    pub fn next<'a>(
-        self: Pin<&'a mut Self>,
-    ) -> impl Future<Output = Option<PendingEvent<'a, Ctx>>> + 'a {
+    pub fn next<'a>(&'a mut self) -> impl FusedFuture<Output = PendingEvent<'a, Ctx>> + 'a {
         struct Next<'a, Ctx> {
-            dispatcher: Option<Pin<&'a mut EventDispatcher<Ctx>>>,
+            dispatcher: Option<&'a mut EventDispatcher<Ctx>>,
         }
         impl<'a, Ctx: traits::Client + 'static> Future for Next<'a, Ctx> {
-            type Output = Option<PendingEvent<'a, Ctx>>;
+            type Output = PendingEvent<'a, Ctx>;
 
             fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let this = self.dispatcher.as_mut().unwrap().as_mut();
+                let this = self.dispatcher.as_deref_mut().unwrap();
                 ready!(this.poll_next(cx));
 
-                let this = self.dispatcher.take().unwrap().project();
-                Poll::Ready(Some(PendingEvent { dispatcher: this }))
+                let this = self.dispatcher.take().unwrap();
+                Poll::Ready(PendingEvent { dispatcher: this })
+            }
+        }
+
+        impl<'a, Ctx: traits::Client + 'static> FusedFuture for Next<'a, Ctx> {
+            fn is_terminated(&self) -> bool {
+                self.dispatcher.is_none()
             }
         }
 
@@ -983,14 +981,37 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
             dispatcher: Some(self),
         }
     }
+
+    /// Handle all events that are current queued. The futures returned will
+    /// resolve as soon as there are no more events queued in this event
+    /// dispatcher. It will not wait for new events to be queued, but it may
+    /// wait for the futures returned by the event handlers to resolve.
+    pub fn handle_queued_events<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        server_context: &'ctx Ctx::ServerContext,
+    ) -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + 'ctx {
+        async move {
+            // We are not going to wait on the event dispatcher, so we use a noop waker.
+            let waker = futures_util::task::noop_waker();
+            let cx = &mut Context::from_waker(&waker);
+            while let Poll::Ready(pending_event) = self.poll_next(cx) {
+                pending_event
+                    .handle(objects, connection, server_context)
+                    .await?;
+            }
+            Ok(())
+        }
+    }
 }
 
 pub struct PendingEvent<'a, Ctx> {
-    dispatcher: EventDispatcherProj<'a, Ctx>,
+    dispatcher: &'a mut EventDispatcher<Ctx>,
 }
 
 pub struct PendingEventFut<'dispatcher, 'ctx, Ctx: traits::Client> {
-    dispatcher: EventDispatcherProj<'dispatcher, Ctx>,
+    dispatcher: &'dispatcher mut EventDispatcher<Ctx>,
     fut:        Option<Pin<Box<dyn AnyEventHandler<Ctx = Ctx> + 'ctx>>>,
 }
 

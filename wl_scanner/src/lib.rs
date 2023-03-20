@@ -301,6 +301,7 @@ fn generate_serialize_for_type(
 }
 fn generate_deserialize_for_type(
     current_iface_name: &str,
+    arg_name: &str,
     arg: &wl_spec::protocol::Arg,
     enum_info: &EnumInfos,
     iface_version: &HashMap<&str, u32>,
@@ -346,7 +347,9 @@ fn generate_deserialize_for_type(
         String => quote! { {
             let len = pop_u32(&mut data) as usize;
             let bytes = pop_bytes(&mut data, len);
-            assert_eq!(bytes[len - 1], b'\0'); // TODO: return an error
+            if bytes[len - 1] != b'\0' {
+                return Err(::wl_scanner_support::io::de::Error::MissingNul(#arg_name));
+            }
             bytes[..len - 1].into()
         } },
         Array => quote! { {
@@ -427,7 +430,7 @@ fn generate_message_variant(
     });
     let deserialize = request.args.iter().map(|arg| {
         let name = format_ident!("{}", arg.name);
-        let deserialize = generate_deserialize_for_type(iface_name, arg, enum_info, iface_version);
+        let deserialize = generate_deserialize_for_type(iface_name, &arg.name, arg, enum_info, iface_version);
         quote! {
             #name: #deserialize
         }

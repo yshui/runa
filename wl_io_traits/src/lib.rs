@@ -260,6 +260,7 @@ pub mod de {
         InvalidUintEnum(u32, &'static str),
         UnknownOpcode(u32, &'static str),
         TrailingData(u32, u32),
+        MissingNul(&'static str),
     }
 
     impl std::fmt::Debug for Error {
@@ -273,6 +274,10 @@ pub mod de {
                 Error::TrailingData(expected, got) => write!(
                     f,
                     "message trailing bytes, expected {expected} bytes, got {got} bytes"
+                ),
+                Error::MissingNul(name) => write!(
+                    f,
+                    "string value for {name} is missing the NUL terminator"
                 ),
             }
         }

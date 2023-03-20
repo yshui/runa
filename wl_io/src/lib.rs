@@ -422,6 +422,8 @@ impl<C: traits::AsyncWriteWithFd> traits::WriteMessage for Connection<C> {
         let this = self.project();
         assert!(msg.nfds() as usize + this.fds.len() <= SCM_MAX_FD);
         this.buf.put_u32_ne(object_id);
+        this.buf
+            .reserve((msg.len() as usize).saturating_sub(this.buf.remaining_mut()));
         msg.serialize(this.buf, this.fds);
     }
 

@@ -1,9 +1,6 @@
-use std::{
-    ffi::{CStr, CString},
-    os::unix::{
-        io::OwnedFd,
-        prelude::{AsRawFd, FromRawFd, RawFd},
-    },
+use std::os::unix::{
+    io::OwnedFd,
+    prelude::{AsRawFd, FromRawFd, RawFd},
 };
 
 use fixed::types::extra::U8;

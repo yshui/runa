@@ -1,6 +1,5 @@
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString},
     rc::{Rc, Weak},
 };
 
@@ -25,9 +24,9 @@ pub struct Output {
     logical_position: Cell<Point<i32, coords::ScreenNormalized>>,
     /// Physical size in millimeters
     physical_size:    Extent<u32, coords::Physical>,
-    make:             CString,
-    model:            CString,
-    name:             CString,
+    make:             String,
+    model:            String,
+    name:             String,
     transform:        Cell<Transform>,
     /// The scaling factor for this output, this is the numerator of a fraction
     /// with a denominator of 120.
@@ -79,9 +78,9 @@ impl Output {
 
     pub fn new(
         physical_size: Extent<u32, coords::Physical>,
-        make: CString,
-        model: CString,
-        name: CString,
+        make: &str,
+        model: &str,
+        name: &str,
         global_id: u32,
     ) -> Self {
         Self {
@@ -89,9 +88,9 @@ impl Output {
             position: Default::default(),
             logical_position: Default::default(),
             physical_size,
-            make,
-            model,
-            name,
+            make: make.to_owned(),
+            model: model.to_owned(),
+            name: name.to_owned(),
             transform: Default::default(),
             scale: Scale::new(1, 1).into(),
             global_id,
@@ -116,7 +115,7 @@ impl Output {
         self.scale.set(Scale::new(scale, scale));
     }
 
-    pub fn name(&self) -> &CStr {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
@@ -171,11 +170,11 @@ impl Output {
         self.logical_position.set(logical_position);
     }
 
-    pub fn model(&self) -> &CStr {
+    pub fn model(&self) -> &str {
         &self.model
     }
 
-    pub fn make(&self) -> &CStr {
+    pub fn make(&self) -> &str {
         &self.make
     }
 
@@ -210,8 +209,8 @@ impl Output {
                     physical_width:  physical_size.w as i32,
                     physical_height: physical_size.h as i32,
                     subpixel:        wl_output::enums::Subpixel::Unknown, // TODO
-                    make:            wl_types::Str(self.make()),
-                    model:           wl_types::Str(self.model()),
+                    make:            wl_types::Str(self.make().as_bytes()),
+                    model:           wl_types::Str(self.model().as_bytes()),
                     transform:       wl_output::enums::Transform::Normal, // TODO
                 }),
             )
@@ -229,7 +228,7 @@ impl Output {
             .send(
                 object_id,
                 wl_output::Event::Name(wl_output::events::Name {
-                    name: wl_types::Str(self.name()),
+                    name: wl_types::Str(self.name().as_bytes()),
                 }),
             )
             .await

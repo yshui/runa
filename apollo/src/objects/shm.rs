@@ -174,7 +174,7 @@ where
                 conn.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_shm::enums::Error::InvalidStride as u32,
                     object_id: object_id.into(),
-                    message:   wl_types::str!("invalid size"),
+                    message:   wl_types::Str(b"invalid size"),
                 })
                 .await?;
                 return Ok(())
@@ -215,7 +215,7 @@ where
                     .send(DISPLAY_ID, wl_display::events::Error {
                         code:      wl_display::enums::Error::InvalidObject as u32,
                         object_id: object_id.into(),
-                        message:   wl_types::str!("id already in use"),
+                        message:   wl_types::Str(b"id already in use"),
                     })
                     .await?;
             }

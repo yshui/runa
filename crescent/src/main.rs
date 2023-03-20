@@ -1,14 +1,11 @@
 #![feature(type_alias_impl_trait)]
 use std::{
-    cell::RefCell, ffi::CString, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc,
+    cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc,
 };
 
 use anyhow::Result;
 use apollo::{
-    shell::{
-        buffers::HasBuffer,
-        HasShell,
-    },
+    shell::{buffers::HasBuffer, HasShell},
     utils::geometry::{Extent, Point},
 };
 use futures_util::{select, TryStreamExt};
@@ -266,9 +263,9 @@ fn main() -> Result<()> {
     let output_global_id = AnyGlobal::globals().count() as u32 + 1;
     let output = apollo::shell::output::Output::new(
         Extent::new(0, 0),
-        CString::new("Crescent").unwrap(),
-        CString::new("Crescent").unwrap(),
-        CString::new("virtual-output-0").unwrap(),
+        "Crescent",
+        "Crescent",
+        "virtual-output-0",
         output_global_id,
     );
     output.set_size(Extent::new(1920, 1080));

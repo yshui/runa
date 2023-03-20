@@ -261,7 +261,7 @@ fn generate_serialize_for_type(
         },
         Fd => unreachable!(),
         String => quote! {
-            self.#name.0.to_bytes_with_nul()
+            &self.#name.0[..]
         },
         Array => quote! {
             &self.#name[..]
@@ -272,7 +272,7 @@ fn generate_serialize_for_type(
         Int | Uint | Fixed | Object | NewId => quote! {
             buf.put_slice(#get);
         },
-        String | Array => quote! {
+        Array => quote! {
             let tmp = #get;
             // buf aligned to 4 bytes, plus length prefix
             let aligned_len = ((tmp.len() + 3) & !3) + 4;
@@ -280,6 +280,18 @@ fn generate_serialize_for_type(
             // [4, buf.len()+4): buf
             // [buf.len()+4, aligned_len): alignment
             buf.put_u32_ne(tmp.len() as u32);
+            buf.put_slice(tmp);
+            buf.put_bytes(0, aligned_len - tmp.len() - 4);
+        },
+        String => quote! {
+            let tmp = #get;
+            // tmp doesn't have the trailing nul byte, so we add 1 to obtain its real length
+            let aligned_len = ((tmp.len() + 1 + 3) & !3) + 4;
+            // [0, 4): length
+            // [4, buf.len()+4): buf
+            // [buf.len()+4, buf.len()+1+4): nul        -- written together
+            // [buf.len()+1+4, aligned_len): alignment  -╯
+            buf.put_u32_ne((tmp.len() + 1) as u32);
             buf.put_slice(tmp);
             buf.put_bytes(0, aligned_len - tmp.len() - 4);
         },
@@ -332,8 +344,10 @@ fn generate_deserialize_for_type(
         Object | NewId => quote! { pop_u32(&mut data).into() },
         Fd => quote! { pop_fd(&mut fds).into() },
         String => quote! { {
-            let len = pop_u32(&mut data);
-            pop_bytes(&mut data, len as usize).into()
+            let len = pop_u32(&mut data) as usize;
+            let bytes = pop_bytes(&mut data, len);
+            assert_eq!(bytes[len - 1], b'\0'); // TODO: return an error
+            bytes[..len - 1].into()
         } },
         Array => quote! { {
             let len = pop_u32(&mut data);
@@ -400,7 +414,7 @@ fn generate_message_variant(
             wl_spec::protocol::Type::Fd |
             wl_spec::protocol::Type::Destructor => quote! {},
             wl_spec::protocol::Type::String => quote! {
-                + ((self.#name.0.to_bytes_with_nul().len() + 3) & !3) as u32
+                + ((self.#name.0.len() + 1 + 3) & !3) as u32 // + 1 for NUL byte
             },
             wl_spec::protocol::Type::Array => quote! {
                 + ((self.#name.len() + 3) & !3) as u32

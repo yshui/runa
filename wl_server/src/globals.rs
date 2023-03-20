@@ -192,12 +192,12 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
                 .collect();
 
             for (id, global) in globals {
-                let interface = std::ffi::CString::new(global.interface()).unwrap();
+                let interface = global.interface();
                 let version = global.version();
                 connection
                     .send(object_id, wl_registry::events::Global {
                         name: id,
-                        interface: wl_types::Str(interface.as_c_str()),
+                        interface: wl_types::Str(interface.as_bytes()),
                         version,
                     })
                     .await
@@ -244,12 +244,12 @@ impl<Ctx: Client> EventHandler<Ctx> for RegistryEventHandler {
                         .await?;
                 },
                 GlobalsUpdate::Added(name, global) => {
-                    let interface = std::ffi::CString::new(global.interface()).unwrap();
+                    let interface = global.interface();
                     let version = global.version();
                     connection
                         .send(self.registry_id, wl_registry::events::Global {
                             name: *name,
-                            interface: wl_types::Str(interface.as_c_str()),
+                            interface: wl_types::Str(interface.as_bytes()),
                             version,
                         })
                         .await?;

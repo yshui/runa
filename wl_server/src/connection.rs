@@ -526,7 +526,7 @@ macro_rules! impl_dispatch {
                             (
                                 object_id,
                                 error_code,
-                                std::ffi::CString::new(e.to_string()).unwrap(),
+                                e.to_string(),
                             )
                         }),
                     ),
@@ -537,7 +537,7 @@ macro_rules! impl_dispatch {
                     fatal |= self.connection_mut().send(DISPLAY_ID, wl_display::events::Error {
                             object_id: wl_types::Object(object_id),
                             code:      error_code,
-                            message:   wl_types::Str(msg.as_c_str()),
+                            message:   wl_types::Str(msg.as_bytes()),
                         })
                         .await
                         .is_err();
@@ -548,7 +548,7 @@ macro_rules! impl_dispatch {
                         let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
                         let opcode = len_opcode & 0xffff;
                         tracing::error!(
-                            "unparsed bytes in buffer, {bytes_read} != {len}. object_id: \
+                            "unparsed bytes in buffer, read ({bytes_read}) != received ({len}). object_id: \
                              {}@{object_id}, opcode: {opcode}",
                             self.objects().get::<Self::Object>(object_id)
                                 .map(|o| o.interface()).unwrap_or("unknown")

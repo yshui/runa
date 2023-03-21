@@ -267,7 +267,7 @@ pub mod roles {
     pub fn subsurface_iter<'a, S: Shell>(
         root: S::Token,
         s: &'a S,
-    ) -> impl Iterator<Item = (S::Token, Point<i32, coords::Surface>)> + 'a {
+    ) -> impl DoubleEndedIterator<Item = (S::Token, Point<i32, coords::Surface>)> + 'a {
         macro_rules! generate_advance {
             ($next_in_stack:ident, $next_maybe_deactivated:ident, $next:ident, $id:literal) => {
                 /// Advance the front pointer to the next surface in the

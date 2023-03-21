@@ -35,7 +35,7 @@ impl From<u32> for Object {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub struct Str<'a>(pub &'a [u8]);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct String(pub Vec<u8>);

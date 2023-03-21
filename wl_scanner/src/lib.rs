@@ -450,9 +450,14 @@ fn generate_message_variant(
     } else {
         quote! {}
     };
+    let extra_derives = if nfds != 0 {
+        quote! {}
+    } else {
+        quote! {, Clone, Copy}
+    };
     let public = quote! {
         #doc_comment
-        #[derive(Debug, PartialEq, Eq)]
+        #[derive(Debug, PartialEq, Eq #extra_derives)]
         pub struct #name #lifetime {
             #(#args),*
         }

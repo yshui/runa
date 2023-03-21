@@ -93,6 +93,7 @@ pub mod single_state {
 pub mod sources {
     use std::{future::Future, pin::Pin};
 
+    pub use async_broadcast::Sender;
     use async_broadcast::TrySendError;
     use derivative::Derivative;
     /// An event source implementation based on the [`async_broadcast`]
@@ -135,14 +136,18 @@ pub mod sources {
             Self(tx, rx.deactivate())
         }
 
+        pub fn new_sender(&self) -> async_broadcast::Sender<E> {
+            self.0.clone()
+        }
+
         pub fn set_capacity(&mut self, capacity: usize) {
             self.0.set_capacity(capacity);
         }
     }
 
     impl<E> Broadcast<E> {
-        pub fn as_inner(&self) -> &async_broadcast::Sender<E> {
-            &self.0
+        pub fn new_sender(&self) -> async_broadcast::Sender<E> {
+            self.0.clone()
         }
     }
 
@@ -195,17 +200,19 @@ pub mod sources {
         }
     }
 
+    /// The event stream for Broadcast and RingBroadcast event sources
+    ///
     /// A wrapper of the broadcast receiver that deactivates the
     /// receiver, without closing the sender, when dropped.
-    struct ReceiverWrapper<E>(Option<async_broadcast::Receiver<E>>);
-    impl<E> Drop for ReceiverWrapper<E> {
+    pub struct Receiver<E>(Option<async_broadcast::Receiver<E>>);
+    impl<E> Drop for Receiver<E> {
         fn drop(&mut self) {
             if let Some(receiver) = self.0.take() {
                 receiver.deactivate();
             }
         }
     }
-    impl<E: Clone + 'static> futures_core::Stream for ReceiverWrapper<E> {
+    impl<E: Clone + 'static> futures_core::Stream for Receiver<E> {
         type Item = E;
 
         fn poll_next(
@@ -218,18 +225,26 @@ pub mod sources {
     }
 
     impl<E: Clone + 'static> super::EventSource<E> for Broadcast<E> {
-        type Source = impl futures_core::stream::Stream<Item = E> + Unpin + 'static;
+        type Source = Receiver<E>;
 
         fn subscribe(&self) -> Self::Source {
-            ReceiverWrapper(Some(self.0.new_receiver()))
+            Receiver(Some(self.0.new_receiver()))
         }
     }
 
     impl<E: Clone + 'static> super::EventSource<E> for RingBroadcast<E> {
-        type Source = impl futures_core::stream::Stream<Item = E> + Unpin + 'static;
+        type Source = Receiver<E>;
 
         fn subscribe(&self) -> Self::Source {
-            ReceiverWrapper(Some(self.0.new_receiver()))
+            Receiver(Some(self.0.new_receiver()))
+        }
+    }
+
+    impl<E: Clone + 'static> super::EventSource<E> for Sender<E> {
+        type Source = Receiver<E>;
+
+        fn subscribe(&self) -> Self::Source {
+            Receiver(Some(self.new_receiver()))
         }
     }
 }

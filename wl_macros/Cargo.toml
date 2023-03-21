@@ -12,7 +12,7 @@ heck = "0.4.0"
 proc-macro-error = "1.0.4"
 proc-macro2 = "1.0.43"
 quote = "1.0.21"
-syn = "1.0.99"
+syn = { version = "1.0.99", features = ["visit-mut"] }
 wl_scanner = { path = "../wl_scanner" }
 wl_spec = { path = "../wl_spec" }
 

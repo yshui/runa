@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use darling::{FromDeriveInput, FromMeta};
 use proc_macro_error::ResultExt;
 use quote::{quote, ToTokens};
-use syn::parse::Parse;
+use syn::{
+    parse::Parse,
+    visit_mut::{self, VisitMut},
+};
 
 macro_rules! die {
     ($spanned:expr=>
@@ -185,8 +188,7 @@ fn as_turbofish(path: &syn::Path) -> syn::Path {
 
 /// Remove unconstrained type parameters from a generics, where clause is not
 /// supported and will be removed.
-fn filter_generics(generics: &syn::Generics, ty: &syn::Type) -> Result<syn::Generics, syn::Error> {
-    use syn::Type::*;
+fn filter_generics(generics: &mut syn::Generics, ty: &mut syn::Type) -> Result<(), syn::Error> {
     let mut idents_used = HashMap::new();
     let mut lifetimes_used = HashMap::new();
     let mut consts_used = HashMap::new();
@@ -203,129 +205,73 @@ fn filter_generics(generics: &syn::Generics, ty: &syn::Type) -> Result<syn::Gene
             },
         }
     }
-    fn scan_type(
-        ty: &syn::Type,
-        ident_used: &mut HashMap<syn::Ident, bool>,
-        lifetimes_used: &mut HashMap<syn::Lifetime, bool>,
-        consts_used: &mut HashMap<syn::Ident, bool>,
-    ) -> Result<(), syn::Error> {
-        match ty {
-            Path(type_path) =>
-                if let Some(qself) = &type_path.qself {
-                    scan_type(&qself.ty, ident_used, lifetimes_used, consts_used)?;
-                } else {
-                    // Only the first segment ident can be a type parameter
-                    let first = type_path.path.segments.first().unwrap();
-                    if let Some(used) = ident_used.get_mut(&first.ident) {
+    struct ConstrainedGenericParams {
+        idents: HashMap<syn::Ident, bool>,
+        consts: HashMap<syn::Ident, bool>,
+        error:  Option<syn::Error>,
+    }
+
+    impl VisitMut for ConstrainedGenericParams {
+        fn visit_type_path_mut(&mut self, i: &mut syn::TypePath) {
+            // `<T as Trait>::T2<T3>` is not a use of `T` or `T3`, so ignore
+            // types with qself
+            if i.qself.is_none() {
+                if let Some(ident) = i.path.get_ident() {
+                    // `T`
+                    if let Some(used) = self.idents.get_mut(ident) {
                         *used = true;
                     }
-                    // Scan path arguments
-                    for segment in &type_path.path.segments {
-                        match &segment.arguments {
-                            syn::PathArguments::None => (),
-                            syn::PathArguments::Parenthesized(p) => {
-                                for arg in &p.inputs {
-                                    scan_type(arg, ident_used, lifetimes_used, consts_used)?;
-                                }
-                                if let syn::ReturnType::Type(_, ty) = &p.output {
-                                    scan_type(ty, ident_used, lifetimes_used, consts_used)?;
-                                }
-                            },
-                            syn::PathArguments::AngleBracketed(ref args) =>
-                                for arg in &args.args {
-                                    match arg {
-                                        syn::GenericArgument::Type(type_) => {
-                                            scan_type(
-                                                type_,
-                                                ident_used,
-                                                lifetimes_used,
-                                                consts_used,
-                                            )?;
-                                        },
-                                        syn::GenericArgument::Lifetime(lt) => {
-                                            if let Some(used) = lifetimes_used.get_mut(lt) {
-                                                *used = true;
-                                            }
-                                        },
-                                        syn::GenericArgument::Binding(b) => {
-                                            scan_type(
-                                                &b.ty,
-                                                ident_used,
-                                                lifetimes_used,
-                                                consts_used,
-                                            )?;
-                                        },
-                                        syn::GenericArgument::Constraint(_) =>
-                                            return Err(syn::Error::new_spanned(
-                                                arg,
-                                                "Constraints are not supported",
-                                            )),
-                                        syn::GenericArgument::Const(expr) =>
-                                            if let syn::Expr::Path(expr_path) = expr {
-                                                if let Some(ident) = expr_path.path.get_ident() {
-                                                    if let Some(used) = consts_used.get_mut(ident) {
-                                                        *used = true;
-                                                    }
-                                                }
-                                            },
-                                    }
-                                },
-                        }
-                    }
-                },
-            Reference(type_ref) => {
-                scan_type(&type_ref.elem, ident_used, lifetimes_used, consts_used)?;
-            },
-            Tuple(type_tuple) =>
-                for elem in &type_tuple.elems {
-                    scan_type(elem, ident_used, lifetimes_used, consts_used)?;
-                },
-            Slice(type_slice) => {
-                scan_type(&type_slice.elem, ident_used, lifetimes_used, consts_used)?;
-            },
-            Array(type_array) => {
-                scan_type(&type_array.elem, ident_used, lifetimes_used, consts_used)?;
-                if let syn::Expr::Path(expr_path) = &type_array.len {
-                    if let Some(ident) = expr_path.path.get_ident() {
-                        if let Some(used) = consts_used.get_mut(ident) {
-                            *used = true;
-                        }
-                    }
+                } else if let Some(segment) = i
+                    .path
+                    .segments
+                    .iter_mut()
+                    .find(|seg| !seg.arguments.is_empty())
+                {
+                    // `a::b::c::X<Args..>`, `Args..` can contain uses of parameters
+                    visit_mut::visit_path_arguments_mut(self, &mut segment.arguments);
                 }
-            },
-            Ptr(type_ptr) => {
-                scan_type(&type_ptr.elem, ident_used, lifetimes_used, consts_used)?;
-            },
-            Paren(type_paren) => {
-                scan_type(&type_paren.elem, ident_used, lifetimes_used, consts_used)?;
-            },
-            Group(type_group) => {
-                scan_type(&type_group.elem, ident_used, lifetimes_used, consts_used)?;
-            },
-            _ => Err(syn::Error::new_spanned(ty, "Unexpected type"))?,
+                // `a::b::c::X`, `X` cannot be a type parameter
+            }
         }
-        Ok(())
     }
-    scan_type(ty, &mut idents_used, &mut lifetimes_used, &mut consts_used)?;
+
+    let mut constrained = ConstrainedGenericParams {
+        idents: idents_used,
+        consts: consts_used,
+        error:  None,
+    };
+    match ty {
+        syn::Type::Path(syn::TypePath { qself: None, path }) => {
+            if let Some(segment) = path.segments.last_mut() {
+                visit_mut::visit_path_arguments_mut(&mut constrained, &mut segment.arguments);
+            }
+        },
+        _ =>
+            return Err(syn::Error::new_spanned(
+                ty,
+                "wayland_object attribute must be used on a base type",
+            )),
+    }
+
+    if let Some(error) = constrained.error {
+        return Err(error)
+    }
+
     //eprintln!("Used idents: {:?}", idents_used);
     //eprintln!("Used lifetimes: {:?}", lifetimes_used);
     //eprintln!("Used consts: {:?}", consts_used);
-    let new_generics = syn::Generics {
-        params: generics
-            .params
-            .clone()
-            .into_iter()
-            .filter(|param| match param {
-                syn::GenericParam::Type(type_param) => *idents_used.get(&type_param.ident).unwrap(),
-                syn::GenericParam::Lifetime(lifetime_param) =>
-                    *lifetimes_used.get(&lifetime_param.lifetime).unwrap(),
-                syn::GenericParam::Const(const_param) =>
-                    *consts_used.get(&const_param.ident).unwrap(),
-            })
-            .collect(),
-        ..Default::default()
-    };
-    Ok(new_generics)
+    generics.params = std::mem::take(&mut generics.params)
+        .into_iter()
+        .filter(|param| match param {
+            syn::GenericParam::Type(type_param) =>
+                *constrained.idents.get(&type_param.ident).unwrap(),
+            syn::GenericParam::Lifetime(_) => true,
+            syn::GenericParam::Const(const_param) =>
+                *constrained.consts.get(&const_param.ident).unwrap(),
+        })
+        .collect();
+    generics.where_clause = None;
+    Ok(())
 }
 
 /// Generate `Object` impls for types that implement `RequestDispatch` for a
@@ -350,7 +296,8 @@ fn filter_generics(generics: &syn::Generics, ty: &syn::Type) -> Result<syn::Gene
 /// * `crate` - The path to the `wl_server` crate. "wl_server" by default.
 /// * `state` - The type of the singleton state associated with the object. See
 ///   [`wl_server::objects::MonoObject::SingletonState`] for more information.
-///   If not set, this will be a never type (e.g. `!`).
+///   If not set, this will be a never type (e.g. `!`). An optional where clause
+///   can be added, which will be attached to the impl for `MonoObject`.
 /// * `state_init` - An expression to create the initial value of the state.
 ///   This expression must be evaluate-able in const context. By default, if
 ///   `state` is not set, this will be `None`; otherwise this will be
@@ -363,6 +310,26 @@ pub fn wayland_object(
 ) -> proc_macro::TokenStream {
     use heck::ToPascalCase;
     use quote::format_ident;
+
+    struct StateType {
+        ty:           syn::Type,
+        where_clause: Option<syn::WhereClause>,
+    }
+
+    impl Parse for StateType {
+        fn parse(input: syn::parse::ParseStream) -> Result<Self, syn::Error> {
+            let ty = input.parse()?;
+            let where_clause = input.parse()?;
+            Ok(Self { ty, where_clause })
+        }
+    }
+
+    impl darling::FromMeta for StateType {
+        fn from_string(value: &str) -> darling::Result<Self> {
+            Ok(syn::parse_str(value)?)
+        }
+    }
+
     #[derive(FromMeta)]
     struct Attributes {
         #[darling(default)]
@@ -374,7 +341,7 @@ pub fn wayland_object(
         #[darling(default)]
         on_disconnect: Option<syn::Ident>,
         #[darling(default)]
-        state:         Option<syn::Type>,
+        state:         Option<StateType>,
         #[darling(default)]
         state_init:    Option<syn::Expr>,
     }
@@ -420,7 +387,7 @@ pub fn wayland_object(
     let DispatchImpl {
         generics,
         trait_,
-        self_ty,
+        mut self_ty,
         items,
         error,
         has_lifetime,
@@ -504,8 +471,9 @@ pub fn wayland_object(
         quote! {}
     };
     let singleton_state_type = if let Some(state) = attr.state.as_ref() {
+        let state_ty = &state.ty;
         quote! {
-            #state
+            #state_ty
         }
     } else {
         quote! {
@@ -527,14 +495,16 @@ pub fn wayland_object(
         }
     };
 
-    let filtered_generics = match filter_generics(&generics, &self_ty) {
+    let mut filtered_generics = generics.clone();
+    match filter_generics(&mut filtered_generics, &mut self_ty) {
         Err(e) => return e.to_compile_error().into(),
         Ok(g) => g,
     };
+    let state_where = attr.state.as_ref().map(|state| &state.where_clause);
     quote! {
         #orig_item
         const _: () = {
-            impl #filtered_generics #crate_::objects::MonoObject for #self_ty {
+            impl #filtered_generics #crate_::objects::MonoObject for #self_ty #state_where {
                 type SingletonState = #singleton_state_type;
                 const INTERFACE: &'static str = #interface_tokens;
                 #[inline]

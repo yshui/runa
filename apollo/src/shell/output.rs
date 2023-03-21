@@ -5,7 +5,7 @@ use std::{
 
 use hashbrown::HashMap;
 use wl_io::traits::WriteMessage;
-use wl_server::events::{BroadcastEventSource, EventSource};
+use wl_server::events::{self, EventSource};
 
 use crate::utils::{
     geometry::{coords, Extent, Point, Rectangle, Scale, Transform},
@@ -33,7 +33,7 @@ pub struct Output {
     /// See the fractional_scale_v1::preferred_scale for why 120.
     scale:            Cell<Scale<u32>>,
     global_id:        u32,
-    change_event:     BroadcastEventSource<OutputChangeEvent>,
+    change_event:     events::sources::Broadcast<OutputChangeEvent>,
 }
 
 bitflags::bitflags! {
@@ -276,7 +276,7 @@ impl Output {
 
 impl EventSource<OutputChangeEvent> for Output {
     type Source =
-        <BroadcastEventSource<OutputChangeEvent> as EventSource<OutputChangeEvent>>::Source;
+        <events::sources::Broadcast<OutputChangeEvent> as EventSource<OutputChangeEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.change_event.subscribe()

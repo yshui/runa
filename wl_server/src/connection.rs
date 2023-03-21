@@ -16,11 +16,7 @@ use futures_core::{FusedFuture, Stream};
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
 use hashbrown::{hash_map, HashMap, HashSet};
 
-use crate::{
-    events::{self, BroadcastEventSource},
-    objects,
-    utils::one_shot_signal,
-};
+use crate::{events, objects, utils::one_shot_signal};
 
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
@@ -254,7 +250,7 @@ pub struct Store<Object> {
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
     ids_left:         u32,
-    event_source:     BroadcastEventSource<traits::StoreEvent>,
+    event_source:     events::sources::Broadcast<traits::StoreEvent>,
 }
 
 impl<Object: objects::AnyObject> Store<Object> {

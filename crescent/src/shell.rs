@@ -16,14 +16,14 @@ use apollo::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use slotmap::{DefaultKey, SlotMap};
-use wl_server::events::{BroadcastEventSource, EventSource};
+use wl_server::events::{sources::Broadcast, EventSource};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct DefaultShell<S: buffers::BufferLike> {
     storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     stack:           VecList<Window>,
-    shell_event:     BroadcastEventSource<ShellEvent>,
+    shell_event:     Broadcast<ShellEvent>,
     position_offset: Point<i32, coords::Screen>,
     screen:          apollo::shell::output::Screen,
 }
@@ -277,7 +277,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
 }
 
 impl<S: buffers::BufferLike> EventSource<ShellEvent> for DefaultShell<S> {
-    type Source = <BroadcastEventSource<ShellEvent> as EventSource<ShellEvent>>::Source;
+    type Source = <Broadcast<ShellEvent> as EventSource<ShellEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.shell_event.subscribe()

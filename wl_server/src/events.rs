@@ -1,17 +1,8 @@
-use std::{future::Future, pin::Pin};
-
 pub trait EventSource<Event> {
     type Source: futures_util::stream::Stream<Item = Event> + 'static;
     /// Get a stream of events from the event source.
     fn subscribe(&self) -> Self::Source;
 }
-
-/// An event source implementation based on the [`async_broadcast`] channels.
-#[derive(Debug, Clone)]
-pub struct BroadcastEventSource<E>(
-    async_broadcast::Sender<E>,
-    async_broadcast::InactiveReceiver<E>,
-);
 
 // TODO: this is equivalent to `async_broadcast` with `set_overflow(true)` and
 // `set_capacity(1)`. Contemplate if we should just use `async_broadcast`
@@ -39,9 +30,9 @@ pub mod single_state {
         version:      Cell<u64>,
     }
 
-    /// An event source whose receivers will receive an event when a state is
-    /// changed. It's possible for multiple changes to be aggregated into a
-    /// single event.
+    /// An event source whose receivers will receive an event when a state
+    /// is changed. It's possible for multiple changes to be
+    /// aggregated into a single event.
     #[derive(Debug, Derivative)]
     #[derivative(Default(bound = ""))]
     pub struct Sender<E> {
@@ -99,86 +90,146 @@ pub mod single_state {
     }
 }
 
-impl<E> Default for BroadcastEventSource<E> {
-    fn default() -> Self {
-        let (mut tx, rx) = async_broadcast::broadcast(16);
-        tx.set_await_active(false);
-        Self(tx, rx.deactivate())
-    }
-}
+pub mod sources {
+    use std::{future::Future, pin::Pin};
 
-impl<E> BroadcastEventSource<E> {
-    pub fn as_inner(&self) -> &async_broadcast::Sender<E> {
-        &self.0
-    }
-}
+    use async_broadcast::TrySendError;
+    use derivative::Derivative;
+    /// An event source implementation based on the [`async_broadcast`]
+    /// channels.
+    ///
+    /// This event source is mpmc, so it can be cloned, enabling multiple sender
+    /// to send at the same time
+    #[derive(Debug, Derivative)]
+    #[derivative(Clone(bound = ""))]
+    pub struct Broadcast<E>(
+        async_broadcast::Sender<E>,
+        async_broadcast::InactiveReceiver<E>,
+    );
 
-pub type BroadcastOwned<E: Clone + 'static> = impl Future<Output = ()> + 'static;
-impl<E: Clone> BroadcastEventSource<E> {
-    pub fn broadcast(&self, msg: E) -> impl Future<Output = ()> + '_ {
-        // The sender is never closed because we hold a inactive receiver.
-        assert!(!self.0.is_closed());
+    /// An event source implementation based on the [`async_broadcast`]
+    /// channels.
+    ///
+    /// Like [`Broadcast`], except when the internal queue is full, the oldest
+    /// event will be dropped.
+    #[derive(Debug, Derivative)]
+    #[derivative(Clone(bound = ""))]
+    pub struct RingBroadcast<E>(
+        async_broadcast::Sender<E>,
+        async_broadcast::InactiveReceiver<E>,
+    );
 
-        // Here this should only error if there is no active receiver, which
-        // is fine.
-        async move {
-            let _ = self.0.broadcast(msg).await;
+    impl<E> Default for Broadcast<E> {
+        fn default() -> Self {
+            let (mut tx, rx) = async_broadcast::broadcast(16);
+            tx.set_await_active(false);
+            Self(tx, rx.deactivate())
         }
     }
 
-    /// Like `broadcast`, but the returned future doesn't borrow from `self`.
-    pub fn broadcast_owned(&self, msg: E) -> BroadcastOwned<E>
-    where
-        E: 'static,
-    {
-        assert!(!self.0.is_closed());
-        let sender = self.0.clone();
+    impl<E> RingBroadcast<E> {
+        pub fn new(capacity: usize) -> Self {
+            let (mut tx, rx) = async_broadcast::broadcast(capacity);
+            tx.set_await_active(false);
+            tx.set_overflow(true);
+            Self(tx, rx.deactivate())
+        }
 
-        async move {
-            let _ = sender.broadcast(msg).await;
+        pub fn set_capacity(&mut self, capacity: usize) {
+            self.0.set_capacity(capacity);
         }
     }
 
-    /// Like `broadcast`, but if the queue is full, instead of waiting, this
-    /// function will reserve more space in the queue.
-    pub fn broadcast_reserve(&mut self, msg: E) {
-        use async_broadcast::TrySendError;
-        assert!(!self.0.is_closed());
-        if self.0.is_full() {
-            self.0.set_capacity(self.0.capacity() * 2);
-        }
-        match self.0.try_broadcast(msg) {
-            Err(TrySendError::Full(_)) => unreachable!(),
-            _ => (),
+    impl<E> Broadcast<E> {
+        pub fn as_inner(&self) -> &async_broadcast::Sender<E> {
+            &self.0
         }
     }
-}
 
-impl<E: Clone + 'static> EventSource<E> for BroadcastEventSource<E> {
-    type Source = impl futures_core::stream::Stream<Item = E> + Unpin + 'static;
+    pub type BroadcastOwned<E: Clone + 'static> = impl Future<Output = ()> + 'static;
+    impl<E: Clone> Broadcast<E> {
+        pub fn broadcast(&self, msg: E) -> impl Future<Output = ()> + '_ {
+            // The sender is never closed because we hold a inactive receiver.
+            assert!(!self.0.is_closed());
 
-    fn subscribe(&self) -> Self::Source {
-        /// A wrapper of the broadcast receiver that deactivates the receiver,
-        /// without closing the sender, when dropped.
-        struct ReceiverWrapper<E>(Option<async_broadcast::Receiver<E>>);
-        impl<E> Drop for ReceiverWrapper<E> {
-            fn drop(&mut self) {
-                if let Some(receiver) = self.0.take() {
-                    receiver.deactivate();
-                }
+            // Here this should only error if there is no active receiver, which
+            // is fine.
+            async move {
+                let _ = self.0.broadcast(msg).await;
             }
         }
-        impl<E: Clone + 'static> futures_core::Stream for ReceiverWrapper<E> {
-            type Item = E;
 
-            fn poll_next(
-                mut self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<Option<Self::Item>> {
-                let this = self.0.as_mut().unwrap();
-                Pin::new(this).poll_next(cx)
+        /// Like `broadcast`, but the returned future doesn't borrow from
+        /// `self`.
+        pub fn broadcast_owned(&self, msg: E) -> BroadcastOwned<E>
+        where
+            E: 'static,
+        {
+            assert!(!self.0.is_closed());
+            let sender = self.0.clone();
+
+            async move {
+                let _ = sender.broadcast(msg).await;
             }
         }
-        ReceiverWrapper(Some(self.0.new_receiver()))
+
+        /// Like `broadcast`, but if the queue is full, instead of waiting, this
+        /// function will reserve more space in the queue.
+        pub fn broadcast_reserve(&mut self, msg: E) {
+            assert!(!self.0.is_closed());
+
+            if self.0.is_full() {
+                self.0.set_capacity(self.0.capacity() * 2);
+            }
+
+            let result = self.0.try_broadcast(msg);
+            assert!(!matches!(result, Err(TrySendError::Full(_))));
+        }
+    }
+
+    impl<E: Clone> RingBroadcast<E> {
+        pub fn broadcast(&self, msg: E) {
+            assert!(!self.0.is_closed());
+            let result = self.0.try_broadcast(msg);
+            assert!(!matches!(result, Err(TrySendError::Full(_))));
+        }
+    }
+
+    /// A wrapper of the broadcast receiver that deactivates the
+    /// receiver, without closing the sender, when dropped.
+    struct ReceiverWrapper<E>(Option<async_broadcast::Receiver<E>>);
+    impl<E> Drop for ReceiverWrapper<E> {
+        fn drop(&mut self) {
+            if let Some(receiver) = self.0.take() {
+                receiver.deactivate();
+            }
+        }
+    }
+    impl<E: Clone + 'static> futures_core::Stream for ReceiverWrapper<E> {
+        type Item = E;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            let this = self.0.as_mut().unwrap();
+            Pin::new(this).poll_next(cx)
+        }
+    }
+
+    impl<E: Clone + 'static> super::EventSource<E> for Broadcast<E> {
+        type Source = impl futures_core::stream::Stream<Item = E> + Unpin + 'static;
+
+        fn subscribe(&self) -> Self::Source {
+            ReceiverWrapper(Some(self.0.new_receiver()))
+        }
+    }
+
+    impl<E: Clone + 'static> super::EventSource<E> for RingBroadcast<E> {
+        type Source = impl futures_core::stream::Stream<Item = E> + Unpin + 'static;
+
+        fn subscribe(&self) -> Self::Source {
+            ReceiverWrapper(Some(self.0.new_receiver()))
+        }
     }
 }

@@ -7,7 +7,7 @@ use derivative::Derivative;
 
 use crate::{
     connection::traits::Client,
-    events::{BroadcastEventSource, EventSource},
+    events::{self, EventSource},
     globals::Global,
     Serial,
 };
@@ -72,7 +72,7 @@ pub trait Globals<G>: EventSource<GlobalsUpdate<G>> {
 #[derivative(Debug(bound = ""))]
 pub struct GlobalStore<G> {
     globals:      crate::IdAlloc<Rc<G>>,
-    update_event: BroadcastEventSource<GlobalsUpdate<G>>,
+    update_event: events::sources::Broadcast<GlobalsUpdate<G>>,
 }
 
 impl<G> FromIterator<G> for GlobalStore<G> {
@@ -89,7 +89,8 @@ impl<G> FromIterator<G> for GlobalStore<G> {
 }
 
 impl<G: 'static> EventSource<GlobalsUpdate<G>> for GlobalStore<G> {
-    type Source = <BroadcastEventSource<GlobalsUpdate<G>> as EventSource<GlobalsUpdate<G>>>::Source;
+    type Source =
+        <events::sources::Broadcast<GlobalsUpdate<G>> as EventSource<GlobalsUpdate<G>>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.update_event.subscribe()

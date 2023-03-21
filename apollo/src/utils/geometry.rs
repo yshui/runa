@@ -3,7 +3,8 @@ use std::{
     ops::{Add, AddAssign, Div, Mul, Sub, SubAssign},
 };
 
-use num_traits::{real::Real, AsPrimitive, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
+use num_traits::{AsPrimitive, One, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
+use ordered_float::NotNan;
 
 pub mod coords {
     /// Screen coordinates. The compositor can have a virutal "screen",
@@ -27,7 +28,7 @@ pub mod coords {
     pub struct Output;
 
     /// Surface local coordinates, for positioning subsurfaces (and maybe
-    /// popups).
+    /// popups). This is x to the left, y down
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Surface;
 
@@ -70,8 +71,9 @@ pub trait Sign {
     fn is_negative(&self) -> bool;
     fn abs(&self) -> Self;
 }
-macro_rules! impl_sign_for_signed {
-    (signed: $ ($tys:ty),*; unsigned: $($utys:ty),* ) => {
+
+macro_rules! impl_sign {
+    (signed: $($tys:ty),*; unsigned: $($utys:ty),* ) => {
         $(
             impl Sign for $tys {
                 #[inline]
@@ -98,7 +100,93 @@ macro_rules! impl_sign_for_signed {
         )*
     };
 }
-impl_sign_for_signed!(signed: i8, i16, i32, i64, i128, isize, f32, f64; unsigned: u8, u16, u32, u64, u128, usize);
+
+/// Trait for approximating a number to the nearest integer
+pub trait Approx {
+    /// Return the largest integer less than or equal to the number
+    fn floor(self) -> Self;
+    /// Return the smallest integer greater than or equal to the number
+    fn ceil(self) -> Self;
+    /// Return the nearest integer to the number
+    fn round(self) -> Self;
+}
+
+macro_rules! impl_approx {
+    (int: $($itys:ty),*; float: $($ftys:ty),*; notnan: $($nntys:ty),*) => {
+        $(
+            impl Approx for $itys {
+                #[inline]
+                fn floor(self) -> Self {
+                    self
+                }
+
+                #[inline]
+                fn ceil(self) -> Self {
+                    self
+                }
+
+                #[inline]
+                fn round(self) -> Self {
+                    self
+                }
+            }
+        )*
+        $(
+            impl Approx for $ftys {
+                #[inline]
+                fn floor(self) -> Self {
+                    self.floor()
+                }
+
+                #[inline]
+                fn ceil(self) -> Self {
+                    self.ceil()
+                }
+
+                #[inline]
+                fn round(self) -> Self {
+                    self.round()
+                }
+            }
+        )*
+        $(
+            impl Approx for NotNan<$nntys> {
+                #[inline]
+                fn floor(self) -> Self {
+                    // Safety: `NotNan` guarantees that the value is not NaN,
+                    // and `floor` only returns NaN if the input is NaN.
+                    unsafe {
+                        NotNan::new_unchecked(self.into_inner().floor())
+                    }
+                }
+
+                #[inline]
+                fn ceil(self) -> Self {
+                    // Safety: `NotNan` guarantees that the value is not NaN,
+                    // and `ceil` only returns NaN if the input is NaN.
+                    unsafe {
+                        NotNan::new_unchecked(self.into_inner().ceil())
+                    }
+                }
+
+                #[inline]
+                fn round(self) -> Self {
+                    // Safety: `NotNan` guarantees that the value is not NaN,
+                    // and `round` only returns NaN if the input is NaN.
+                    unsafe {
+                        NotNan::new_unchecked(self.into_inner().round())
+                    }
+                }
+            }
+        )*
+    };
+}
+
+impl_sign!(signed: i8, i16, i32, i64, i128, isize, f32, f64, NotNan<f32>, NotNan<f64>;
+           unsigned: u8, u16, u32, u64, u128, usize);
+
+impl_approx!(int: i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, usize, isize;
+             float: f32, f64; notnan: f32, f64);
 
 /*
  * Scale
@@ -126,6 +214,14 @@ impl<N: Copy> Scale<N> {
             y: self.y.as_(),
         }
     }
+
+    #[inline]
+    pub fn map<M: Copy + 'static>(self, f: impl Fn(N) -> M) -> Scale<M> {
+        Scale {
+            x: f(self.x),
+            y: f(self.y),
+        }
+    }
 }
 
 impl<N: Copy> Scale<N> {
@@ -138,6 +234,17 @@ impl<N: Copy> Scale<N> {
     #[inline]
     pub fn uniform(scale: N) -> Self {
         Scale { x: scale, y: scale }
+    }
+}
+
+impl<N: Copy + One + Div<Output = N> + 'static> Scale<N> {
+    /// Caculate the inverse of a scale
+    #[inline]
+    pub fn inv(self) -> Self {
+        Scale {
+            x: N::one() / self.x,
+            y: N::one() / self.y,
+        }
     }
 }
 
@@ -291,7 +398,7 @@ impl<N: Ord + Copy, Kind: CoordinateSpace> Point<N, Kind> {
     }
 }
 
-impl<N: Real, Kind: CoordinateSpace> Point<N, Kind> {
+impl<N: Approx, Kind: CoordinateSpace> Point<N, Kind> {
     /// Round the coordinates to the nearest integer
     #[inline]
     pub fn round(self) -> Self {
@@ -439,6 +546,14 @@ impl<N: Sign, Kind: CoordinateSpace> Extent<N, Kind> {
     }
 }
 
+impl<N: Sign + Copy + Ord, Kind: CoordinateSpace> Extent<N, Kind> {
+    /// Returns whether a point is contained in `(0, 0)..=(w, h)`
+    #[inline]
+    pub fn contains(&self, p: Point<N, Kind>) -> bool {
+        !p.x.is_negative() && !p.y.is_negative() && p.x <= self.w && p.y <= self.h
+    }
+}
+
 impl<N: SaturatingMul + Sign + Copy, Kind: CoordinateSpace> Extent<N, Kind> {
     /// Upscale this [`Extent`] by a specified [`Scale`]
     #[inline]
@@ -476,7 +591,7 @@ impl<N: Zero + Eq, Kind: CoordinateSpace> Extent<N, Kind> {
     }
 }
 
-impl<N: Real + Sign, Kind: CoordinateSpace> Extent<N, Kind> {
+impl<N: Approx + Sign, Kind: CoordinateSpace> Extent<N, Kind> {
     /// Convert to i32 for integer-space manipulations by rounding float values
     #[inline]
     pub fn round(self) -> Extent<N, Kind> {
@@ -654,7 +769,9 @@ impl<N: Zero + Eq, Kind: CoordinateSpace> Rectangle<N, Kind> {
     }
 }
 
-impl<N: Real + Sign + Sub<Output = N>, Kind: CoordinateSpace> Rectangle<N, Kind> {
+impl<N: Approx + Sign + Sub<Output = N> + Add<Output = N> + Copy, Kind: CoordinateSpace>
+    Rectangle<N, Kind>
+{
     #[inline]
     pub fn round(self) -> Rectangle<N, Kind> {
         Rectangle {

@@ -227,7 +227,6 @@ pub mod aggregate {
 pub mod broadcast {
     use std::{future::Future, pin::Pin};
 
-    pub use async_broadcast::Sender;
     use async_broadcast::TrySendError;
     use derivative::Derivative;
     /// An event source implementation based on the [`async_broadcast`]
@@ -270,18 +269,21 @@ pub mod broadcast {
             Self(tx, rx.deactivate())
         }
 
-        pub fn new_sender(&self) -> async_broadcast::Sender<E> {
-            self.0.clone()
-        }
-
         pub fn set_capacity(&mut self, capacity: usize) {
             self.0.set_capacity(capacity);
         }
+
+        pub fn sender_count(&self) -> usize {
+            // The sender stored in `Ring` is never used for sending, so minus 1 here
+            self.0.sender_count()
+        }
     }
 
-    impl<E> Broadcast<E> {
-        pub fn new_sender(&self) -> async_broadcast::Sender<E> {
-            self.0.clone()
+    impl<E: Clone> Ring<E> {
+        pub fn broadcast(&self, msg: E) {
+            assert!(!self.0.is_closed());
+            let result = self.0.try_broadcast(msg);
+            assert!(!matches!(result, Err(TrySendError::Full(_))));
         }
     }
 
@@ -326,14 +328,6 @@ pub mod broadcast {
         }
     }
 
-    impl<E: Clone> Ring<E> {
-        pub fn broadcast(&self, msg: E) {
-            assert!(!self.0.is_closed());
-            let result = self.0.try_broadcast(msg);
-            assert!(!matches!(result, Err(TrySendError::Full(_))));
-        }
-    }
-
     /// The event stream for Broadcast and RingBroadcast event sources
     ///
     /// A wrapper of the broadcast receiver that deactivates the
@@ -371,14 +365,6 @@ pub mod broadcast {
 
         fn subscribe(&self) -> Self::Source {
             Receiver(Some(self.0.new_receiver()))
-        }
-    }
-
-    impl<E: Clone + 'static> super::EventSource<E> for Sender<E> {
-        type Source = Receiver<E>;
-
-        fn subscribe(&self) -> Self::Source {
-            Receiver(Some(self.new_receiver()))
         }
     }
 }

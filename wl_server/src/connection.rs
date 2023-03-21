@@ -59,11 +59,13 @@ pub mod traits {
         pub kind:      StoreEventKind,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, thiserror::Error)]
     pub enum GetError {
         // The ID is not found
+        #[error("Object ID {0} not found")]
         IdNotFound(u32),
         // The object is not of the requested type
+        #[error("Object ID {0} is not of the requested type")]
         TypeMismatch(u32),
     }
     pub trait Store<O>: events::EventSource<StoreEvent> {

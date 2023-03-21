@@ -8,9 +8,11 @@ use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
+use ordered_float::NotNan;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
+use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_pointer::v8 as wl_pointer};
 use wl_server::{
-    events::{single_state, EventSource},
+    events::{broadcast, single_state, EventSource},
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
 
@@ -18,7 +20,7 @@ use super::{buffers::AttachedBuffer, output::Output, xdg::Layout, Shell};
 use crate::{
     objects,
     utils::{
-        geometry::{coords, Point},
+        geometry::{coords, Point, Scale},
         WeakPtr,
     },
 };
@@ -633,8 +635,10 @@ impl<S: Shell> SurfaceState<S> {
     }
 
     #[inline]
-    pub fn buffer_scale_f32(&self) -> f32 {
-        self.buffer_scale as f32 / 120.0
+    pub fn buffer_scale_f32(&self) -> Scale<NotNan<f32>> {
+        use num_traits::AsPrimitive;
+        let scale: NotNan<f32> = self.buffer_scale.as_();
+        Scale::uniform(scale / 120.0)
     }
 
     #[inline]
@@ -739,6 +743,45 @@ pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
 #[derive(Clone, Debug)]
 pub struct OutputEvent(pub(crate) OutputSet);
 
+#[derive(Clone, Copy, Debug)]
+pub enum PointerEventKind {
+    Motion {
+        coords: Point<NotNan<f32>, coords::Surface>,
+    },
+    Button {
+        button: u32,
+        state:  wl_pointer::enums::ButtonState,
+        coords: Point<NotNan<f32>, coords::Surface>,
+    },
+    // TODO: axis
+    // ...
+}
+
+impl PointerEventKind {
+    pub fn coords(&self) -> Point<NotNan<f32>, coords::Surface> {
+        match self {
+            Self::Motion { coords, .. } => *coords,
+            Self::Button { coords, .. } => *coords,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PointerEvent {
+    pub time:      u32,
+    pub object_id: u32,
+    pub kind:      PointerEventKind,
+}
+
+#[derive(Clone, Copy)]
+pub enum KeyboardEvent {
+    Key {
+        time:  u32,
+        key:   u32,
+        state: wl_keyboard::enums::KeyState,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct LayoutEvent(pub(crate) Layout);
 /// Maximum number of frame callbacks that can be registered on a surface.
@@ -766,6 +809,8 @@ pub struct Surface<S: super::Shell> {
     role:                       RefCell<Option<Box<dyn Role<S>>>>,
     outputs:                    OutputSet,
     output_change_event:        single_state::Sender<OutputEvent>,
+    pub(crate) pointer_events:  RefCell<Option<broadcast::Ring<PointerEvent>>>,
+    keyboard_event:             broadcast::Broadcast<KeyboardEvent>,
     layout_change_event:        single_state::Sender<LayoutEvent>,
     object_id:                  u32,
 }
@@ -808,6 +853,8 @@ impl<S: Shell> Surface<S> {
             outputs:                    Default::default(),
             output_change_event:        Default::default(),
             layout_change_event:        Default::default(),
+            pointer_events:             Default::default(),
+            keyboard_event:             Default::default(),
             object_id:                  object_id.0,
             frame_callbacks:            Default::default(),
             first_frame_callback_index: 0.into(),
@@ -1092,6 +1139,7 @@ impl<S: Shell> Surface<S> {
         );
 
         self.deactivate_role(shell);
+        *self.pointer_events.borrow_mut() = None;
 
         if self.current(shell).parent().is_none() {
             self.apply_pending(shell, scratch_buffer);
@@ -1183,6 +1231,19 @@ impl<S: Shell> Surface<S> {
 
     pub fn notify_layout_changed(&self, layout: Layout) {
         self.layout_change_event.send(LayoutEvent(layout));
+    }
+
+    pub fn pointer_event(&self, event: PointerEventKind) {
+        let event = PointerEvent {
+            time:      crate::time::elapsed().as_millis() as u32,
+            object_id: self.object_id,
+            kind:      event,
+        };
+        self.pointer_events
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .broadcast(event);
     }
 }
 

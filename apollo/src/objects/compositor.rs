@@ -28,7 +28,7 @@ use wl_server::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error,
-    events::EventSource,
+    events::{broadcast::Ring, EventSource},
     objects::wayland_object,
 };
 
@@ -37,20 +37,54 @@ use crate::{
         self,
         buffers::HasBuffer,
         output::Output as ShellOutput,
-        surface::{roles, OutputEvent},
+        surface::{roles, OutputEvent, PointerEvent},
         HasShell, Shell,
     },
     utils::{geometry::Point, WeakPtr},
 };
 
-#[derive(Derivative, Debug)]
-#[derivative(Default(bound = ""))]
+#[derive(Debug)]
 pub struct SurfaceState<Token> {
     /// A queue of surface state tokens used for surface commits and
     /// destructions.
     scratch_buffer: Vec<Token>,
     /// A buffer used for handling output changed event for surfaces.
     new_outputs:    HashSet<WeakPtr<ShellOutput>>,
+    /// Shared event source for sending pointer events
+    pointer_events: Ring<PointerEvent>,
+}
+
+impl<Token> EventSource<PointerEvent> for SurfaceState<Token> {
+    type Source = <Ring<PointerEvent> as EventSource<PointerEvent>>::Source;
+
+    fn subscribe(&self) -> Self::Source {
+        self.pointer_events.subscribe()
+    }
+}
+
+//impl<S: Shell> EventSource<KeyboardEvent> for Surface<S> {
+//    type Source = <broadcast::Broadcast<KeyboardEvent> as
+// EventSource<KeyboardEvent>>::Source;
+//
+//    fn subscribe(&self) -> Self::Source {
+//        self.keyboard_event.subscribe()
+//    }
+//}
+
+impl<Token> SurfaceState<Token> {
+    pub fn surface_count(&self) -> usize {
+        self.pointer_events.sender_count() - 1
+    }
+}
+
+impl<Token> Default for SurfaceState<Token> {
+    fn default() -> Self {
+        Self {
+            scratch_buffer: Default::default(),
+            new_outputs:    Default::default(),
+            pointer_events: Ring::new(120),
+        }
+    }
 }
 
 #[derive(Derivative)]
@@ -307,10 +341,10 @@ pub struct CompositorState {
 }
 
 #[wayland_object(state = "CompositorState")]
-impl<Ctx: Client> wl_compositor::RequestDispatch<Ctx> for Compositor
+impl<Ctx: Client, Sh: Shell> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
-    Ctx::ServerContext: HasShell,
-    Ctx::Object: From<Surface<<Ctx::ServerContext as HasShell>::Shell>>,
+    Ctx::ServerContext: HasShell<Shell = Sh>,
+    Ctx::Object: From<Surface<Sh>>,
 {
     type Error = error::Error;
 
@@ -349,7 +383,14 @@ where
 
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
-                objects.insert(id.0, Surface { inner: surface }).unwrap();
+                let (surface, surface_state) = objects
+                    .insert_with_state(id.0, Surface { inner: surface })
+                    .unwrap();
+                let surface_state = surface_state.unwrap();
+
+                *surface.inner.pointer_events.borrow_mut() =
+                    Some(surface_state.pointer_events.clone());
+
                 event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id:       id.0,

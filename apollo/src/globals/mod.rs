@@ -8,8 +8,8 @@ pub mod xdg_shell;
 use derivative::Derivative;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_shm::v1 as wl_shm,
-    wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
+    wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v8 as wl_seat,
+    wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
     connection::{
@@ -189,6 +189,56 @@ impl<Ctx> Bind<Ctx> for Subcompositor {
 
     fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
         futures_util::future::ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct Seat;
+impl_global_for!(Seat);
+
+impl MaybeConstInit for Seat {
+    const INIT: Option<Self> = Some(Self);
+}
+
+impl GlobalMeta for Seat {
+    type Object = crate::objects::Seat;
+
+    fn interface(&self) -> &'static str {
+        wl_seat::NAME
+    }
+
+    fn version(&self) -> u32 {
+        wl_seat::VERSION
+    }
+
+    fn new_object(&self) -> Self::Object {
+        crate::objects::Seat
+    }
+}
+
+impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> for Seat {
+    type BindFut<'a> = impl Future<Output = std::io::Result<()>> + 'a where Ctx: 'a, Self: 'a;
+
+    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
+        async move {
+            let ClientParts {
+                server_context,
+                objects,
+                connection,
+                event_dispatcher,
+            } = client.as_mut_parts();
+            let caps = server_context.capabilities();
+            let name = server_context.name().as_bytes().into();
+            connection
+                .send(object_id, wl_seat::events::Capabilities {
+                    capabilities: caps,
+                })
+                .await?;
+            connection
+                .send(object_id, wl_seat::events::Name { name })
+                .await?;
+            Ok(())
+        }
     }
 }
 

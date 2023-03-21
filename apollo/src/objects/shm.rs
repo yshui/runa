@@ -12,7 +12,7 @@ use wl_protocol::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 use wl_server::{
-    connection::traits::{Client, Store, ClientParts},
+    connection::traits::{Client, ClientParts, Store},
     error,
     objects::{wayland_object, DISPLAY_ID},
 };

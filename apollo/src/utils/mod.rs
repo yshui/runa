@@ -113,3 +113,87 @@ impl<T> From<Weak<T>> for WeakPtr<T> {
         Self(value)
     }
 }
+
+pub mod stream {
+    use std::{
+        cell::RefCell,
+        pin::Pin,
+        rc::Rc,
+        task::{Context, Poll},
+    };
+
+    use futures_core::{FusedStream, Stream};
+    /// A stream whose inner is replaceable.
+    ///
+    /// The inner can be replaced using the corresponding [`Replace`] handle.
+    /// The new stream will be polled the next time the [`Replaceable`]
+    /// stream is polled. If the inner is `None`, then `Poll::Pending` is
+    /// returned if the corresponding `Replace` handle hasn't been dropped,
+    /// otherwise `Poll::Ready(None)` will be returned, since it is no
+    /// longer possible to put anything that's not `None` into the inner.
+    pub struct Replaceable<S> {
+        stream: Rc<RefCell<Option<S>>>,
+    }
+
+    // TODO: wake up task when inner is replaced
+    pub struct Replace<S> {
+        stream: Rc<RefCell<Option<S>>>,
+    }
+
+    impl<S: Stream + Unpin> Stream for Replaceable<S> {
+        type Item = S::Item;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let strong = Rc::strong_count(&self.stream);
+            let mut stream = self.stream.borrow_mut();
+            let p = stream
+                .as_mut()
+                .map(|s| Pin::new(s).poll_next(cx))
+                .unwrap_or(Poll::Ready(None));
+
+            if matches!(p, Poll::Ready(Some(_)) | Poll::Pending) {
+                return p
+            }
+
+            // p == Poll::Ready(None), replace the stream with None
+            *stream = None;
+            if strong == 1 {
+                // Replace handle has been dropped
+                Poll::Ready(None)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl<S: Stream + Unpin> FusedStream for Replaceable<S> {
+        fn is_terminated(&self) -> bool {
+            Rc::strong_count(&self.stream) == 1 && self.stream.borrow().is_none()
+        }
+    }
+
+    impl<S> Replace<S> {
+        /// Replace the stream in the corresponding [`Replaceable`] with the
+        /// given stream.
+        ///
+        /// Note the new stream will not be immediately polled, so if there is
+        /// currently a task waiting on the corresponding
+        /// [`Replaceable`], it will not be woken up. You must arrange for it
+        /// to be polled.
+        pub fn replace(&self, stream: Option<S>) -> Option<S> {
+            std::mem::replace(&mut self.stream.borrow_mut(), stream)
+        }
+    }
+
+    /// Create a pair of [`Replaceable`] and [`Replace`]. The `Replace` can be
+    /// used to replace the stream in the `Replaceable`.
+    pub fn replaceable<S>() -> (Replaceable<S>, Replace<S>) {
+        let stream = Rc::new(RefCell::new(None));
+        (
+            Replaceable {
+                stream: stream.clone(),
+            },
+            Replace { stream },
+        )
+    }
+}

@@ -2,8 +2,9 @@ pub mod buffers;
 pub mod output;
 pub mod surface;
 pub mod xdg;
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
+use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_seat::v8 as wl_seat};
 use wl_server::events::EventSource;
 
 #[derive(Clone, Debug)]
@@ -85,4 +86,29 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
 pub trait HasShell: buffers::HasBuffer {
     type Shell: Shell<Buffer = <Self as buffers::HasBuffer>::Buffer>;
     fn shell(&self) -> &RefCell<Self::Shell>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepeatInfo {
+    pub rate:  u32,
+    pub delay: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Keymap {
+    format: wl_keyboard::enums::KeymapFormat,
+    fd:     Rc<std::os::unix::io::OwnedFd>,
+    size:   u32,
+}
+
+#[derive(Clone, Debug)]
+pub enum SeatEvent {
+    KeymapChanged(Keymap),
+}
+
+pub trait Seat: EventSource<SeatEvent> {
+    fn capabilities(&self) -> wl_seat::enums::Capability;
+    fn repeat_info(&self) -> RepeatInfo;
+    fn keymap(&self) -> &Keymap;
+    fn name(&self) -> &str;
 }

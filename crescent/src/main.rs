@@ -1,11 +1,9 @@
 #![feature(type_alias_impl_trait)]
-use std::{
-    cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc,
-};
+use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc};
 
 use anyhow::Result;
 use apollo::{
-    shell::{buffers::HasBuffer, HasShell},
+    shell::{buffers::HasBuffer, HasShell, SeatEvent},
     utils::geometry::{Extent, Point},
 };
 use futures_util::{select, TryStreamExt};
@@ -15,11 +13,13 @@ use wl_io::{
     traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
     Connection,
 };
+use wl_protocol::wayland::wl_seat::v8 as wl_seat;
 use wl_server::{
     connection::{
         traits::{Client, ClientParts, Store as _},
         EventDispatcher, Store,
     },
+    events::broadcast::Broadcast,
     globals::Bind,
     objects::{Object, DISPLAY_ID},
     renderer_capability::RendererCapability,
@@ -31,9 +31,38 @@ use shell::DefaultShell;
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals:  RefCell<wl_server::server::GlobalStore<AnyGlobal>>,
-    shell:    Rc<RefCell<<Crescent as HasShell>::Shell>>,
-    executor: LocalExecutor<'static>,
+    globals:     RefCell<wl_server::server::GlobalStore<AnyGlobal>>,
+    shell:       Rc<RefCell<<Crescent as HasShell>::Shell>>,
+    executor:    LocalExecutor<'static>,
+    seat_events: Broadcast<SeatEvent>,
+}
+
+impl apollo::shell::Seat for Crescent {
+    fn capabilities(&self) -> wl_seat::enums::Capability {
+        use wl_seat::enums::Capability;
+        Capability::POINTER
+    }
+
+    fn name(&self) -> &str {
+        "crescent"
+    }
+
+    fn keymap(&self) -> &apollo::shell::Keymap {
+        todo!()
+    }
+
+    fn repeat_info(&self) -> apollo::shell::RepeatInfo {
+        todo!()
+    }
+}
+
+impl wl_server::events::EventSource<SeatEvent> for Crescent {
+    type Source =
+        <Broadcast<SeatEvent> as wl_server::events::EventSource<SeatEvent>>::Source;
+
+    fn subscribe(&self) -> Self::Source {
+        self.0.seat_events.subscribe()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +79,7 @@ wl_server::globals! {
         Subcompositor(apollo::globals::Subcompositor),
         Shm(apollo::globals::Shm),
         WmBase(apollo::globals::xdg_shell::WmBase),
+        Seat(apollo::globals::Seat),
     }
 }
 
@@ -70,6 +100,10 @@ pub enum AnyObject {
     Surface(apollo::objects::compositor::Surface<Shell>),
     Subcompositor(apollo::objects::compositor::Subcompositor),
     Subsurface(apollo::objects::compositor::Subsurface<Shell>),
+
+    // === seat ===
+    Seat(apollo::objects::Seat),
+    Pointer(apollo::objects::Pointer),
 
     // === xdg_shell objects ===
     WmBase(apollo::objects::xdg_shell::WmBase),
@@ -278,6 +312,7 @@ fn main() -> Result<()> {
         globals:  RefCell::new(AnyGlobal::globals().collect()),
         shell:    Rc::new(RefCell::new(DefaultShell::new(&output))),
         executor: LocalExecutor::new(),
+        seat_events: Default::default(),
     }));
     // Add output global and make sure its id is what we expect.
     tracing::debug!("globals {:?}", server.0.globals.borrow());

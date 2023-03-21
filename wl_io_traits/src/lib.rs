@@ -275,10 +275,8 @@ pub mod de {
                     f,
                     "message trailing bytes, expected {expected} bytes, got {got} bytes"
                 ),
-                Error::MissingNul(name) => write!(
-                    f,
-                    "string value for {name} is missing the NUL terminator"
-                ),
+                Error::MissingNul(name) =>
+                    write!(f, "string value for {name} is missing the NUL terminator"),
             }
         }
     }

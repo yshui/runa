@@ -4,17 +4,21 @@ use apollo::{
     shell::{
         buffers,
         output::OutputChange,
-        surface::{self, roles::subsurface_iter},
+        surface::{self, roles::subsurface_iter, PointerEventKind},
         xdg::{Layout, XdgShell},
         Shell, ShellEvent,
     },
     utils::{
-        geometry::{coords, Extent, Point, Rectangle, Scale},
+        geometry::{
+            coords::{self, Map},
+            Extent, Point, Rectangle, Scale,
+        },
         WeakPtr,
     },
 };
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
+use ordered_float::NotNan;
 use slotmap::{DefaultKey, SlotMap};
 use wl_server::events::{broadcast::Broadcast, EventSource};
 
@@ -22,6 +26,7 @@ use wl_server::events::{broadcast::Broadcast, EventSource};
 #[derivative(Debug(bound = ""))]
 pub struct DefaultShell<S: buffers::BufferLike> {
     storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
+    /// Window stack, from bottom to top
     stack:           VecList<Window>,
     shell_event:     Broadcast<ShellEvent>,
     position_offset: Point<i32, coords::Screen>,
@@ -76,6 +81,50 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         self.shell_event.broadcast_owned(ShellEvent::Render)
     }
 
+    pub fn pointer_motion(&self, position: Point<NotNan<f32>, coords::Screen>) {
+        // TODO: handle per output scaling
+        let scale = self.scale_f32().map(|f| NotNan::try_from(f).unwrap());
+        tracing::trace!(?position, "pointer motion");
+        for top_level in self.stack.iter().rev() {
+            let position = position.map(|p| {
+                let window_position = top_level.position.to::<NotNan<f32>>();
+                Point::new(p.x - window_position.x, window_position.y - p.y) / scale
+            });
+            tracing::trace!("position: {position:?}, window position: {:?}", top_level.position);
+            // TODO: handle surface.set_input_region
+            // right now we use window geometry as a hack
+            {
+                let state = self.get(top_level.surface_state);
+                let surface = state.surface().upgrade().unwrap();
+                let role = surface.role::<apollo::shell::xdg::TopLevel>().unwrap();
+                if let Some(geometry) = role.geometry() {
+                    if !geometry.to().contains(position) {
+                        continue
+                    }
+                }
+            }
+            for (surface_token, offset) in subsurface_iter(top_level.surface_state, self).rev() {
+                // TODO: handle buffer transform
+                let relative_position = position - offset.to::<NotNan<f32>>();
+                let surface_state = self.get(surface_token);
+                let Some(buffer) = surface_state.buffer() else { continue };
+                let dimension = buffer
+                    .dimension()
+                    .to()
+                    .map(|dim| dim / surface_state.buffer_scale_f32());
+                if dimension.contains(relative_position) {
+                    let surface = surface_state.surface().upgrade().unwrap();
+                    tracing::trace!("Pointer event on surface {}", surface.object_id());
+                    surface.pointer_event(PointerEventKind::Motion {
+                        coords: relative_position,
+                    });
+                    return
+                }
+            }
+        }
+        tracing::trace!("No surface under pointer");
+    }
+
     fn update_subtree_outputs(
         &self,
         root: DefaultKey,
@@ -93,9 +142,12 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             if let Some(buffer) = state.buffer() {
                 tracing::debug!("Buffer: {}", buffer.object_id());
                 let geometry = buffer.dimension();
-                let buffer_scale_inverse =
-                    Scale::uniform(1. / (surface.current(self).buffer_scale_f32()));
-                let geometry = geometry.map(|g| (g.to() * buffer_scale_inverse).to()).to();
+                let buffer_scale_inverse = surface.current(self).buffer_scale_f32().inv();
+                let geometry = geometry.to() * buffer_scale_inverse;
+                let geometry = Extent::new(
+                    geometry.w.into_inner() as i32,
+                    geometry.h.into_inner() as i32,
+                );
                 // FIXME: offset is in Surface coordinates which is Y-down, while our output
                 // coordinates are Y-up.
                 let rectangle =

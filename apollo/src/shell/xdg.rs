@@ -128,6 +128,10 @@ impl TopLevel {
             object_id,
         }
     }
+
+    pub fn geometry(&self) -> Option<Rectangle<i32, coords::Surface>> {
+        self.base.geometry
+    }
 }
 
 impl<S: XdgShell> super::surface::Role<S> for TopLevel {

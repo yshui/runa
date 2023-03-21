@@ -5,8 +5,9 @@ use apollo::{
         buffers::{self, BufferLike as _},
         Shell,
     },
-    utils::geometry::{coords, Extent, Scale},
+    utils::geometry::{coords, Extent, Point},
 };
+use ordered_float::NotNan;
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt};
@@ -249,7 +250,7 @@ impl Renderer {
     fn render(&mut self, output: wgpu::SurfaceTexture) {
         use apollo::{shell::surface::roles::subsurface_iter, utils::geometry::coords::Map as _};
         let shell = self.shell.borrow();
-        let output_scale = shell.scale_f32();
+        let output_scale = shell.scale_f32().map(|f| NotNan::try_from(f).unwrap());
         self.vertices.clear();
         self.textures.clear();
         for window in shell.stack() {
@@ -260,26 +261,29 @@ impl Renderer {
                 .get(window.surface_state)
                 .buffer_scale_f32();
             for (subsurface, offset) in subsurface_iter(window.surface_state, &*shell) {
-                let relative_scale = output_scale / Scale::uniform(window_scale);
+                let relative_scale = output_scale / window_scale;
                 let state = shell.get(subsurface);
                 let Some(buffer) = state.buffer() else { continue };
                 let raw_dimensions = buffer.dimension();
                 // Scale the buffer size to output scale
-                let dimensions = raw_dimensions
-                    .map::<coords::Screen>(|dim| (dim.to() * relative_scale).floor().to::<u32>());
+                let dimensions = raw_dimensions.map::<coords::Screen>(|dim| {
+                    let dim = (dim.to() * relative_scale).floor();
+                    Extent::new(dim.w.into_inner() as u32, dim.h.into_inner() as u32)
+                });
                 tracing::trace!(
                     ?offset,
                     ?raw_dimensions,
                     ?dimensions,
                     ?relative_scale,
-                    window_scale,
+                    ?window_scale,
                     "rendering subsurface {:p}",
                     buffer
                 );
                 // Scale the offset to output scale, and Y-flip it.
                 let offset = offset.map(|o| {
-                    let mut o = (o.to() * output_scale).to::<i32>();
+                    let mut o = o.to() * output_scale;
                     o.y = -o.y;
+                    let o = Point::new(o.x.into_inner() as i32, o.y.into_inner() as i32);
                     o + window.position
                 });
                 let mut texture = buffer.data.texture.borrow_mut();
@@ -450,6 +454,7 @@ impl Renderer {
         std::thread::spawn(move || loop {
             let Ok(surface): Result<wgpu::Surface, _> = smol::block_on(remote_rx.recv()) else { break };
             let output = surface.get_current_texture().unwrap();
+            tracing::trace!("Got surface texture");
             smol::block_on(remote_tx.send((surface, output))).unwrap();
         });
         tx.send(self.surface.take().unwrap()).await.unwrap();
@@ -495,13 +500,23 @@ impl Renderer {
                                 WindowEvent::Resized(new_size) => {
                                     pending_size = Some(new_size);
                                 }
+                                WindowEvent::CursorMoved { position, .. } => {
+                                    self.shell
+                                        .borrow()
+                                        .pointer_motion(
+                                            Point::new(
+                                                NotNan::new(position.x as f32).unwrap(),
+                                                NotNan::new(self.size.height as f32 - position.y as f32).unwrap(),
+                                            )
+                                        );
+                                }
                                 _ => {
-                                    tracing::debug!("Unhandled window event: {:?}", event);
+                                    tracing::trace!("Unhandled window event: {:?}", event);
                                 }
                             }
                         }
                         _ => {
-                            tracing::debug!("Unhandled event: {:?}", event);
+                            tracing::trace!("Unhandled event: {:?}", event);
                             // todo
                         },
                     }

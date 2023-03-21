@@ -310,24 +310,33 @@ where
         format: wl_protocol::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
-            let ClientParts { objects, event_dispatcher, .. } = ctx.as_mut_parts();
+            let ClientParts {
+                objects,
+                event_dispatcher,
+                ..
+            } = ctx.as_mut_parts();
             let pool = objects.get::<Self>(object_id).unwrap().inner.clone();
 
-            let inserted = objects.try_insert_with(id.0, || {
-                let buffer: objects::Buffer<B> = objects::Buffer::new(buffers::Buffer::new(
-                    Extent::new(width as u32, height as u32),
-                    id.0,
-                    BufferBase {
-                        pool,
-                        offset,
-                        width,
-                        height,
-                        stride,
-                        format,
-                    },
-                ), event_dispatcher);
-                buffer.into()
-            });
+            let inserted = objects
+                .try_insert_with(id.0, || {
+                    let buffer: objects::Buffer<B> = objects::Buffer::new(
+                        buffers::Buffer::new(
+                            Extent::new(width as u32, height as u32),
+                            id.0,
+                            BufferBase {
+                                pool,
+                                offset,
+                                width,
+                                height,
+                                stride,
+                                format,
+                            },
+                        ),
+                        event_dispatcher,
+                    );
+                    buffer.into()
+                })
+                .is_some();
             if !inserted {
                 Err(wl_server::error::Error::IdExists(id.0))
             } else {

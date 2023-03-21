@@ -58,16 +58,17 @@ where
                 ..
             } = ctx.as_mut_parts();
             let surface_id = surface.0;
-            let surface_obj =
-                objects.get::<compositor::Surface<S>>(surface_id)?;
+            let surface_obj = objects.get::<compositor::Surface<S>>(surface_id)?;
             let surface = surface_obj.inner.clone();
 
             let mut shell = server_context.shell().borrow_mut();
-            let inserted = objects.try_insert_with(id.0, || {
-                let role = crate::shell::xdg::Surface::new(id);
-                surface.set_role(role, &mut shell);
-                Surface { inner: surface }.into()
-            });
+            let inserted = objects
+                .try_insert_with(id.0, || {
+                    let role = crate::shell::xdg::Surface::new(id);
+                    surface.set_role(role, &mut shell);
+                    Surface { inner: surface }.into()
+                })
+                .is_some();
             if !inserted {
                 Err(Error::IdExists(id.0))
             } else {
@@ -207,21 +208,23 @@ where
                 ..
             } = ctx.as_mut_parts();
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
-            let inserted = objects.try_insert_with(id.0, || {
-                let base_role = surface.role::<xdg::Surface>().unwrap().clone();
-                let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
-                surface.set_role(role, &mut server_context.shell().borrow_mut());
+            let inserted = objects
+                .try_insert_with(id.0, || {
+                    let base_role = surface.role::<xdg::Surface>().unwrap().clone();
+                    let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
+                    surface.set_role(role, &mut server_context.shell().borrow_mut());
 
-                // Start listening to layout events
-                let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
-                let (handler, abort) = Abortable::new(LayoutEventHandler {
-                    surface_object_id: surface.object_id(),
-                });
-                event_dispatcher.add_event_handler(rx, handler);
-                // `abort.auto_abort()` creates a handle which will stop the event handler when
-                // the TopLevel object is destroyed.
-                TopLevel(surface, abort.auto_abort()).into()
-            });
+                    // Start listening to layout events
+                    let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
+                    let (handler, abort) = Abortable::new(LayoutEventHandler {
+                        surface_object_id: surface.object_id(),
+                    });
+                    event_dispatcher.add_event_handler(rx, handler);
+                    // `abort.auto_abort()` creates a handle which will stop the event handler when
+                    // the TopLevel object is destroyed.
+                    TopLevel(surface, abort.auto_abort()).into()
+                })
+                .is_some();
             if !inserted {
                 Err(Error::IdExists(id.0))
             } else {

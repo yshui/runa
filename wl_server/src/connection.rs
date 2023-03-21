@@ -58,12 +58,23 @@ pub mod traits {
         where
             O: 'a,
             Self: 'a;
-        /// Insert object into the store with the given ID. Returns Ok(()) if
+        /// Insert object into the store with the given ID. Returns a unique
+        /// reference to the inserted object if successful, Err(T) if
+        /// the ID is already in use.
+        fn insert<T: Into<O> + 'static>(&mut self, id: u32, object: T) -> Result<&mut T, T>;
+
+        /// Insert object into the store with the given ID. Returns a unique
+        /// reference to the inserted object and its singleton state if
         /// successful, Err(T) if the ID is already in use.
-        fn insert<T: Into<O>>(&mut self, id: u32, object: T) -> Result<(), T>;
+        fn insert_with_state<T: Into<O> + objects::MonoObject + 'static>(
+            &mut self,
+            id: u32,
+            object: T,
+        ) -> Result<(&mut T, Option<&mut T::SingletonState>), T>;
+
         /// Allocate a new ID for the client, associate `object` for it.
         /// According to the wayland spec, the ID must start from 0xff000000
-        fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T>;
+        fn allocate<T: Into<O> + 'static>(&mut self, object: T) -> Result<(u32, &mut T), T>;
         fn remove(&mut self, id: u32) -> Option<O>;
         /// Returns the singleton state associated with an object type. Returns
         /// `None` if no object of that type is in the store, or if the
@@ -104,7 +115,7 @@ pub mod traits {
         /// to the concrete type.
         fn get_mut<T: 'static>(&mut self, id: u32) -> Result<&mut T, GetError>;
         fn contains(&self, id: u32) -> bool;
-        fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool;
+        fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> Option<&mut O>;
         /// Return an `AsIterator` for all objects in the store with a specific
         /// interface An `Iterator` can be obtain from an `AsIterator` by
         /// calling `as_iter()`
@@ -278,28 +289,35 @@ impl<Object: objects::AnyObject> Store<Object> {
     }
 
     #[inline]
-    fn try_insert_with<F: FnOnce() -> Object>(&mut self, id: u32, f: F) -> bool {
+    fn try_insert_with<F: FnOnce() -> Object>(
+        &mut self,
+        id: u32,
+        f: F,
+    ) -> Option<(&mut Object, Option<&mut dyn Any>)> {
         let entry = self.map.entry(id);
         match entry {
-            hash_map::Entry::Occupied(_) => false,
+            hash_map::Entry::Occupied(_) => None,
             hash_map::Entry::Vacant(v) => {
                 let object = f();
                 let interface = object.interface();
-                if let Some(state) = object.new_singleton_state() {
-                    let (_, count) = self
+                let state = if let Some(state) = object.new_singleton_state() {
+                    let (state, count) = self
                         .singleton_states
                         .entry(objects::AnyObject::type_id(&object))
                         .or_insert((state, 0));
                     *count += 1;
-                }
-                v.insert(object);
+                    Some(state as &mut dyn Any)
+                } else {
+                    None
+                };
+                let ret = v.insert(object);
                 self.by_interface.entry(interface).or_default().insert(id);
                 self.event_source
                     .broadcast_reserve(traits::StoreEvent::Inserted {
                         interface,
                         object_id: id,
                     });
-                true
+                Some((ret, state))
             },
         }
     }
@@ -346,22 +364,43 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
     type ByIface<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
 
     #[inline]
-    fn insert<T: Into<O>>(&mut self, object_id: u32, object: T) -> Result<(), T> {
+    fn insert<T: Into<O> + 'static>(&mut self, object_id: u32, object: T) -> Result<&mut T, T> {
         if object_id > CLIENT_MAX_ID {
             return Err(object)
         }
 
         let mut orig = Some(object);
-        Self::try_insert_with(self, object_id, || orig.take().unwrap().into());
+        let ret = Self::try_insert_with(self, object_id, || orig.take().unwrap().into());
         if let Some(orig) = orig {
             Err(orig)
         } else {
-            Ok(())
+            Ok(ret.unwrap().0.cast_mut().unwrap())
         }
     }
 
     #[inline]
-    fn allocate<T: Into<O>>(&mut self, object: T) -> Result<u32, T> {
+    fn insert_with_state<T: Into<O> + objects::MonoObject + 'static>(
+        &mut self,
+        object_id: u32,
+        object: T,
+    ) -> Result<(&mut T, Option<&mut T::SingletonState>), T> {
+        if object_id > CLIENT_MAX_ID {
+            return Err(object)
+        }
+
+        let mut orig = Some(object);
+        let ret = Self::try_insert_with(self, object_id, || orig.take().unwrap().into());
+        if let Some(orig) = orig {
+            Err(orig)
+        } else {
+            let (obj, state) = ret.unwrap();
+            let state = state.and_then(|s| s.downcast_mut());
+            Ok((obj.cast_mut().unwrap(), state))
+        }
+    }
+
+    #[inline]
+    fn allocate<T: Into<O> + 'static>(&mut self, object: T) -> Result<(u32, &mut T), T> {
         if self.ids_left == 0 {
             // Store full
             return Err(object)
@@ -388,9 +427,8 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         };
         self.ids_left -= 1;
 
-        let inserted = Self::try_insert_with(self, curr, || object.into());
-        assert!(inserted);
-        Ok(curr)
+        let inserted = Self::try_insert_with(self, curr, || object.into()).unwrap();
+        Ok((curr, inserted.0.cast_mut().unwrap()))
     }
 
     fn remove(&mut self, object_id: u32) -> Option<O> {
@@ -463,11 +501,11 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         self.map.contains_key(&id)
     }
 
-    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> bool {
+    fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> Option<&mut O> {
         if id > CLIENT_MAX_ID {
-            return false
+            return None
         }
-        Self::try_insert_with(self, id, f)
+        Self::try_insert_with(self, id, f).map(|(o, _)| o)
     }
 
     fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a> {

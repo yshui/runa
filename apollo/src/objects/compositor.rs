@@ -135,12 +135,14 @@ where
                 ..
             } = ctx.as_mut_parts();
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
-            let inserted = objects.try_insert_with(callback.0, || {
-                let mut shell = server_context.shell().borrow_mut();
-                let state = surface.pending_mut(&mut shell);
-                state.add_frame_callback(callback.0);
-                wl_server::objects::Callback::default().into()
-            });
+            let inserted = objects
+                .try_insert_with(callback.0, || {
+                    let mut shell = server_context.shell().borrow_mut();
+                    let state = surface.pending_mut(&mut shell);
+                    state.add_frame_callback(callback.0);
+                    wl_server::objects::Callback::default().into()
+                })
+                .is_some();
             if !inserted {
                 Err(error::Error::IdExists(callback.0))
             } else {

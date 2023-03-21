@@ -290,7 +290,9 @@ where
                     .clone();
                 global
             };
-            let inserted = objects.try_insert_with(registry.0, || global.new_object());
+            let inserted = objects
+                .try_insert_with(registry.0, || global.new_object())
+                .is_some();
             drop(objects); // unlock the object store
             if inserted {
                 global.bind(ctx, registry.0).await?;
@@ -340,7 +342,9 @@ where
             } = ctx.as_mut_parts();
             let global = server_context.globals().borrow().get(name).cloned();
             if let Some(global) = global {
-                let inserted = objects.try_insert_with(id.0, || global.new_object());
+                let inserted = objects
+                    .try_insert_with(id.0, || global.new_object())
+                    .is_some();
 
                 if !inserted {
                     Err(crate::error::Error::IdExists(id.0))

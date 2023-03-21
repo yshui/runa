@@ -319,7 +319,7 @@ impl<Object: objects::AnyObject> Store<Object> {
                         .entry(objects::AnyObject::type_id(&object))
                         .or_insert((state, 0));
                     *count += 1;
-                    Some(state as &mut dyn Any)
+                    Some(&mut **state)
                 } else {
                     None
                 };

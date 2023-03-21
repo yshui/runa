@@ -119,10 +119,17 @@ pub mod stream {
         cell::RefCell,
         pin::Pin,
         rc::Rc,
-        task::{Context, Poll},
+        task::{Context, Poll, Waker},
     };
 
+    use derivative::Derivative;
     use futures_core::{FusedStream, Stream};
+    #[derive(Derivative, Debug)]
+    #[derivative(Default(bound = ""))]
+    struct ReplaceInner<S> {
+        stream: Option<S>,
+        waker:  Option<Waker>,
+    }
     /// A stream whose inner is replaceable.
     ///
     /// The inner can be replaced using the corresponding [`Replace`] handle.
@@ -131,36 +138,48 @@ pub mod stream {
     /// returned if the corresponding `Replace` handle hasn't been dropped,
     /// otherwise `Poll::Ready(None)` will be returned, since it is no
     /// longer possible to put anything that's not `None` into the inner.
+    #[derive(Debug)]
     pub struct Replaceable<S> {
-        stream: Rc<RefCell<Option<S>>>,
+        inner: Rc<RefCell<ReplaceInner<S>>>,
     }
 
     // TODO: wake up task when inner is replaced
+    #[derive(Debug)]
     pub struct Replace<S> {
-        stream: Rc<RefCell<Option<S>>>,
+        inner: Rc<RefCell<ReplaceInner<S>>>,
     }
 
     impl<S: Stream + Unpin> Stream for Replaceable<S> {
         type Item = S::Item;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            let strong = Rc::strong_count(&self.stream);
-            let mut stream = self.stream.borrow_mut();
-            let p = stream
+            let strong = Rc::strong_count(&self.inner);
+            let mut inner = self.inner.borrow_mut();
+            inner.waker.take();
+
+            let p = inner
+                .stream
                 .as_mut()
                 .map(|s| Pin::new(s).poll_next(cx))
                 .unwrap_or(Poll::Ready(None));
 
             if matches!(p, Poll::Ready(Some(_)) | Poll::Pending) {
+                // If p is Pending, normally the inner stream would be responsible for waking
+                // the task up, but if the inner stream is replaced before the
+                // task is woken up, we still need to notify the task.
+                if p.is_pending() && strong > 1 {
+                    inner.waker = Some(cx.waker().clone());
+                }
                 return p
             }
 
             // p == Poll::Ready(None), replace the stream with None
-            *stream = None;
+            inner.stream = None;
             if strong == 1 {
                 // Replace handle has been dropped
                 Poll::Ready(None)
             } else {
+                inner.waker = Some(cx.waker().clone());
                 Poll::Pending
             }
         }
@@ -168,32 +187,49 @@ pub mod stream {
 
     impl<S: Stream + Unpin> FusedStream for Replaceable<S> {
         fn is_terminated(&self) -> bool {
-            Rc::strong_count(&self.stream) == 1 && self.stream.borrow().is_none()
+            Rc::strong_count(&self.inner) == 1 && self.inner.borrow().stream.is_none()
         }
     }
 
     impl<S> Replace<S> {
         /// Replace the stream in the corresponding [`Replaceable`] with the
-        /// given stream.
+        /// given stream. Returns the old stream.
         ///
         /// Note the new stream will not be immediately polled, so if there is
         /// currently a task waiting on the corresponding
         /// [`Replaceable`], it will not be woken up. You must arrange for it
         /// to be polled.
         pub fn replace(&self, stream: Option<S>) -> Option<S> {
-            std::mem::replace(&mut self.stream.borrow_mut(), stream)
+            if stream.is_some() {
+                if let Some(waker) = self.inner.borrow_mut().waker.take() {
+                    // Wake up the task so the new stream will be polled.
+                    waker.wake();
+                }
+            }
+            std::mem::replace(&mut self.inner.borrow_mut().stream, stream)
+        }
+    }
+
+    impl<S> Drop for Replace<S> {
+        fn drop(&mut self) {
+            if let Some(waker) = self.inner.borrow_mut().waker.take() {
+                // If we drop the Replace, the corresponding Replaceable could return
+                // Poll::Ready(None) if polled again, so we need to wake up the task to poll it
+                // again.
+                waker.wake();
+            }
         }
     }
 
     /// Create a pair of [`Replaceable`] and [`Replace`]. The `Replace` can be
     /// used to replace the stream in the `Replaceable`.
     pub fn replaceable<S>() -> (Replaceable<S>, Replace<S>) {
-        let stream = Rc::new(RefCell::new(None));
+        let inner = Rc::new(RefCell::new(ReplaceInner::default()));
         (
             Replaceable {
-                stream: stream.clone(),
+                inner: inner.clone(),
             },
-            Replace { stream },
+            Replace { inner },
         )
     }
 }

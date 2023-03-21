@@ -120,16 +120,19 @@ impl<Ctx: Client> Bind<Ctx> for Display {
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 async move {
-                    use crate::connection::traits::StoreEvent::*;
-                    match message {
-                        Inserted { .. } => (),
-                        Removed { object_id, .. } => {
-                            Pin::new(connection)
-                                .send(DISPLAY_ID, wl_display::v1::events::DeleteId {
-                                    id: *object_id,
-                                })
-                                .await?;
-                        },
+                    use crate::connection::traits::StoreEventKind::*;
+                    if matches!(message.kind, Removed { .. } | Replaced { .. }) {
+                        // Replaced can really only happen for server created objects, because
+                        // we haven't sent the DeleteId event yet, so the client can't have
+                        // reused that ID.
+                        // For server create objects, it possible that the client destroyed
+                        // that object and we immediately created another one with that ID,
+                        // this should be the only case for us to get a Replaced event.
+                        connection
+                            .send(DISPLAY_ID, wl_display::v1::events::DeleteId {
+                                id: message.object_id,
+                            })
+                            .await?;
                     }
                     Ok(EventHandlerAction::Keep)
                 }

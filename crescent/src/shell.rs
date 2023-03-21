@@ -16,7 +16,7 @@ use apollo::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use slotmap::{DefaultKey, SlotMap};
-use wl_server::events::{sources::Broadcast, EventSource};
+use wl_server::events::{broadcast::Broadcast, EventSource};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]

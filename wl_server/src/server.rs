@@ -72,7 +72,7 @@ pub trait Globals<G>: EventSource<GlobalsUpdate<G>> {
 #[derivative(Debug(bound = ""))]
 pub struct GlobalStore<G> {
     globals:      crate::IdAlloc<Rc<G>>,
-    update_event: events::sources::Broadcast<GlobalsUpdate<G>>,
+    update_event: events::broadcast::Broadcast<GlobalsUpdate<G>>,
 }
 
 impl<G> FromIterator<G> for GlobalStore<G> {
@@ -90,7 +90,7 @@ impl<G> FromIterator<G> for GlobalStore<G> {
 
 impl<G: 'static> EventSource<GlobalsUpdate<G>> for GlobalStore<G> {
     type Source =
-        <events::sources::Broadcast<GlobalsUpdate<G>> as EventSource<GlobalsUpdate<G>>>::Source;
+        <events::broadcast::Broadcast<GlobalsUpdate<G>> as EventSource<GlobalsUpdate<G>>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.update_event.subscribe()

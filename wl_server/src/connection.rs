@@ -15,6 +15,7 @@ use derivative::Derivative;
 use futures_core::{FusedFuture, Stream};
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
 use hashbrown::{hash_map, HashMap, HashSet};
+use indexmap::IndexMap;
 
 use crate::{events, objects, utils::one_shot_signal};
 
@@ -35,16 +36,29 @@ pub mod traits {
     = impl Iterator<Item = (u32, &'a T)> + 'a;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum StoreEvent {
-        Inserted {
-            interface: &'static str,
-            object_id: u32,
-        },
-        Removed {
-            interface: &'static str,
-            object_id: u32,
+    pub enum StoreEventKind {
+        /// An object is inserted into the store
+        Inserted { interface: &'static str },
+        /// An object is removed from the store
+        Removed { interface: &'static str },
+        /// An object is removed and replaced by another object with the same
+        /// object ID, possibly multiple times
+        Replaced {
+            /// The interface this object ID started with. If this ID is being
+            /// replaced multiple times, this is the very first
+            /// interface.
+            old_interface: &'static str,
+            /// The interface this object ID currently have.
+            new_interface: &'static str,
         },
     }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct StoreEvent {
+        pub object_id: u32,
+        pub kind:      StoreEventKind,
+    }
+
     #[derive(Debug)]
     pub enum GetError {
         // The ID is not found
@@ -261,7 +275,7 @@ pub struct Store<Object> {
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
     ids_left:         u32,
-    event_source:     events::sources::Broadcast<traits::StoreEvent>,
+    event_source:     events::aggregate::Sender<StoreEventAggregate>,
 }
 
 impl<Object: objects::AnyObject> Store<Object> {
@@ -280,11 +294,10 @@ impl<Object: objects::AnyObject> Store<Object> {
             }
         }
         self.by_interface.get_mut(interface).unwrap().remove(&id);
-        self.event_source
-            .broadcast_reserve(traits::StoreEvent::Removed {
-                interface,
-                object_id: id,
-            });
+        self.event_source.send(traits::StoreEvent {
+            kind:      traits::StoreEventKind::Removed { interface },
+            object_id: id,
+        });
         Some(object)
     }
 
@@ -312,13 +325,85 @@ impl<Object: objects::AnyObject> Store<Object> {
                 };
                 let ret = v.insert(object);
                 self.by_interface.entry(interface).or_default().insert(id);
-                self.event_source
-                    .broadcast_reserve(traits::StoreEvent::Inserted {
-                        interface,
-                        object_id: id,
-                    });
+                self.event_source.send(traits::StoreEvent {
+                    kind:      traits::StoreEventKind::Inserted { interface },
+                    object_id: id,
+                });
                 Some((ret, state))
             },
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StoreEventAggregate {
+    /// Map object ID to the diff that needs to be applied.
+    events: IndexMap<u32, traits::StoreEventKind>,
+}
+
+impl Iterator for StoreEventAggregate {
+    type Item = traits::StoreEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.events
+            .pop()
+            .map(|(object_id, kind)| traits::StoreEvent { object_id, kind })
+    }
+}
+
+impl StoreEventAggregate {
+    fn extend_one(&mut self, id: u32, item: traits::StoreEventKind) {
+        use indexmap::map::Entry;
+        match self.events.entry(id) {
+            Entry::Vacant(v) => {
+                v.insert(item);
+            },
+            Entry::Occupied(mut o) => {
+                use traits::StoreEventKind::*;
+                match (o.get(), &item) {
+                    (Inserted { .. }, Removed { .. }) => {
+                        // Inserted + Removed = ()
+                        o.remove();
+                    },
+                    (
+                        Removed {
+                            interface: old_interface,
+                        },
+                        Inserted {
+                            interface: new_interface,
+                        },
+                    ) => {
+                        // Removed + Inserted = Replaced
+                        o.insert(Replaced {
+                            old_interface,
+                            new_interface,
+                        });
+                    },
+                    (Replaced { old_interface, .. }, Removed { .. }) => {
+                        // Replaced + Removed = Removed + Inserted + Removed = Removed
+                        o.insert(Removed {
+                            interface: old_interface,
+                        });
+                    },
+                    (Inserted { .. }, Inserted { .. }) |
+                    (Removed { .. }, Removed { .. }) |
+                    (Replaced { .. }, Inserted { .. }) => {
+                        // Inserted + Inserted =  Removed + Removed = !
+                        panic!("Object {id} inserted or removed twice");
+                    },
+                    // A replaced event should never be sent directly, it should only be generated
+                    // from aggregating a removed and an inserted event.
+                    (_, Replaced { .. }) => unreachable!(),
+                }
+            },
+        }
+    }
+}
+
+impl Extend<traits::StoreEvent> for StoreEventAggregate {
+    fn extend<T: IntoIterator<Item = traits::StoreEvent>>(&mut self, iter: T) {
+        for event in iter {
+            self.extend_one(event.object_id, event.kind);
         }
     }
 }

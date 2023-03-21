@@ -33,7 +33,7 @@ pub struct Output {
     /// See the fractional_scale_v1::preferred_scale for why 120.
     scale:            Cell<Scale<u32>>,
     global_id:        u32,
-    change_event:     events::sources::Broadcast<OutputChangeEvent>,
+    change_event:     events::broadcast::Broadcast<OutputChangeEvent>,
 }
 
 bitflags::bitflags! {
@@ -276,7 +276,7 @@ impl Output {
 
 impl EventSource<OutputChangeEvent> for Output {
     type Source =
-        <events::sources::Broadcast<OutputChangeEvent> as EventSource<OutputChangeEvent>>::Source;
+        <events::broadcast::Broadcast<OutputChangeEvent> as EventSource<OutputChangeEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.change_event.subscribe()

@@ -341,7 +341,8 @@ fn generate_deserialize_for_type(
                 v
             }
         },
-        Fixed => quote! { pop_i32(&mut data).into() },
+        Fixed =>
+            quote! { ::wl_scanner_support::wayland_types::Fixed::from_bits(pop_i32(&mut data)) },
         Object | NewId => quote! { pop_u32(&mut data).into() },
         Fd => quote! { pop_fd(&mut fds).into() },
         String => quote! { {
@@ -430,7 +431,8 @@ fn generate_message_variant(
     });
     let deserialize = request.args.iter().map(|arg| {
         let name = format_ident!("{}", arg.name);
-        let deserialize = generate_deserialize_for_type(iface_name, &arg.name, arg, enum_info, iface_version);
+        let deserialize =
+            generate_deserialize_for_type(iface_name, &arg.name, arg, enum_info, iface_version);
         quote! {
             #name: #deserialize
         }

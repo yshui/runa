@@ -3,7 +3,7 @@ use std::os::unix::{
     prelude::{AsRawFd, FromRawFd, RawFd},
 };
 
-use fixed::types::extra::U8;
+use fixed::{traits::ToFixed, types::extra::U8};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewId(pub u32);
 
@@ -125,8 +125,12 @@ impl<'a> From<&'a [u8]> for Str<'a> {
     }
 }
 
-impl From<i32> for Fixed {
-    fn from(v: i32) -> Self {
+impl Fixed {
+    pub fn from_bits(v: i32) -> Self {
         Self(fixed::FixedI32::from_bits(v))
+    }
+
+    pub fn from_num<Src: ToFixed>(src: Src) -> Self {
+        Self(fixed::FixedI32::from_num(src))
     }
 }

@@ -261,10 +261,10 @@ fn generate_serialize_for_type(
         },
         Fd => unreachable!(),
         String => quote! {
-            &self.#name.0[..]
+            self.#name.0
         },
         Array => quote! {
-            &self.#name[..]
+            self.#name
         },
         Destructor => quote! {},
     };

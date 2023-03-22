@@ -24,6 +24,7 @@ dlv-list = "0.4.0"
 slotmap = "1.0.6"
 derivative.workspace = true
 ordered-float.workspace = true
+input-event-codes = { version = "0.1.0", path = "../input-event-codes" }
 
 [features]
 default = []

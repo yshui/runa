@@ -502,13 +502,17 @@ impl Renderer {
                                 }
                                 WindowEvent::CursorMoved { position, .. } => {
                                     self.shell
-                                        .borrow()
+                                        .borrow_mut()
                                         .pointer_motion(
                                             Point::new(
                                                 NotNan::new(position.x as f32).unwrap(),
                                                 NotNan::new(self.size.height as f32 - position.y as f32).unwrap(),
                                             )
                                         );
+                                }
+                                WindowEvent::MouseInput { state, button, .. } => {
+                                    let pressed = matches!(state, winit::event::ElementState::Pressed);
+                                    self.shell.borrow().pointer_button(button, pressed);
                                 }
                                 _ => {
                                     tracing::trace!("Unhandled window event: {:?}", event);

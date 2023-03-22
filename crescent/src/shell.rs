@@ -20,27 +20,31 @@ use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use ordered_float::NotNan;
 use slotmap::{DefaultKey, SlotMap};
+use winit::event::MouseButton;
+use wl_protocol::wayland::wl_pointer::v8 as wl_pointer;
 use wl_server::events::{broadcast::Broadcast, EventSource};
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct DefaultShell<S: buffers::BufferLike> {
-    storage:         SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
+    storage:          SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     /// Window stack, from bottom to top
-    stack:           VecList<Window>,
-    shell_event:     Broadcast<ShellEvent>,
-    position_offset: Point<i32, coords::Screen>,
-    screen:          apollo::shell::output::Screen,
+    stack:            VecList<Window>,
+    pointer_position: Option<Point<NotNan<f32>, coords::Screen>>,
+    shell_event:      Broadcast<ShellEvent>,
+    position_offset:  Point<i32, coords::Screen>,
+    screen:           apollo::shell::output::Screen,
 }
 
 impl<B: buffers::BufferLike> DefaultShell<B> {
     pub fn new(output: &Rc<apollo::shell::output::Output>) -> Self {
         Self {
-            storage:         Default::default(),
-            stack:           Default::default(),
-            shell_event:     Default::default(),
-            position_offset: Point::new(1000, 1000),
-            screen:          apollo::shell::output::Screen::new_single_output(output),
+            storage:          Default::default(),
+            stack:            Default::default(),
+            shell_event:      Default::default(),
+            position_offset:  Point::new(1000, 1000),
+            pointer_position: None,
+            screen:           apollo::shell::output::Screen::new_single_output(output),
         }
     }
 }
@@ -81,7 +85,12 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         self.shell_event.broadcast_owned(ShellEvent::Render)
     }
 
-    pub fn pointer_motion(&self, position: Point<NotNan<f32>, coords::Screen>) {
+    /// Find the surface under the pointer, returns the surface token and
+    /// pointer's position in that surface's coordinate system.
+    pub fn surface_under_pointer(
+        &self,
+        position: Point<NotNan<f32>, coords::Screen>,
+    ) -> Option<(DefaultKey, Point<NotNan<f32>, coords::Surface>)> {
         // TODO: handle per output scaling
         let scale = self.scale_f32().map(|f| NotNan::try_from(f).unwrap());
         tracing::trace!(?position, "pointer motion");
@@ -90,7 +99,10 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 let window_position = top_level.position.to::<NotNan<f32>>();
                 Point::new(p.x - window_position.x, window_position.y - p.y) / scale
             });
-            tracing::trace!("position: {position:?}, window position: {:?}", top_level.position);
+            tracing::trace!(
+                "position: {position:?}, window position: {:?}",
+                top_level.position
+            );
             // TODO: handle surface.set_input_region
             // right now we use window geometry as a hack
             {
@@ -113,16 +125,59 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                     .to()
                     .map(|dim| dim / surface_state.buffer_scale_f32());
                 if dimension.contains(relative_position) {
-                    let surface = surface_state.surface().upgrade().unwrap();
-                    tracing::trace!("Pointer event on surface {}", surface.object_id());
-                    surface.pointer_event(PointerEventKind::Motion {
-                        coords: relative_position,
-                    });
-                    return
+                    return Some((surface_token, relative_position))
                 }
             }
         }
         tracing::trace!("No surface under pointer");
+        None
+    }
+
+    pub fn pointer_motion(&mut self, position: Point<NotNan<f32>, coords::Screen>) {
+        self.pointer_position = Some(position);
+        let Some((surface_token, relative_position)) = self.surface_under_pointer(position) else {
+            return
+        };
+        let surface_state = self.get(surface_token);
+        let surface = surface_state.surface().upgrade().unwrap();
+        tracing::trace!("Pointer event on surface {}", surface.object_id());
+        surface.pointer_event(PointerEventKind::Motion {
+            coords: relative_position,
+        });
+    }
+
+    pub fn pointer_button(
+        &self,
+        button: MouseButton,
+        pressed: bool,
+    ) {
+        let Some(position) = self.pointer_position else {
+            return
+        };
+        let Some((surface_token, relative_position)) = self.surface_under_pointer(position) else {
+            return
+        };
+        let surface_state = self.get(surface_token);
+        let surface = surface_state.surface().upgrade().unwrap();
+        tracing::debug!(
+            "Pointer event on surface {} {button:?} {pressed}",
+            surface.object_id()
+        );
+        let button = match button {
+            MouseButton::Left => input_event_codes::BTN_LEFT,
+            MouseButton::Right => input_event_codes::BTN_RIGHT,
+            MouseButton::Middle => input_event_codes::BTN_MIDDLE,
+            MouseButton::Other(_) => return,
+        };
+        surface.pointer_event(PointerEventKind::Button {
+            button,
+            state: if pressed {
+                wl_pointer::enums::ButtonState::Pressed
+            } else {
+                wl_pointer::enums::ButtonState::Released
+            },
+            coords: relative_position,
+        });
     }
 
     fn update_subtree_outputs(

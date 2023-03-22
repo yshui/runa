@@ -57,8 +57,7 @@ impl apollo::shell::Seat for Crescent {
 }
 
 impl wl_server::events::EventSource<SeatEvent> for Crescent {
-    type Source =
-        <Broadcast<SeatEvent> as wl_server::events::EventSource<SeatEvent>>::Source;
+    type Source = <Broadcast<SeatEvent> as wl_server::events::EventSource<SeatEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.0.seat_events.subscribe()
@@ -309,9 +308,9 @@ fn main() -> Result<()> {
     let output = output.into();
     let window = rx.recv().unwrap();
     let server = Crescent(Rc::new(CrescentState {
-        globals:  RefCell::new(AnyGlobal::globals().collect()),
-        shell:    Rc::new(RefCell::new(DefaultShell::new(&output))),
-        executor: LocalExecutor::new(),
+        globals:     RefCell::new(AnyGlobal::globals().collect()),
+        shell:       Rc::new(RefCell::new(DefaultShell::new(&output))),
+        executor:    LocalExecutor::new(),
         seat_events: Default::default(),
     }));
     // Add output global and make sure its id is what we expect.

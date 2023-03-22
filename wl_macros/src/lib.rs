@@ -477,21 +477,21 @@ pub fn wayland_object(
         }
     } else {
         quote! {
-            ::std::convert::Infallible
+            ()
         }
     };
 
     let state_init = if let Some(state_init) = attr.state_init {
         quote! {
-            Some(#state_init)
+            #state_init
         }
     } else if attr.state.is_some() {
         quote! {
-            Some(Default::default())
+            Default::default()
         }
     } else {
         quote! {
-            None
+            ()
         }
     };
 
@@ -508,7 +508,7 @@ pub fn wayland_object(
                 type SingletonState = #singleton_state_type;
                 const INTERFACE: &'static str = #interface_tokens;
                 #[inline]
-                fn new_singleton_state() -> Option<Self::SingletonState> {
+                fn new_singleton_state() -> Self::SingletonState {
                     #state_init
                 }
             }
@@ -737,8 +737,7 @@ pub fn interface_message_dispatch_for_enum(
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
-            Self::#v(_) => <#ty_ as #crate_::objects::MonoObject>::new_singleton_state()
-                               .map(|init| Box::new(init) as _),
+            Self::#v(_) => Box::new(<#ty_ as #crate_::objects::MonoObject>::new_singleton_state()) as _,
         }
     });
     let type_ids = body.iter().map(|v| {
@@ -782,7 +781,7 @@ pub fn interface_message_dispatch_for_enum(
             }
 
             #[inline]
-            fn new_singleton_state(&self) -> Option<Box<dyn ::std::any::Any>> {
+            fn new_singleton_state(&self) -> Box<dyn ::std::any::Any> {
                 match self {
                     #(#singleton_states)*
                 }

@@ -246,7 +246,7 @@ where
                             use crate::objects::compositor::Surface;
                             let surface_state =
                                 match objects.get_with_state::<Surface<Sh>>(message.object_id) {
-                                    Ok((_, state)) => state.unwrap(),
+                                    Ok((_, state)) => state,
                                     Err(GetError::IdNotFound(_)) => unreachable!(),
                                     Err(GetError::TypeMismatch(_)) =>
                                         return futures_util::future::ok(EventHandlerAction::Keep),
@@ -286,7 +286,6 @@ where
             let (_, state) = objects
                 .insert_with_state(id.0, Pointer)
                 .map_err(|_| wl_server::error::Error::IdExists(id.0))?;
-            let state = state.unwrap();
             if let Some(event_source) = state.event_source.take() {
                 // This is our first pointer object, setup listeners
                 tracing::debug!("First pointer object, add event handler");
@@ -326,7 +325,7 @@ impl Default for PointerState {
 
 impl Drop for PointerState {
     fn drop(&mut self) {
-        // Stop listening for pointer events
+        // Stop listening for pointer events when the last pointer object is dropped
         self.handle.replace(None);
     }
 }
@@ -407,10 +406,6 @@ where
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {
-            if objects.by_type::<Pointer>().next().is_none() {
-                // No more pointer objects left
-                return Ok(EventHandlerAction::Stop)
-            }
             use crate::shell::surface::PointerEventKind;
             if self
                 .focus

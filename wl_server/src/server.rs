@@ -32,11 +32,12 @@ pub trait Server: Clone + Sized {
 /// Global updates
 ///
 /// Note, unlike [`crate::connection::traits::StoreEvent`], this doesn't have a
-/// "Replaced" event to represent a global being added after it's removed. This is because the
-/// global IDs are entirely controlled by the compositor, and the compositor should avoid reusing
-/// global IDs anyway, to avoid race condition with the client. So we could assume ID reuse doesn't
-/// happen within a comfortably long time frame, which should be long enough for event listeners to
-/// handle their events.
+/// "Replaced" event to represent a global being added after it's removed. This
+/// is because the global IDs are entirely controlled by the compositor, and the
+/// compositor should avoid reusing global IDs anyway, to avoid race condition
+/// with the client. So we could assume ID reuse doesn't happen within a
+/// comfortably long time frame, which should be long enough for event listeners
+/// to handle their events.
 #[derive(Derivative)]
 #[derivative(Clone(bound = ""))]
 pub enum GlobalsUpdate<G> {

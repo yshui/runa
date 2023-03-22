@@ -253,7 +253,6 @@ where
                 ..
             } = ctx.as_mut_parts();
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
-            let state = state.unwrap();
 
             let mut shell = server_context.shell().borrow_mut();
             this.inner
@@ -312,7 +311,6 @@ where
                 ..
             } = ctx.as_mut_parts();
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
-            let state = state.unwrap();
 
             this.inner.destroy(
                 &mut server_context.shell().borrow_mut(),
@@ -386,7 +384,6 @@ where
                 let (surface, surface_state) = objects
                     .insert_with_state(id.0, Surface { inner: surface })
                     .unwrap();
-                let surface_state = surface_state.unwrap();
 
                 *surface.inner.pointer_events.borrow_mut() =
                     Some(surface_state.pointer_events.clone());

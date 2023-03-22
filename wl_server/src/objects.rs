@@ -140,7 +140,7 @@ pub trait AnyObject: 'static + Sized {
     /// might panic. You don't need to worry about this if you use
     /// `#[derive(Object)]` and `#[wayland_object]` macros to generate the
     /// implementation.
-    fn new_singleton_state(&self) -> Option<Box<dyn std::any::Any>>;
+    fn new_singleton_state(&self) -> Box<dyn std::any::Any>;
 
     /// Type id of the concrete object type. If this is an enum of multiple
     /// object types, this should return the type id of the inhabited variant.
@@ -167,7 +167,7 @@ pub trait MonoObject: 'static {
     /// state is managed by the object store, and it will be dropped when
     /// the last object of the type is dropped.
     type SingletonState: 'static;
-    fn new_singleton_state() -> Option<Self::SingletonState>;
+    fn new_singleton_state() -> Self::SingletonState;
 
     const INTERFACE: &'static str;
 }
@@ -364,13 +364,11 @@ pub struct Callback {
     fired: bool,
 }
 impl MonoObject for Callback {
-    type SingletonState = ::std::convert::Infallible;
+    type SingletonState = ();
 
     const INTERFACE: &'static str = wl_protocol::wayland::wl_callback::v1::NAME;
 
-    fn new_singleton_state() -> Option<Self::SingletonState> {
-        None
-    }
+    fn new_singleton_state() {}
 }
 
 impl<Ctx: crate::connection::traits::Client> Object<Ctx> for Callback {

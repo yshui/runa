@@ -146,11 +146,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         });
     }
 
-    pub fn pointer_button(
-        &self,
-        button: MouseButton,
-        pressed: bool,
-    ) {
+    pub fn pointer_button(&self, button: MouseButton, pressed: bool) {
         let Some(position) = self.pointer_position else {
             return
         };

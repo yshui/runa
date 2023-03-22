@@ -86,7 +86,7 @@ pub mod traits {
             &mut self,
             id: u32,
             object: T,
-        ) -> Result<(&mut T, Option<&mut T::SingletonState>), T>;
+        ) -> Result<(&mut T, &mut T::SingletonState), T>;
 
         /// Allocate a new ID for the client, associate `object` for it.
         /// According to the wayland spec, the ID must start from 0xff000000
@@ -112,7 +112,7 @@ pub mod traits {
         fn get_with_state<T: objects::MonoObject>(
             &self,
             id: u32,
-        ) -> Result<(&T, Option<&T::SingletonState>), GetError>;
+        ) -> Result<(&T, &T::SingletonState), GetError>;
         /// Get a unique reference to an object with its associated singleton
         /// state
         ///
@@ -123,14 +123,18 @@ pub mod traits {
         fn get_with_state_mut<T: objects::MonoObject>(
             &mut self,
             id: u32,
-        ) -> Result<(&mut T, Option<&mut T::SingletonState>), GetError>;
+        ) -> Result<(&mut T, &mut T::SingletonState), GetError>;
         /// Get a reference to an object from the store, and cast it down to the
         /// concrete type.
         fn get<T: 'static>(&self, id: u32) -> Result<&T, GetError>;
         /// Get a unique reference to an object from the store, and cast it down
         /// to the concrete type.
         fn get_mut<T: 'static>(&mut self, id: u32) -> Result<&mut T, GetError>;
+        /// Returns whether the store contains a given ID
         fn contains(&self, id: u32) -> bool;
+        /// Try to insert an object into the store with the given ID, the object
+        /// is created by calling the closure `f`. `f` is never called
+        /// if the ID already exists in the store.
         fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> Option<&mut O>;
         /// Return an `AsIterator` for all objects in the store with a specific
         /// interface An `Iterator` can be obtain from an `AsIterator` by
@@ -308,30 +312,26 @@ impl<Object: objects::AnyObject> Store<Object> {
         &mut self,
         id: u32,
         f: F,
-    ) -> Option<(&mut Object, Option<&mut dyn Any>)> {
+    ) -> Option<(&mut Object, &mut dyn Any)> {
         let entry = self.map.entry(id);
         match entry {
             hash_map::Entry::Occupied(_) => None,
             hash_map::Entry::Vacant(v) => {
                 let object = f();
                 let interface = object.interface();
-                let state = if let Some(state) = object.new_singleton_state() {
-                    let (state, count) = self
-                        .singleton_states
-                        .entry(objects::AnyObject::type_id(&object))
-                        .or_insert((state, 0));
-                    *count += 1;
-                    Some(&mut **state)
-                } else {
-                    None
-                };
+                let state = object.new_singleton_state();
+                let (state, count) = self
+                    .singleton_states
+                    .entry(objects::AnyObject::type_id(&object))
+                    .or_insert((state, 0));
+                *count += 1;
                 let ret = v.insert(object);
                 self.by_interface.entry(interface).or_default().insert(id);
                 self.event_source.send(traits::StoreEvent {
                     kind:      traits::StoreEventKind::Inserted { interface },
                     object_id: id,
                 });
-                Some((ret, state))
+                Some((ret, &mut **state))
             },
         }
     }
@@ -470,7 +470,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         &mut self,
         object_id: u32,
         object: T,
-    ) -> Result<(&mut T, Option<&mut T::SingletonState>), T> {
+    ) -> Result<(&mut T, &mut T::SingletonState), T> {
         if object_id > CLIENT_MAX_ID {
             return Err(object)
         }
@@ -481,7 +481,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
             Err(orig)
         } else {
             let (obj, state) = ret.unwrap();
-            let state = state.and_then(|s| s.downcast_mut());
+            let state = state.downcast_mut().unwrap();
             Ok((obj.cast_mut().unwrap(), state))
         }
     }
@@ -540,20 +540,21 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
     fn get_with_state<T: objects::MonoObject>(
         &self,
         id: u32,
-    ) -> Result<(&T, Option<&T::SingletonState>), traits::GetError> {
+    ) -> Result<(&T, &T::SingletonState), traits::GetError> {
         let o = self.map.get(&id).ok_or(traits::GetError::IdNotFound(id))?;
         let obj = o.cast::<T>().ok_or(traits::GetError::TypeMismatch(id))?;
         let state = self
             .singleton_states
             .get(&std::any::TypeId::of::<T>())
-            .map(|(s, _)| s.downcast_ref().unwrap());
+            .map(|(s, _)| s.downcast_ref().unwrap())
+            .unwrap();
         Ok((obj, state))
     }
 
     fn get_with_state_mut<'a, T: objects::MonoObject>(
         &'a mut self,
         id: u32,
-    ) -> Result<(&'a mut T, Option<&'a mut T::SingletonState>), traits::GetError> {
+    ) -> Result<(&'a mut T, &'a mut T::SingletonState), traits::GetError> {
         let o: &'a mut O = self
             .map
             .get_mut(&id)
@@ -564,7 +565,8 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         let state = self
             .singleton_states
             .get_mut(&std::any::TypeId::of::<T>())
-            .map(|(s, _)| s.downcast_mut().unwrap());
+            .map(|(s, _)| s.downcast_mut().unwrap())
+            .unwrap();
         Ok((obj, state))
     }
 

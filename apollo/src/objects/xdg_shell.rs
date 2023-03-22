@@ -332,7 +332,7 @@ where
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
-            role.title = Some(String::from_utf8_lossy(&title.0).into_owned());
+            role.title = Some(String::from_utf8_lossy(title.0).into_owned());
             Ok(())
         }
     }
@@ -353,7 +353,7 @@ where
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
-            role.app_id = Some(String::from_utf8_lossy(&app_id.0).into_owned());
+            role.app_id = Some(String::from_utf8_lossy(app_id.0).into_owned());
             Ok(())
         }
     }

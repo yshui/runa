@@ -3,18 +3,14 @@ use std::future::Future;
 use ordered_float::NotNan;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_pointer::v8 as wl_pointer, wl_seat::v8 as wl_seat,
-    wl_surface::v5 as wl_surface,
+    wl_pointer::v8 as wl_pointer, wl_seat::v8 as wl_seat, wl_surface::v5 as wl_surface,
 };
 use wl_server::{
     connection::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error::Error,
-    events::{
-        broadcast::Receiver,
-        EventSource,
-    },
+    events::{broadcast::Receiver, EventSource},
     objects::wayland_object,
 };
 use wl_types::NewId;
@@ -64,11 +60,11 @@ where
     type GetTouchFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type ReleaseFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn release<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::ReleaseFut<'a> {
+    fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move { Ok(()) }
     }
 
-    fn get_pointer<'a>(ctx: &'a mut Ctx, object_id: u32, id: NewId) -> Self::GetPointerFut<'a> {
+    fn get_pointer(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetPointerFut<'_> {
         async move {
             let cap = ctx.server_context().capabilities();
             if !cap.contains(wl_seat::enums::Capability::POINTER) {
@@ -147,12 +143,9 @@ where
             // Subscribe to pointer events if there are surface objects in the store,
             // otherwise the NewSurfaceHandler will add one when the first
             // surface object is created.
-            let pointer_rx =
-                if let Some(surface_state) = objects.get_state::<compositor::Surface<Sh>>() {
-                    Some(surface_state.subscribe())
-                } else {
-                    None
-                };
+            let pointer_rx = objects
+                .get_state::<compositor::Surface<Sh>>()
+                .map(|surface_state| surface_state.subscribe());
             let (_, state) = objects
                 .insert_with_state(id.0, Pointer)
                 .map_err(|_| Error::IdExists(id.0))?;
@@ -169,11 +162,11 @@ where
         }
     }
 
-    fn get_touch<'a>(ctx: &'a mut Ctx, object_id: u32, id: NewId) -> Self::GetTouchFut<'a> {
+    fn get_touch(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetTouchFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn get_keyboard<'a>(ctx: &'a mut Ctx, object_id: u32, id: NewId) -> Self::GetKeyboardFut<'a> {
+    fn get_keyboard(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetKeyboardFut<'_> {
         async move { unimplemented!() }
     }
 }
@@ -213,21 +206,21 @@ where
     type ReleaseFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type SetCursorFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn release<'a>(ctx: &'a mut Ctx, object_id: u32) -> Self::ReleaseFut<'a> {
+    fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
             ctx.objects_mut().remove(object_id).unwrap();
             Ok(())
         }
     }
 
-    fn set_cursor<'a>(
-        ctx: &'a mut Ctx,
+    fn set_cursor(
+        ctx: &mut Ctx,
         object_id: u32,
         serial: u32,
         surface: wl_types::Object,
         hotspot_x: i32,
         hotspot_y: i32,
-    ) -> Self::SetCursorFut<'a> {
+    ) -> Self::SetCursorFut<'_> {
         async move {
             tracing::warn!("set_cursor unimplemented");
             Ok(())

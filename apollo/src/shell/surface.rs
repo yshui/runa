@@ -874,6 +874,7 @@ impl<S: Shell> Surface<S> {
     }
 }
 
+// TODO: maybe we can unshare Surface, not wrapping it in Rc<>
 impl<S: Shell> Surface<S> {
     /// Get the parent surface of this surface has a subsurface role.
     pub fn parent(&self) -> Option<Rc<Self>> {

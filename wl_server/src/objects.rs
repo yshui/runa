@@ -293,7 +293,6 @@ where
             let inserted = objects
                 .try_insert_with(registry.0, || global.new_object())
                 .is_some();
-            drop(objects); // unlock the object store
             if inserted {
                 global.bind(ctx, registry.0).await?;
                 Ok(())

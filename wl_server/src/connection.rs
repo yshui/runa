@@ -594,7 +594,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         Self::try_insert_with(self, id, f).map(|(o, _)| o)
     }
 
-    fn by_type<'a, T: objects::MonoObject>(&'a self) -> Self::ByType<'a, T> {
+    fn by_type<T: objects::MonoObject>(&self) -> Self::ByType<'_, T> {
         self.by_type
             .get(&std::any::TypeId::of::<T>())
             .into_iter()
@@ -1078,7 +1078,8 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
         }
     }
 
-    pub fn next<'a>(&'a mut self) -> impl FusedFuture<Output = PendingEvent<'a, Ctx>> + 'a {
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> impl FusedFuture<Output = PendingEvent<'_, Ctx>> + '_ {
         struct Next<'a, Ctx> {
             dispatcher: Option<&'a mut EventDispatcher<Ctx>>,
         }
@@ -1109,23 +1110,21 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
     /// resolve as soon as there are no more events queued in this event
     /// dispatcher. It will not wait for new events to be queued, but it may
     /// wait for the futures returned by the event handlers to resolve.
-    pub fn handle_queued_events<'ctx>(
+    pub async fn handle_queued_events<'ctx>(
         &'ctx mut self,
         objects: &'ctx mut Ctx::ObjectStore,
         connection: &'ctx mut Ctx::Connection,
         server_context: &'ctx Ctx::ServerContext,
-    ) -> impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + 'ctx {
-        async move {
-            // We are not going to wait on the event dispatcher, so we use a noop waker.
-            let waker = futures_util::task::noop_waker();
-            let cx = &mut Context::from_waker(&waker);
-            while let Poll::Ready(pending_event) = self.poll_next(cx) {
-                pending_event
-                    .handle(objects, connection, server_context)
-                    .await?;
-            }
-            Ok(())
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // We are not going to wait on the event dispatcher, so we use a noop waker.
+        let waker = futures_util::task::noop_waker();
+        let cx = &mut Context::from_waker(&waker);
+        while let Poll::Ready(pending_event) = self.poll_next(cx) {
+            pending_event
+                .handle(objects, connection, server_context)
+                .await?;
         }
+        Ok(())
     }
 }
 

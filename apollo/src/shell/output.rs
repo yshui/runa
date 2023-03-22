@@ -4,6 +4,7 @@ use std::{
 };
 
 use hashbrown::HashMap;
+use ordered_float::NotNan;
 use wl_io::traits::WriteMessage;
 use wl_server::events::{self, EventSource};
 

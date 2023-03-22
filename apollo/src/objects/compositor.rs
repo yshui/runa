@@ -202,7 +202,7 @@ where
             >>(buffer.0)?;
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
-            state.set_buffer_from_object(&buffer);
+            state.set_buffer_from_object(buffer);
             Ok(())
         }
     }

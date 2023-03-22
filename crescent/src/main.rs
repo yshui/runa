@@ -101,8 +101,8 @@ pub enum AnyObject {
     Subsurface(apollo::objects::compositor::Subsurface<Shell>),
 
     // === seat ===
-    Seat(apollo::objects::Seat),
-    Pointer(apollo::objects::Pointer),
+    Seat(apollo::objects::input::Seat),
+    Pointer(apollo::objects::input::Pointer),
 
     // === xdg_shell objects ===
     WmBase(apollo::objects::xdg_shell::WmBase),
@@ -146,15 +146,17 @@ impl wl_server::server::Server for Crescent {
                     .objects_mut()
                     .insert(DISPLAY_ID, wl_server::objects::Display::default())
                     .unwrap();
-                client_ctx
+
+                let display_global = client_ctx
                     .server_context()
                     .clone()
                     .globals()
                     .borrow()
                     .get(DISPLAY_ID)
                     .unwrap()
-                    .bind(&mut client_ctx, DISPLAY_ID)
-                    .await?;
+                    .clone();
+
+                display_global.bind(&mut client_ctx, DISPLAY_ID).await?;
                 let mut read = BufReaderWithFd::new(rx);
                 let _span = tracing::debug_span!("main loop").entered();
                 loop {
@@ -173,7 +175,7 @@ impl wl_server::server::Server for Crescent {
                         }
                         // Broken pipe means the client disconnected, but there
                         // could still be more requests we can read.
-                        while let Ok(_) = Pin::new(&mut read).next_message().await {
+                        while Pin::new(&mut read).next_message().await.is_ok() {
                             if client_ctx.dispatch(Pin::new(&mut read)).await {
                                 break
                             }

@@ -490,9 +490,7 @@ pub fn wayland_object(
             Default::default()
         }
     } else {
-        quote! {
-            ()
-        }
+        quote! {}
     };
 
     let mut filtered_generics = generics.clone();

@@ -417,6 +417,10 @@ impl<O> Store<O> {
         for (_, (mut state, ids)) in self.by_type.drain() {
             for id in ids {
                 let obj = self.map.get_mut(&id).unwrap();
+                tracing::debug!(
+                    "Calling on_disconnect for object {id}, interface {}",
+                    obj.interface()
+                );
                 obj.on_disconnect(server_ctx, &mut *state);
             }
         }

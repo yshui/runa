@@ -23,3 +23,8 @@ wl_scanner_support = { path = "../wl_scanner_support" }
 num_enum = "0.5.7"
 futures-task = "0.3.24"
 wl_io = { path = "../wl_io" }
+
+[features]
+default = [ "tracing" ]
+# logging from generated code
+tracing = []

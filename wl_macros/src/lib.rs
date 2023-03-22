@@ -501,6 +501,13 @@ pub fn wayland_object(
         Ok(g) => g,
     };
     let state_where = attr.state.as_ref().map(|state| &state.where_clause);
+    let log = if cfg!(feature = "tracing") {
+        quote! {
+            tracing::debug!(target: "wl_io::deser", "Dispatching {:?}, interface {}", msg, #interface_tokens);
+        }
+    } else {
+        quote!()
+    };
     quote! {
         #orig_item
         const _: () = {
@@ -526,6 +533,7 @@ pub fn wayland_object(
                         <#message_ty as #crate_::__private::Serialize>::len(&msg) as usize,
                         <#message_ty as #crate_::__private::Serialize>::nfds(&msg) as usize,
                     );
+                    #log
                     async move {
                         match msg {
                             #(#match_items2),*

@@ -209,7 +209,7 @@ pub trait Object<Ctx: crate::connection::traits::Client>: 'static {
     fn on_disconnect(
         &mut self,
         _server_ctx: &mut Ctx::ServerContext,
-        _state: Option<&mut dyn std::any::Any>,
+        _state: &mut dyn std::any::Any,
     ) {
     }
     /// Dispatch requests to the interface implementation. Returns a future,

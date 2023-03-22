@@ -28,12 +28,6 @@ pub mod traits {
     use wl_io::traits::WriteMessage;
 
     use crate::{events, objects};
-    type ByType<'a, T, O, S>
-    where
-        O: objects::AnyObject + 'static,
-        S: Store<O> + 'a,
-        T: objects::MonoObject + 'static,
-    = impl Iterator<Item = (u32, &'a T)> + 'a;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub enum StoreEventKind {
@@ -70,9 +64,10 @@ pub mod traits {
     }
     pub trait Store<O>: events::EventSource<StoreEvent> {
         /// See [`crate::utils::AsIteratorItem`] for why this is so complicated.
-        type ByIface<'a>: Iterator<Item = (u32, &'a O)> + 'a
+        type ByType<'a, T>: Iterator<Item = (u32, &'a T)> + 'a
         where
             O: 'a,
+            T: objects::MonoObject + 'a,
             Self: 'a;
         /// Insert object into the store with the given ID. Returns a unique
         /// reference to the inserted object if successful, Err(T) if
@@ -136,19 +131,19 @@ pub mod traits {
         /// is created by calling the closure `f`. `f` is never called
         /// if the ID already exists in the store.
         fn try_insert_with(&mut self, id: u32, f: impl FnOnce() -> O) -> Option<&mut O>;
-        /// Return an `AsIterator` for all objects in the store with a specific
-        /// interface An `Iterator` can be obtain from an `AsIterator` by
-        /// calling `as_iter()`
-        fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a>;
+        /// Try to insert an object into the store with the given ID, the object
+        /// is created by calling the closure `f` with the singleton state
+        /// that's associated with the object type. `f` is never called
+        /// if the ID already exists in the store.
+        //fn try_insert_with_states<T: Into<O> + objects::MonoObject + 'static>(
+        //    &mut self,
+        //    id: u32,
+        //    f: impl FnOnce(Option<&mut T::SingletonState>) -> T,
+        //) -> Option<(&mut T, Option<&mut T::SingletonState>)>;
 
-        fn by_type<T: objects::MonoObject + 'static>(&self) -> ByType<'_, T, O, Self>
-        where
-            Self: Sized,
-            O: objects::AnyObject + 'static,
-        {
-            self.by_interface(T::INTERFACE)
-                .filter_map(|(id, obj)| obj.cast::<T>().map(|obj| (id, obj)))
-        }
+        /// Return an iterator for all objects in the store with a specific
+        /// type.
+        fn by_type<T: objects::MonoObject + 'static>(&self) -> Self::ByType<'_, T>;
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -272,34 +267,35 @@ pub mod traits {
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""))]
 pub struct Store<Object> {
-    map:              HashMap<u32, Object>,
-    singleton_states: HashMap<TypeId, (Box<dyn Any>, u64)>,
-    by_interface:     HashMap<&'static str, HashSet<u32>>,
+    map:          HashMap<u32, Object>,
+    by_type:      HashMap<TypeId, (Box<dyn Any>, HashSet<u32>)>,
     /// Next ID to use for server side object allocation
     #[derivative(Default(value = "CLIENT_MAX_ID + 1"))]
-    next_id:          u32,
+    next_id:      u32,
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
-    ids_left:         u32,
-    event_source:     events::aggregate::Sender<StoreEventAggregate>,
+    ids_left:     u32,
+    event_source: events::aggregate::Sender<StoreEventAggregate>,
 }
 
 impl<Object: objects::AnyObject> Store<Object> {
     #[inline]
     fn remove(&mut self, id: u32) -> Option<Object> {
         let object = self.map.remove(&id)?;
+        let type_id = objects::AnyObject::type_id(&object);
         let interface = object.interface();
-        if let hash_map::Entry::Occupied(mut e) = self
-            .singleton_states
-            .entry(objects::AnyObject::type_id(&object))
-        {
-            let (_, count) = e.get_mut();
-            *count -= 1;
-            if *count == 0 {
-                e.remove();
-            }
-        }
-        self.by_interface.get_mut(interface).unwrap().remove(&id);
+        match self.by_type.entry(type_id) {
+            hash_map::Entry::Occupied(mut v) => {
+                let (_, ids) = v.get_mut();
+                let removed = ids.remove(&id);
+                assert!(removed);
+                if ids.is_empty() {
+                    v.remove();
+                }
+            },
+            hash_map::Entry::Vacant(_) => panic!("Incosistent object store state"),
+        };
+
         self.event_source.send(traits::StoreEvent {
             kind:      traits::StoreEventKind::Removed { interface },
             object_id: id,
@@ -319,14 +315,13 @@ impl<Object: objects::AnyObject> Store<Object> {
             hash_map::Entry::Vacant(v) => {
                 let object = f();
                 let interface = object.interface();
-                let state = object.new_singleton_state();
-                let (state, count) = self
-                    .singleton_states
-                    .entry(objects::AnyObject::type_id(&object))
-                    .or_insert((state, 0));
-                *count += 1;
+                let type_id = objects::AnyObject::type_id(&object);
+                let (state, ids) = self
+                    .by_type
+                    .entry(type_id)
+                    .or_insert_with(|| (object.new_singleton_state(), HashSet::new()));
+                ids.insert(id);
                 let ret = v.insert(object);
-                self.by_interface.entry(interface).or_default().insert(id);
                 self.event_source.send(traits::StoreEvent {
                     kind:      traits::StoreEventKind::Inserted { interface },
                     object_id: id,
@@ -419,15 +414,13 @@ impl<O> Store<O> {
         O: objects::AnyObject + objects::Object<Ctx>,
     {
         tracing::debug!("Clearing store for disconnect");
-        for (_, ref mut obj) in self.map.drain() {
-            tracing::debug!("Calling on_disconnect for {obj:p}");
-            let state = self
-                .singleton_states
-                .get_mut(&objects::AnyObject::type_id(obj));
-            obj.on_disconnect(server_ctx, state.map(|(s, _)| s.as_mut()));
+        for (_, (mut state, ids)) in self.by_type.drain() {
+            for id in ids {
+                let obj = self.map.get_mut(&id).unwrap();
+                obj.on_disconnect(server_ctx, &mut *state);
+            }
         }
-        self.singleton_states.clear();
-        self.by_interface.clear();
+        self.map.clear();
         self.ids_left = u32::MAX - CLIENT_MAX_ID;
         self.next_id = CLIENT_MAX_ID + 1;
     }
@@ -448,7 +441,7 @@ impl<O: objects::AnyObject> events::EventSource<traits::StoreEvent> for Store<O>
 }
 
 impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
-    type ByIface<'a> = impl Iterator<Item = (u32, &'a O)> + 'a where O: 'a;
+    type ByType<'a, T> = impl Iterator<Item = (u32, &'a T)> + 'a where O: 'a, T: objects::MonoObject + 'a;
 
     #[inline]
     fn insert<T: Into<O> + 'static>(&mut self, object_id: u32, object: T) -> Result<&mut T, T> {
@@ -526,13 +519,13 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
     }
 
     fn get_state<T: objects::MonoObject>(&self) -> Option<&T::SingletonState> {
-        self.singleton_states
+        self.by_type
             .get(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_ref().unwrap())
     }
 
     fn get_state_mut<T: objects::MonoObject>(&mut self) -> Option<&mut T::SingletonState> {
-        self.singleton_states
+        self.by_type
             .get_mut(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_mut().unwrap())
     }
@@ -544,7 +537,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         let o = self.map.get(&id).ok_or(traits::GetError::IdNotFound(id))?;
         let obj = o.cast::<T>().ok_or(traits::GetError::TypeMismatch(id))?;
         let state = self
-            .singleton_states
+            .by_type
             .get(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_ref().unwrap())
             .unwrap();
@@ -563,7 +556,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
             .cast_mut::<T>()
             .ok_or(traits::GetError::TypeMismatch(id))?;
         let state = self
-            .singleton_states
+            .by_type
             .get_mut(&std::any::TypeId::of::<T>())
             .map(|(s, _)| s.downcast_mut().unwrap())
             .unwrap();
@@ -597,11 +590,14 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
         Self::try_insert_with(self, id, f).map(|(o, _)| o)
     }
 
-    fn by_interface<'a>(&'a self, interface: &'static str) -> Self::ByIface<'a> {
-        self.by_interface
-            .get(interface)
+    fn by_type<'a, T: objects::MonoObject>(&'a self) -> Self::ByType<'a, T> {
+        self.by_type
+            .get(&std::any::TypeId::of::<T>())
             .into_iter()
-            .flat_map(move |ids| ids.iter().map(move |id| (*id, self.map.get(id).unwrap())))
+            .flat_map(move |(_, ids)| {
+                ids.iter()
+                    .map(move |id| (*id, self.map.get(id).unwrap().cast().unwrap()))
+            })
     }
 }
 

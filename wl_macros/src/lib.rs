@@ -463,8 +463,8 @@ pub fn wayland_object(
     };
     let on_disconnect = if let Some(on_disconnect) = attr.on_disconnect {
         quote! {
-            fn on_disconnect(&mut self, server_ctx: &mut Ctx::ServerContext, state: Option<&mut dyn ::std::any::Any>) {
-                #on_disconnect(self, server_ctx, state)
+            fn on_disconnect(&mut self, server_ctx: &mut Ctx::ServerContext, state: &mut dyn ::std::any::Any) {
+                #on_disconnect(self, server_ctx, state.downcast_mut().unwrap())
             }
         }
     } else {
@@ -803,7 +803,7 @@ pub fn interface_message_dispatch_for_enum(
             fn on_disconnect(
                 &mut self,
                 server_ctx: &mut <#context_param as #crate_::connection::traits::Client>::ServerContext,
-                state: Option<&mut dyn ::std::any::Any>
+                state: &mut dyn ::std::any::Any
             ) {
                 match self {
                     #(#disconnects)*

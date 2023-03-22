@@ -96,12 +96,8 @@ pub struct Surface<Shell: shell::Shell> {
 fn deallocate_surface<S: Shell, ServerCtx: HasShell<Shell = S>>(
     this: &mut Surface<S>,
     server_context: &mut ServerCtx,
-    state: Option<&mut dyn std::any::Any>,
+    state: &mut SurfaceState<S::Token>,
 ) {
-    let state = state
-        .unwrap()
-        .downcast_mut::<SurfaceState<S::Token>>()
-        .unwrap();
     let mut shell = server_context.shell().borrow_mut();
     this.inner.destroy(&mut shell, &mut state.scratch_buffer);
 

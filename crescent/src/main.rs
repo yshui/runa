@@ -167,7 +167,17 @@ impl wl_server::server::Server for Crescent {
                     } = &mut client_ctx;
                     // Flush output before we start waiting.
                     if let Err(e) = tx.flush().await {
-                        tracing::trace!("Error while flushing connection {e}");
+                        if e.kind() != std::io::ErrorKind::BrokenPipe {
+                            tracing::warn!("Error while flushing connection {e}");
+                            break
+                        }
+                        // Broken pipe means the client disconnected, but there
+                        // could still be more requests we can read.
+                        while let Ok(_) = Pin::new(&mut read).next_message().await {
+                            if client_ctx.dispatch(Pin::new(&mut read)).await {
+                                break
+                            }
+                        }
                         break
                     }
                     use futures_util::FutureExt;
@@ -179,7 +189,9 @@ impl wl_server::server::Server for Crescent {
                                         break
                                     },
                                 Err(e) => {
-                                    tracing::trace!("Error while reading message: {e}");
+                                    if e.kind() != std::io::ErrorKind::UnexpectedEof {
+                                        tracing::warn!("Error while reading message: {e}");
+                                    }
                                     break
                                 },
                             }

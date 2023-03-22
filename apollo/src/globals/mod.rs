@@ -201,7 +201,7 @@ impl MaybeConstInit for Seat {
 }
 
 impl GlobalMeta for Seat {
-    type Object = crate::objects::Seat;
+    type Object = crate::objects::input::Seat;
 
     fn interface(&self) -> &'static str {
         wl_seat::NAME
@@ -212,7 +212,7 @@ impl GlobalMeta for Seat {
     }
 
     fn new_object(&self) -> Self::Object {
-        crate::objects::Seat
+        crate::objects::input::Seat
     }
 }
 

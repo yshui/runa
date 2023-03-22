@@ -1,0 +1,9 @@
+[package]
+name = "input-event-codes"
+description = "Rust bindings for the Linux input-event-codes.h header file"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+anyhow.workspace = true
+bindgen = "0.64.0"

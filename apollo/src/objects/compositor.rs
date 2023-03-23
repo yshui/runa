@@ -37,7 +37,7 @@ use crate::{
         self,
         buffers::HasBuffer,
         output::Output as ShellOutput,
-        surface::{roles, OutputEvent, PointerEvent},
+        surface::{roles, KeyboardEvent, OutputEvent, PointerEvent},
         HasShell, Shell,
     },
     utils::{geometry::Point, WeakPtr},
@@ -47,11 +47,13 @@ use crate::{
 pub struct SurfaceState<Token> {
     /// A queue of surface state tokens used for surface commits and
     /// destructions.
-    scratch_buffer: Vec<Token>,
+    scratch_buffer:  Vec<Token>,
     /// A buffer used for handling output changed event for surfaces.
-    new_outputs:    HashSet<WeakPtr<ShellOutput>>,
+    new_outputs:     HashSet<WeakPtr<ShellOutput>>,
     /// Shared event source for sending pointer events
-    pointer_events: Ring<PointerEvent>,
+    pointer_events:  Ring<PointerEvent>,
+    /// Shared event source for sending keyboard events
+    keyboard_events: Ring<KeyboardEvent>,
 }
 
 impl<Token> EventSource<PointerEvent> for SurfaceState<Token> {
@@ -59,6 +61,14 @@ impl<Token> EventSource<PointerEvent> for SurfaceState<Token> {
 
     fn subscribe(&self) -> Self::Source {
         self.pointer_events.subscribe()
+    }
+}
+
+impl<Token> EventSource<KeyboardEvent> for SurfaceState<Token> {
+    type Source = <Ring<KeyboardEvent> as EventSource<KeyboardEvent>>::Source;
+
+    fn subscribe(&self) -> Self::Source {
+        self.keyboard_events.subscribe()
     }
 }
 
@@ -80,9 +90,10 @@ impl<Token> SurfaceState<Token> {
 impl<Token> Default for SurfaceState<Token> {
     fn default() -> Self {
         Self {
-            scratch_buffer: Default::default(),
-            new_outputs:    Default::default(),
-            pointer_events: Ring::new(120),
+            scratch_buffer:  Default::default(),
+            new_outputs:     Default::default(),
+            pointer_events:  Ring::new(120),
+            keyboard_events: Ring::new(120),
         }
     }
 }
@@ -361,7 +372,11 @@ where
             let create_surface_object = |surface_state: &mut SurfaceState<Sh::Token>| {
                 let shell = server_context.shell();
                 let mut shell = shell.borrow_mut();
-                let surface = Rc::new(surface::Surface::new(id, surface_state.pointer_events.clone()));
+                let surface = Rc::new(surface::Surface::new(
+                    id,
+                    surface_state.pointer_events.clone(),
+                    surface_state.keyboard_events.clone(),
+                ));
                 let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
                 let current_state = shell.get_mut(current);
                 current_state.stack_index = Some(current_state.stack_mut().push_back(

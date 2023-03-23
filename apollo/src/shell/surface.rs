@@ -9,8 +9,9 @@ use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
 use ordered_float::NotNan;
+use tinyvec::TinyVec;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
-use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_pointer::v8 as wl_pointer};
+use wl_protocol::wayland::wl_pointer::v8 as wl_pointer;
 use wl_server::{
     events::{broadcast, single_state, EventSource},
     provide_any::{request_mut, request_ref, Demand, Provider},
@@ -743,12 +744,13 @@ pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
 #[derive(Clone, Debug)]
 pub struct OutputEvent(pub(crate) OutputSet);
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerEventKind {
     Motion {
         coords: Point<NotNan<f32>, coords::Surface>,
     },
     Button {
+        // TODO: remove coords, and require first event on a surface to be Motion
         button: u32,
         state:  wl_pointer::enums::ButtonState,
         coords: Point<NotNan<f32>, coords::Surface>,
@@ -766,20 +768,31 @@ impl PointerEventKind {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PointerEvent {
     pub time:      u32,
     pub object_id: u32,
     pub kind:      PointerEventKind,
 }
 
-#[derive(Clone, Copy)]
-pub enum KeyboardEvent {
-    Key {
-        time:  u32,
-        key:   u32,
-        state: wl_keyboard::enums::KeyState,
-    },
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyboardState {
+    /// All the currently pressed keys, most keyboard doesn't have more than
+    /// 6 key rollover, so 8 should be enough to avoid allocations for most
+    /// cases.
+    pub keys:                TinyVec<[u8; 8]>,
+    pub depressed_modifiers: u32,
+    pub latched_modifiers:   u32,
+    pub locked_modifiers:    u32,
+    /// This is called the "group" in the wayland protocol
+    pub effective_layout:    u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardEvent {
+    pub time:      u32,
+    pub object_id: u32,
+    pub state:     KeyboardState,
 }
 
 #[derive(Clone, Debug)]
@@ -808,10 +821,10 @@ pub struct Surface<S: super::Shell> {
     first_frame_callback_index: Cell<u32>,
     role:                       RefCell<Option<Box<dyn Role<S>>>>,
     outputs:                    OutputSet,
-    output_change_event:        single_state::Sender<OutputEvent>,
+    output_change_events:       single_state::Sender<OutputEvent>,
     pointer_events:             broadcast::Ring<PointerEvent>,
-    keyboard_event:             broadcast::Broadcast<KeyboardEvent>,
-    layout_change_event:        single_state::Sender<LayoutEvent>,
+    keyboard_events:            broadcast::Ring<KeyboardEvent>,
+    layout_change_events:       single_state::Sender<LayoutEvent>,
     object_id:                  u32,
 }
 
@@ -845,16 +858,20 @@ impl<S: Shell> Drop for Surface<S> {
 
 impl<S: Shell> Surface<S> {
     #[must_use]
-    pub fn new(object_id: wl_types::NewId, pointer_events: broadcast::Ring<PointerEvent>) -> Self {
+    pub fn new(
+        object_id: wl_types::NewId,
+        pointer_events: broadcast::Ring<PointerEvent>,
+        keyboard_events: broadcast::Ring<KeyboardEvent>,
+    ) -> Self {
         Self {
             current: Cell::new(None),
             pending: Cell::new(None),
             role: Default::default(),
             outputs: Default::default(),
-            output_change_event: Default::default(),
-            layout_change_event: Default::default(),
+            output_change_events: Default::default(),
+            layout_change_events: Default::default(),
             pointer_events,
-            keyboard_event: Default::default(),
+            keyboard_events,
             object_id: object_id.0,
             frame_callbacks: Default::default(),
             first_frame_callback_index: 0.into(),
@@ -1225,12 +1242,12 @@ impl<S: Shell> Surface<S> {
     }
 
     pub fn notify_output_changed(&self) {
-        self.output_change_event
+        self.output_change_events
             .send(OutputEvent(self.outputs.clone()));
     }
 
     pub fn notify_layout_changed(&self, layout: Layout) {
-        self.layout_change_event.send(LayoutEvent(layout));
+        self.layout_change_events.send(LayoutEvent(layout));
     }
 
     pub fn pointer_event(&self, event: PointerEventKind) {
@@ -1241,13 +1258,22 @@ impl<S: Shell> Surface<S> {
         };
         self.pointer_events.broadcast(event);
     }
+
+    pub fn keyboard_event(&self, event: KeyboardState) {
+        let event = KeyboardEvent {
+            time:      crate::time::elapsed().as_millis() as u32,
+            object_id: self.object_id,
+            state:     event,
+        };
+        self.keyboard_events.broadcast(event);
+    }
 }
 
 impl<S: Shell> EventSource<OutputEvent> for Surface<S> {
     type Source = single_state::Receiver<OutputEvent>;
 
     fn subscribe(&self) -> Self::Source {
-        self.output_change_event.new_receiver()
+        self.output_change_events.new_receiver()
     }
 }
 
@@ -1255,6 +1281,6 @@ impl<S: Shell> EventSource<LayoutEvent> for Surface<S> {
     type Source = single_state::Receiver<LayoutEvent>;
 
     fn subscribe(&self) -> Self::Source {
-        self.layout_change_event.new_receiver()
+        self.layout_change_events.new_receiver()
     }
 }

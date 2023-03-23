@@ -103,6 +103,7 @@ pub enum AnyObject {
     // === seat ===
     Seat(apollo::objects::input::Seat),
     Pointer(apollo::objects::input::Pointer),
+    Keyboard(apollo::objects::input::Keyboard),
 
     // === xdg_shell objects ===
     WmBase(apollo::objects::xdg_shell::WmBase),

@@ -135,11 +135,11 @@ pub mod traits {
         /// is created by calling the closure `f` with the singleton state
         /// that's associated with the object type. `f` is never called
         /// if the ID already exists in the store.
-        //fn try_insert_with_states<T: Into<O> + objects::MonoObject + 'static>(
-        //    &mut self,
-        //    id: u32,
-        //    f: impl FnOnce(Option<&mut T::SingletonState>) -> T,
-        //) -> Option<(&mut T, Option<&mut T::SingletonState>)>;
+        fn try_insert_with_state<T: Into<O> + objects::MonoObject + 'static>(
+            &mut self,
+            id: u32,
+            f: impl FnOnce(&mut T::SingletonState) -> T,
+        ) -> Option<(&mut T, &mut T::SingletonState)>;
 
         /// Return an iterator for all objects in the store with a specific
         /// type.
@@ -592,6 +592,40 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
             return None
         }
         Self::try_insert_with(self, id, f).map(|(o, _)| o)
+    }
+
+    fn try_insert_with_state<T: Into<O> + objects::MonoObject + 'static>(
+        &mut self,
+        id: u32,
+        f: impl FnOnce(&mut T::SingletonState) -> T,
+    ) -> Option<(&mut T, &mut T::SingletonState)> {
+        let entry = self.map.entry(id);
+        match entry {
+            hash_map::Entry::Occupied(_) => None,
+            hash_map::Entry::Vacant(v) => {
+                let type_id = std::any::TypeId::of::<T>();
+
+                let (state, ids) = self
+                    .by_type
+                    .entry(type_id)
+                    .or_insert_with(|| (Box::new(T::new_singleton_state()), HashSet::new()));
+
+                ids.insert(id);
+
+                let state = (**state).downcast_mut().unwrap();
+                let object = f(state);
+
+                let ret = v.insert(object.into());
+
+                self.event_source.send(traits::StoreEvent {
+                    kind:      traits::StoreEventKind::Inserted {
+                        interface: T::INTERFACE,
+                    },
+                    object_id: id,
+                });
+                Some((ret.cast_mut().unwrap(), state))
+            },
+        }
     }
 
     fn by_type<T: objects::MonoObject>(&self) -> Self::ByType<'_, T> {

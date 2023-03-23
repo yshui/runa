@@ -14,8 +14,8 @@ use std::{
 use derivative::Derivative;
 use futures_core::{FusedFuture, Stream};
 use futures_util::stream::{FuturesUnordered, StreamExt, StreamFuture};
-use hashbrown::{hash_map, HashMap, HashSet};
-use indexmap::IndexMap;
+use hashbrown::{hash_map, HashMap};
+use indexmap::{IndexMap, IndexSet};
 
 use crate::{events, objects, utils::one_shot_signal};
 
@@ -268,7 +268,7 @@ pub mod traits {
 #[derivative(Default(bound = ""))]
 pub struct Store<Object> {
     map:          HashMap<u32, Object>,
-    by_type:      HashMap<TypeId, (Box<dyn Any>, HashSet<u32>)>,
+    by_type:      HashMap<TypeId, (Box<dyn Any>, IndexSet<u32>)>,
     /// Next ID to use for server side object allocation
     #[derivative(Default(value = "CLIENT_MAX_ID + 1"))]
     next_id:      u32,
@@ -319,7 +319,7 @@ impl<Object: objects::AnyObject> Store<Object> {
                 let (state, ids) = self
                     .by_type
                     .entry(type_id)
-                    .or_insert_with(|| (object.new_singleton_state(), HashSet::new()));
+                    .or_insert_with(|| (object.new_singleton_state(), IndexSet::new()));
                 ids.insert(id);
                 let ret = v.insert(object);
                 self.event_source.send(traits::StoreEvent {
@@ -608,7 +608,7 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
                 let (state, ids) = self
                     .by_type
                     .entry(type_id)
-                    .or_insert_with(|| (Box::new(T::new_singleton_state()), HashSet::new()));
+                    .or_insert_with(|| (Box::new(T::new_singleton_state()), IndexSet::new()));
 
                 ids.insert(id);
 

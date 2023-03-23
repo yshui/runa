@@ -809,7 +809,7 @@ pub struct Surface<S: super::Shell> {
     role:                       RefCell<Option<Box<dyn Role<S>>>>,
     outputs:                    OutputSet,
     output_change_event:        single_state::Sender<OutputEvent>,
-    pub(crate) pointer_events:  RefCell<Option<broadcast::Ring<PointerEvent>>>,
+    pointer_events:             broadcast::Ring<PointerEvent>,
     keyboard_event:             broadcast::Broadcast<KeyboardEvent>,
     layout_change_event:        single_state::Sender<LayoutEvent>,
     object_id:                  u32,
@@ -845,18 +845,18 @@ impl<S: Shell> Drop for Surface<S> {
 
 impl<S: Shell> Surface<S> {
     #[must_use]
-    pub fn new(object_id: wl_types::NewId) -> Self {
+    pub fn new(object_id: wl_types::NewId, pointer_events: broadcast::Ring<PointerEvent>) -> Self {
         Self {
-            current:                    Cell::new(None),
-            pending:                    Cell::new(None),
-            role:                       Default::default(),
-            outputs:                    Default::default(),
-            output_change_event:        Default::default(),
-            layout_change_event:        Default::default(),
-            pointer_events:             Default::default(),
-            keyboard_event:             Default::default(),
-            object_id:                  object_id.0,
-            frame_callbacks:            Default::default(),
+            current: Cell::new(None),
+            pending: Cell::new(None),
+            role: Default::default(),
+            outputs: Default::default(),
+            output_change_event: Default::default(),
+            layout_change_event: Default::default(),
+            pointer_events,
+            keyboard_event: Default::default(),
+            object_id: object_id.0,
+            frame_callbacks: Default::default(),
             first_frame_callback_index: 0.into(),
         }
     }
@@ -1140,7 +1140,6 @@ impl<S: Shell> Surface<S> {
         );
 
         self.deactivate_role(shell);
-        *self.pointer_events.borrow_mut() = None;
 
         if self.current(shell).parent().is_none() {
             self.apply_pending(shell, scratch_buffer);
@@ -1240,11 +1239,7 @@ impl<S: Shell> Surface<S> {
             object_id: self.object_id,
             kind:      event,
         };
-        self.pointer_events
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .broadcast(event);
+        self.pointer_events.broadcast(event);
     }
 }
 

@@ -352,17 +352,16 @@ where
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
         async move {
-            if !ctx.objects().contains(id.0) {
-                let ClientParts {
-                    server_context,
-                    objects,
-                    event_dispatcher,
-                    ..
-                } = ctx.as_mut_parts();
-                // Add the id to the list of surfaces
+            let ClientParts {
+                server_context,
+                objects,
+                event_dispatcher,
+                ..
+            } = ctx.as_mut_parts();
+            let create_surface_object = |surface_state: &mut SurfaceState<Sh::Token>| {
                 let shell = server_context.shell();
                 let mut shell = shell.borrow_mut();
-                let surface = Rc::new(surface::Surface::new(id));
+                let surface = Rc::new(surface::Surface::new(id, surface_state.pointer_events.clone()));
                 let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
                 let current_state = shell.get_mut(current);
                 current_state.stack_index = Some(current_state.stack_mut().push_back(
@@ -377,17 +376,17 @@ where
 
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
-                let (surface, surface_state) = objects
-                    .insert_with_state(id.0, Surface { inner: surface })
-                    .unwrap();
-
-                *surface.inner.pointer_events.borrow_mut() =
-                    Some(surface_state.pointer_events.clone());
 
                 event_dispatcher.add_event_handler(rx, OutputChangedEventHandler {
                     current_outputs: Default::default(),
                     object_id:       id.0,
                 });
+                Surface { inner: surface }
+            };
+            if objects
+                .try_insert_with_state(id.0, create_surface_object)
+                .is_some()
+            {
                 Ok(())
             } else {
                 Err(error::Error::IdExists(id.0))

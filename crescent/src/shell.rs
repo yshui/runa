@@ -343,6 +343,10 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
             tracing::debug!("Added to stack: {:?}", self.stack);
 
             self.update_subtree_outputs(key, normalized_position);
+            if let Some(pointer_position) = self.pointer_position {
+                // Re-calculate what's under the pointer and send it a enter event
+                self.pointer_motion(pointer_position);
+            }
         }
     }
 
@@ -354,6 +358,10 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         if role == "xdg_toplevel" {
             self.stack.remove(data.stack_index.unwrap()).unwrap();
             tracing::debug!("Removed {key:?} from stack: {:?}", self.stack);
+            if let Some(pointer_position) = self.pointer_position {
+                // Re-calculate what's under the pointer and send it a enter event
+                self.pointer_motion(pointer_position);
+            }
         }
     }
 
@@ -386,10 +394,11 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
                 let window = self.stack.get_mut(index).unwrap();
                 window.surface_state = new;
 
-                // Safety: we did the same thing above, with unwrap().
-                unsafe { self.storage.get_mut(new).unwrap_unchecked() }
-                    .1
-                    .stack_index = Some(index);
+                self.storage.get_mut(new).unwrap().1.stack_index = Some(index);
+                if let Some(pointer_position) = self.pointer_position {
+                    // Re-calculate what's under the pointer and send it a enter event
+                    self.pointer_motion(pointer_position);
+                }
             }
         }
     }

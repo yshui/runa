@@ -753,19 +753,9 @@ pub enum PointerEventKind {
         // TODO: remove coords, and require first event on a surface to be Motion
         button: u32,
         state:  wl_pointer::enums::ButtonState,
-        coords: Point<NotNan<f32>, coords::Surface>,
     },
     // TODO: axis
     // ...
-}
-
-impl PointerEventKind {
-    pub fn coords(&self) -> Point<NotNan<f32>, coords::Surface> {
-        match self {
-            Self::Motion { coords, .. } => *coords,
-            Self::Button { coords, .. } => *coords,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

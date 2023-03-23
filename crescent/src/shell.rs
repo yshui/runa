@@ -150,7 +150,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         let Some(position) = self.pointer_position else {
             return
         };
-        let Some((surface_token, relative_position)) = self.surface_under_pointer(position) else {
+        let Some((surface_token, _)) = self.surface_under_pointer(position) else {
             return
         };
         let surface_state = self.get(surface_token);
@@ -172,7 +172,6 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             } else {
                 wl_pointer::enums::ButtonState::Released
             },
-            coords: relative_position,
         });
     }
 

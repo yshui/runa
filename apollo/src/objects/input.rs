@@ -527,7 +527,11 @@ where
                     )
                     .await?;
                 }
-                let coords = message.kind.coords();
+                self.focus = None;
+                let PointerEventKind::Motion { coords, .. } = message.kind else {
+                    tracing::error!("Bug in the compositor: first pointer event on a surface is not a motion event, ignored.");
+                    return Ok(EventHandlerAction::Keep);
+                };
                 self.focus = Some((message.object_id, coords));
                 send_to_all_pointers::<Ctx, _>(objects, connection, wl_pointer::events::Enter {
                     serial:    0,
@@ -553,20 +557,7 @@ where
                         .await?;
                         *old_coords = coords;
                     },
-                PointerEventKind::Button {
-                    button,
-                    state,
-                    coords,
-                } => {
-                    if coords != *old_coords {
-                        tracing::warn!(
-                            "PointerEventKind::Button events should not have moved the pointer \
-                             (new != old: {:?} != {:?})",
-                            coords,
-                            *old_coords
-                        );
-                        *old_coords = coords;
-                    }
+                PointerEventKind::Button { button, state } => {
                     send_to_all_pointers::<Ctx, _>(
                         objects,
                         connection,

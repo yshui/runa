@@ -104,14 +104,6 @@ pub struct Keymap {
 #[derive(Clone, Debug)]
 pub enum SeatEvent {
     KeymapChanged(Keymap),
-    // TODO:
-    // /// Sent when no surface has the keyboard focus.
-    // /// This is a seat event because first of all we don't want to require the compositor to
-    // /// keep track of what has the focus (they might as well do, but it's not required),
-    // /// secondly, the previously focused surface might have already be destroyed.
-    // KeyboardUnfocused,
-    // /// Sent when no surface has the pointer focus.
-    // PointerUnfocused,
 }
 
 pub trait Seat: EventSource<SeatEvent> {

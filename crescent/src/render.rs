@@ -512,7 +512,7 @@ impl Renderer {
                                 }
                                 WindowEvent::MouseInput { state, button, .. } => {
                                     let pressed = matches!(state, winit::event::ElementState::Pressed);
-                                    self.shell.borrow().pointer_button(button, pressed);
+                                    self.shell.borrow_mut().pointer_button(button, pressed);
                                 }
                                 _ => {
                                     tracing::trace!("Unhandled window event: {:?}", event);

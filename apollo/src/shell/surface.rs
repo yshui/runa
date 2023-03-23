@@ -754,6 +754,7 @@ pub enum PointerEventKind {
         button: u32,
         state:  wl_pointer::enums::ButtonState,
     },
+    Leave,
     // TODO: axis
     // ...
 }

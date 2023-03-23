@@ -529,7 +529,8 @@ where
                 }
                 self.focus = None;
                 let PointerEventKind::Motion { coords, .. } = message.kind else {
-                    tracing::error!("Bug in the compositor: first pointer event on a surface is not a motion event, ignored.");
+                    tracing::error!("Bug in the compositor: first pointer event on a \
+                                     surface is not a motion event, ignored. (event is {message:?})");
                     return Ok(EventHandlerAction::Keep);
                 };
                 self.focus = Some((message.object_id, coords));
@@ -569,6 +570,18 @@ where
                         },
                     )
                     .await?;
+                },
+                PointerEventKind::Leave => {
+                    send_to_all_pointers::<Ctx, _>(
+                        objects,
+                        connection,
+                        wl_pointer::events::Leave {
+                            serial:  0,
+                            surface: wl_types::Object(message.object_id),
+                        },
+                    )
+                    .await?;
+                    self.focus = None;
                 },
             }
             Ok(EventHandlerAction::Keep)

@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 
 use apollo::{
     shell::{
@@ -31,6 +34,8 @@ pub struct DefaultShell<S: buffers::BufferLike> {
     /// Window stack, from bottom to top
     stack:            VecList<Window>,
     pointer_position: Option<Point<NotNan<f32>, coords::Screen>>,
+    /// Who did we send the last pointer event to?
+    pointer_focus:    Option<Weak<surface::Surface<Self>>>,
     shell_event:      Broadcast<ShellEvent>,
     position_offset:  Point<i32, coords::Screen>,
     screen:           apollo::shell::output::Screen,
@@ -43,6 +48,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             stack:            Default::default(),
             shell_event:      Default::default(),
             position_offset:  Point::new(1000, 1000),
+            pointer_focus:    None,
             pointer_position: None,
             screen:           apollo::shell::output::Screen::new_single_output(output),
         }
@@ -88,13 +94,18 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
     /// Find the surface under the pointer, returns the surface token and
     /// pointer's position in that surface's coordinate system.
     pub fn surface_under_pointer(
-        &self,
+        &mut self,
         position: Point<NotNan<f32>, coords::Screen>,
-    ) -> Option<(DefaultKey, Point<NotNan<f32>, coords::Surface>)> {
+    ) -> Option<(
+        Rc<surface::Surface<Self>>,
+        Point<NotNan<f32>, coords::Surface>,
+    )> {
         // TODO: handle per output scaling
         let scale = self.scale_f32().map(|f| NotNan::try_from(f).unwrap());
         tracing::trace!(?position, "pointer motion");
-        for top_level in self.stack.iter().rev() {
+        let old_pointer_focus = self.pointer_focus.take();
+        let mut found = None;
+        'find: for top_level in self.stack.iter().rev() {
             let position = position.map(|p| {
                 let window_position = top_level.position.to::<NotNan<f32>>();
                 Point::new(p.x - window_position.x, window_position.y - p.y) / scale
@@ -125,36 +136,42 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                     .to()
                     .map(|dim| dim / surface_state.buffer_scale_f32());
                 if dimension.contains(relative_position) {
-                    return Some((surface_token, relative_position))
+                    found = Some((self.get(surface_token).surface().clone(), relative_position));
+                    break 'find
                 }
             }
         }
         tracing::trace!("No surface under pointer");
-        None
+        if let Some((surface, relative_position)) = found {
+            self.pointer_focus = Some(surface.clone());
+            Some((surface.upgrade().unwrap(), relative_position))
+        } else {
+            if let Some(weak_surface) = old_pointer_focus {
+                if let Some(surface) = weak_surface.upgrade() {
+                    // Nothing under the pointer, send a leave event to the last surface
+                    // we sent a pointer event to.
+                    surface.pointer_event(PointerEventKind::Leave);
+                }
+            }
+            None
+        }
     }
 
     pub fn pointer_motion(&mut self, position: Point<NotNan<f32>, coords::Screen>) {
         self.pointer_position = Some(position);
-        let Some((surface_token, relative_position)) = self.surface_under_pointer(position) else {
+        let Some((surface, relative_position)) = self.surface_under_pointer(position) else {
             return
         };
-        let surface_state = self.get(surface_token);
-        let surface = surface_state.surface().upgrade().unwrap();
         tracing::trace!("Pointer event on surface {}", surface.object_id());
         surface.pointer_event(PointerEventKind::Motion {
             coords: relative_position,
         });
     }
 
-    pub fn pointer_button(&self, button: MouseButton, pressed: bool) {
-        let Some(position) = self.pointer_position else {
+    pub fn pointer_button(&mut self, button: MouseButton, pressed: bool) {
+        let Some(surface) = self.pointer_focus.as_ref().and_then(|s| s.upgrade()) else {
             return
         };
-        let Some((surface_token, _)) = self.surface_under_pointer(position) else {
-            return
-        };
-        let surface_state = self.get(surface_token);
-        let surface = surface_state.surface().upgrade().unwrap();
         tracing::debug!(
             "Pointer event on surface {} {button:?} {pressed}",
             surface.object_id()

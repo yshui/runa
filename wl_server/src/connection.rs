@@ -69,6 +69,11 @@ pub mod traits {
             O: 'a,
             T: objects::MonoObject + 'a,
             Self: 'a;
+        type IdsByType<'a, T>: Iterator<Item = u32> + 'a
+        where
+            O: 'a,
+            T: 'static,
+            Self: 'a;
         /// Insert object into the store with the given ID. Returns a unique
         /// reference to the inserted object if successful, Err(T) if
         /// the ID is already in use.
@@ -144,6 +149,7 @@ pub mod traits {
         /// Return an iterator for all objects in the store with a specific
         /// type.
         fn by_type<T: objects::MonoObject + 'static>(&self) -> Self::ByType<'_, T>;
+        fn ids_by_type<T: 'static>(&self) -> Self::IdsByType<'_, T>;
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -446,6 +452,7 @@ impl<O: objects::AnyObject> events::EventSource<traits::StoreEvent> for Store<O>
 
 impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
     type ByType<'a, T> = impl Iterator<Item = (u32, &'a T)> + 'a where O: 'a, T: objects::MonoObject + 'a;
+    type IdsByType<'a, T> = impl Iterator<Item = u32> + 'a where O: 'a, T: 'static;
 
     #[inline]
     fn insert<T: Into<O> + 'static>(&mut self, object_id: u32, object: T) -> Result<&mut T, T> {
@@ -636,6 +643,13 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
                 ids.iter()
                     .map(move |id| (*id, self.map.get(id).unwrap().cast().unwrap()))
             })
+    }
+
+    fn ids_by_type<T: 'static>(&self) -> Self::IdsByType<'_, T> {
+        self.by_type
+            .get(&std::any::TypeId::of::<T>())
+            .into_iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
     }
 }
 

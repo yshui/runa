@@ -29,4 +29,4 @@ tinyvecdeq = { version = "0.1", features = ["std"] }
 enum_dispatch = "0.3.11"
 thiserror.workspace = true
 ordered-float.workspace = true
-tinyvec = { version = "1.6.0", features = ["alloc"] }
+tinyvec = { workspace = true, features = ["alloc"] }

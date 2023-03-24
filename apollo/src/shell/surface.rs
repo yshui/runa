@@ -780,10 +780,16 @@ pub struct KeyboardState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyboardActivity {
+    Key(KeyboardState),
+    Leave,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardEvent {
     pub time:      u32,
     pub object_id: u32,
-    pub state:     KeyboardState,
+    pub activity:  KeyboardActivity,
 }
 
 #[derive(Clone, Debug)]
@@ -1250,11 +1256,11 @@ impl<S: Shell> Surface<S> {
         self.pointer_events.broadcast(event);
     }
 
-    pub fn keyboard_event(&self, event: KeyboardState) {
+    pub fn keyboard_event(&self, event: KeyboardActivity) {
         let event = KeyboardEvent {
             time:      crate::time::elapsed().as_millis() as u32,
             object_id: self.object_id,
-            state:     event,
+            activity:  event,
         };
         self.keyboard_events.broadcast(event);
     }

@@ -19,7 +19,7 @@ use wl_types::NewId;
 use crate::{
     objects::compositor,
     shell::{
-        surface::{KeyboardEvent, PointerEvent},
+        surface::{KeyboardActivity, KeyboardEvent, PointerEvent},
         HasShell, Shell,
     },
     utils::{
@@ -218,7 +218,7 @@ where
                 .map_err(|_| Error::IdExists(id.0))?;
             if let Some(event_source) = state.event_source.take() {
                 // This is our first pointer object, setup listeners
-                tracing::debug!("First pointer object, add event handler");
+                tracing::debug!("First keyboard object, add event handler");
                 state.handle.replace(keyboard_rx);
                 event_dispatcher
                     .add_event_handler(event_source, KeyboardEventHandler { focus: None });
@@ -317,96 +317,123 @@ where
                 // No keyboard objects left, stop listening for events
                 return Ok(EventHandlerAction::Stop)
             }
-            if self
-                .focus
-                .as_ref()
-                .map(|(id, _)| *id != message.object_id)
-                .unwrap_or(true)
-            {
-                // Focus changed, send leave event to old focus
-                if let Some((id, _)) = self.focus.take() {
-                    send_to_all_keyboards::<Ctx, _>(
-                        objects,
-                        connection,
-                        wl_keyboard::events::Leave {
-                            serial:  0,
-                            surface: wl_types::Object(id),
-                        },
-                    )
-                    .await?;
-                }
-                // Send enter event to new focus
-                send_to_all_keyboards::<Ctx, _>(objects, connection, wl_keyboard::events::Enter {
-                    serial:  0,
-                    surface: wl_types::Object(message.object_id),
-                    keys:    &message.state.keys,
-                })
-                .await?;
-                send_to_all_keyboards::<Ctx, _>(
-                    objects,
-                    connection,
-                    wl_keyboard::events::Modifiers {
-                        serial:         0,
-                        mods_depressed: message.state.depressed_modifiers,
-                        mods_latched:   message.state.latched_modifiers,
-                        mods_locked:    message.state.locked_modifiers,
-                        group:          message.state.effective_layout,
+            match &mut message.activity {
+                KeyboardActivity::Leave =>
+                    if let Some((id, _)) = self.focus.take() {
+                        if id != message.object_id {
+                            tracing::error!(
+                                "Bug in the compositor: leaving a surface that's not been \
+                                 previously focused"
+                            );
+                        } else {
+                            send_to_all_keyboards::<Ctx, _>(
+                                objects,
+                                connection,
+                                wl_keyboard::events::Leave {
+                                    serial:  0,
+                                    surface: wl_types::Object(message.object_id),
+                                },
+                            )
+                            .await?;
+                        }
                     },
-                )
-                .await?;
-                self.focus = Some((message.object_id, std::mem::take(&mut message.state)));
-            } else {
-                let time = message.time;
-                let state = self.focus.as_mut().map(|(_, state)| state).unwrap();
-                for new_key in &message.state.keys {
-                    if !state.keys.contains(new_key) {
+                KeyboardActivity::Key(state) => {
+                    if self
+                        .focus
+                        .as_ref()
+                        .map(|(id, _)| *id != message.object_id)
+                        .unwrap_or(true)
+                    {
+                        // Focus changed, send leave event to old focus
+                        if let Some((id, _)) = self.focus.take() {
+                            send_to_all_keyboards::<Ctx, _>(
+                                objects,
+                                connection,
+                                wl_keyboard::events::Leave {
+                                    serial:  0,
+                                    surface: wl_types::Object(id),
+                                },
+                            )
+                            .await?;
+                        }
+                        // Send enter event to new focus
                         send_to_all_keyboards::<Ctx, _>(
                             objects,
                             connection,
-                            wl_keyboard::events::Key {
-                                serial: 0,
-                                time,
-                                key: *new_key as u32,
-                                state: wl_keyboard::enums::KeyState::Pressed,
+                            wl_keyboard::events::Enter {
+                                serial:  0,
+                                surface: wl_types::Object(message.object_id),
+                                keys:    &state.keys,
                             },
                         )
                         .await?;
-                    }
-                }
-                for old_key in &state.keys {
-                    if !message.state.keys.contains(old_key) {
                         send_to_all_keyboards::<Ctx, _>(
                             objects,
                             connection,
-                            wl_keyboard::events::Key {
-                                serial: 0,
-                                time,
-                                key: *old_key as u32,
-                                state: wl_keyboard::enums::KeyState::Released,
+                            wl_keyboard::events::Modifiers {
+                                serial:         0,
+                                mods_depressed: state.depressed_modifiers,
+                                mods_latched:   state.latched_modifiers,
+                                mods_locked:    state.locked_modifiers,
+                                group:          state.effective_layout,
                             },
                         )
                         .await?;
+                        self.focus = Some((message.object_id, std::mem::take(state)));
+                    } else {
+                        let time = message.time;
+                        let old_state = self.focus.as_mut().map(|(_, state)| state).unwrap();
+                        for new_key in &state.keys {
+                            if !old_state.keys.contains(new_key) {
+                                send_to_all_keyboards::<Ctx, _>(
+                                    objects,
+                                    connection,
+                                    wl_keyboard::events::Key {
+                                        serial: 0,
+                                        time,
+                                        key: *new_key as u32,
+                                        state: wl_keyboard::enums::KeyState::Pressed,
+                                    },
+                                )
+                                .await?;
+                            }
+                        }
+                        for old_key in &old_state.keys {
+                            if !state.keys.contains(old_key) {
+                                send_to_all_keyboards::<Ctx, _>(
+                                    objects,
+                                    connection,
+                                    wl_keyboard::events::Key {
+                                        serial: 0,
+                                        time,
+                                        key: *old_key as u32,
+                                        state: wl_keyboard::enums::KeyState::Released,
+                                    },
+                                )
+                                .await?;
+                            }
+                        }
+                        if state.effective_layout != old_state.effective_layout ||
+                            state.locked_modifiers != old_state.locked_modifiers ||
+                            state.latched_modifiers != old_state.latched_modifiers ||
+                            state.depressed_modifiers != old_state.depressed_modifiers
+                        {
+                            send_to_all_keyboards::<Ctx, _>(
+                                objects,
+                                connection,
+                                wl_keyboard::events::Modifiers {
+                                    serial:         0,
+                                    mods_depressed: state.depressed_modifiers,
+                                    mods_latched:   state.latched_modifiers,
+                                    mods_locked:    state.locked_modifiers,
+                                    group:          state.effective_layout,
+                                },
+                            )
+                            .await?;
+                        }
+                        *old_state = std::mem::take(state);
                     }
-                }
-                if state.effective_layout != message.state.effective_layout ||
-                    state.locked_modifiers != message.state.locked_modifiers ||
-                    state.latched_modifiers != message.state.latched_modifiers ||
-                    state.depressed_modifiers != message.state.depressed_modifiers
-                {
-                    send_to_all_keyboards::<Ctx, _>(
-                        objects,
-                        connection,
-                        wl_keyboard::events::Modifiers {
-                            serial:         0,
-                            mods_depressed: message.state.depressed_modifiers,
-                            mods_latched:   message.state.latched_modifiers,
-                            mods_locked:    message.state.locked_modifiers,
-                            group:          message.state.effective_layout,
-                        },
-                    )
-                    .await?;
-                }
-                *state = std::mem::take(&mut message.state);
+                },
             }
             Ok(EventHandlerAction::Keep)
         }

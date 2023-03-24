@@ -6,12 +6,13 @@ use std::{
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{
+use runa_io::traits::WriteMessage;
+use runa_wayland_types::Object as WaylandObject;
+use runa_wayland_protocols::wayland::{
     wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v9 as wl_seat,
     wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor, wl_surface::v6 as wl_surface,
 };
-use wl_server::{
+use runa_core::{
     connection::{
         event_handler::Abortable,
         traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
@@ -151,7 +152,7 @@ where
         }
         async move {
             for callback in self.callbacks_to_fire.drain(..) {
-                wl_server::objects::Callback::fire(callback, time, objects, &mut *connection)
+                runa_core::objects::Callback::fire(callback, time, objects, &mut *connection)
                     .await?;
             }
 
@@ -355,7 +356,7 @@ where
                         surface.inner.outputs().contains(&output).then_some((
                             id,
                             wl_surface::events::Enter {
-                                output: wl_types::Object(object_id),
+                                output: WaylandObject(object_id),
                             },
                         ))
                     })

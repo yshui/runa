@@ -14,13 +14,13 @@ use apollo::{
 };
 use futures_util::{select, TryStreamExt};
 use smol::{block_on, LocalExecutor};
-use wl_io::{
+use runa_io::{
     buf::BufReaderWithFd,
     traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
     Connection,
 };
-use wl_protocol::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
-use wl_server::{
+use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
+use runa_core::{
     connection::{
         traits::{Client, ClientParts, Store as _},
         EventDispatcher, Store,
@@ -37,7 +37,7 @@ use shell::DefaultShell;
 
 #[derive(Debug)]
 pub struct CrescentState {
-    globals:     RefCell<wl_server::server::GlobalStore<AnyGlobal>>,
+    globals:     RefCell<runa_core::server::GlobalStore<AnyGlobal>>,
     shell:       Rc<RefCell<<Crescent as HasShell>::Shell>>,
     executor:    LocalExecutor<'static>,
     seat_events: Broadcast<SeatEvent>,
@@ -66,8 +66,8 @@ impl apollo::shell::Seat for Crescent {
     }
 }
 
-impl wl_server::events::EventSource<SeatEvent> for Crescent {
-    type Source = <Broadcast<SeatEvent> as wl_server::events::EventSource<SeatEvent>>::Source;
+impl runa_core::events::EventSource<SeatEvent> for Crescent {
+    type Source = <Broadcast<SeatEvent> as runa_core::events::EventSource<SeatEvent>>::Source;
 
     fn subscribe(&self) -> Self::Source {
         self.0.seat_events.subscribe()
@@ -77,12 +77,12 @@ impl wl_server::events::EventSource<SeatEvent> for Crescent {
 #[derive(Debug, Clone)]
 pub struct Crescent(Rc<CrescentState>);
 
-wl_server::globals! {
+runa_core::globals! {
     type ClientContext = CrescentClient;
     pub enum AnyGlobal {
         // Display must be the first one
-        Display(wl_server::globals::Display),
-        Registry(wl_server::globals::Registry),
+        Display(runa_core::globals::Display),
+        Registry(runa_core::globals::Registry),
         Compositor(apollo::globals::Compositor),
         Output(apollo::globals::Output),
         Subcompositor(apollo::globals::Subcompositor),
@@ -97,9 +97,9 @@ type Shell = <Crescent as HasShell>::Shell;
 #[wayland(context = "CrescentClient")]
 pub enum AnyObject {
     // === core objects ===
-    Display(wl_server::objects::Display),
-    Registry(wl_server::objects::Registry),
-    Callback(wl_server::objects::Callback),
+    Display(runa_core::objects::Display),
+    Registry(runa_core::objects::Registry),
+    Callback(runa_core::objects::Callback),
 
     // === output ===
     Output(apollo::objects::Output),
@@ -128,12 +128,12 @@ pub enum AnyObject {
     Buffer(apollo::objects::Buffer<render::Buffer>),
 }
 
-impl wl_server::server::Server for Crescent {
+impl runa_core::server::Server for Crescent {
     type ClientContext = CrescentClient;
     type Conn = UnixStream;
     type Error = ();
     type Global = AnyGlobal;
-    type GlobalStore = wl_server::server::GlobalStore<AnyGlobal>;
+    type GlobalStore = runa_core::server::GlobalStore<AnyGlobal>;
 
     fn globals(&self) -> &RefCell<Self::GlobalStore> {
         &self.0.globals
@@ -145,7 +145,7 @@ impl wl_server::server::Server for Crescent {
         self.0
             .executor
             .spawn(async move {
-                let (rx, tx) = ::wl_io::split_unixstream(conn)?;
+                let (rx, tx) = ::runa_io::split_unixstream(conn)?;
                 let mut client_ctx = CrescentClient {
                     store: Default::default(),
                     state,
@@ -155,7 +155,7 @@ impl wl_server::server::Server for Crescent {
                 // Insert and bind the display object
                 client_ctx
                     .objects_mut()
-                    .insert(DISPLAY_ID, wl_server::objects::Display::default())
+                    .insert(DISPLAY_ID, runa_core::objects::Display::default())
                     .unwrap();
 
                 let display_global = client_ctx
@@ -227,7 +227,7 @@ impl wl_server::server::Server for Crescent {
                 // been broken at this point.
                 client_ctx.tx.flush().await.ok();
                 client_ctx.disconnect().await;
-                Ok::<(), wl_server::error::Error>(())
+                Ok::<(), runa_core::error::Error>(())
             })
             .detach();
         Ok(())
@@ -246,8 +246,8 @@ impl HasShell for Crescent {
 }
 
 impl RendererCapability for Crescent {
-    fn formats(&self) -> Vec<wl_server::renderer_capability::Format> {
-        use wl_server::renderer_capability::Format;
+    fn formats(&self) -> Vec<runa_core::renderer_capability::Format> {
+        use runa_core::renderer_capability::Format;
         vec![Format::Argb8888]
     }
 }
@@ -256,7 +256,7 @@ impl RendererCapability for Crescent {
 pub struct CrescentClient {
     store:            Store<AnyObject>,
     state:            Crescent,
-    tx:               Connection<wl_io::WriteWithFd>,
+    tx:               Connection<runa_io::WriteWithFd>,
     event_dispatcher: EventDispatcher<Self>,
 }
 
@@ -269,13 +269,13 @@ impl CrescentClient {
 }
 
 impl Client for CrescentClient {
-    type Connection = Connection<wl_io::WriteWithFd>;
+    type Connection = Connection<runa_io::WriteWithFd>;
     type EventDispatcher = EventDispatcher<Self>;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
 
-    wl_server::impl_dispatch!();
+    runa_core::impl_dispatch!();
 
     fn server_context(&self) -> &Self::ServerContext {
         &self.state
@@ -457,7 +457,7 @@ fn main() -> Result<()> {
         renderer.render_loop(event_rx).await;
     });
 
-    let (listener, _guard) = wl_server::wayland_listener_auto()?;
+    let (listener, _guard) = runa_core::wayland_listener_auto()?;
     let server2 = server.clone();
     let cm_task = server.0.executor.spawn(async move {
         let listener = smol::Async::new(listener)?;
@@ -466,7 +466,7 @@ fn main() -> Result<()> {
                 .incoming()
                 .and_then(|conn| future::ready(conn.into_inner())),
         );
-        let mut cm = wl_server::ConnectionManager::new(incoming, server2);
+        let mut cm = runa_core::ConnectionManager::new(incoming, server2);
         cm.run().await
     });
     let () = smol::block_on(server.0.executor.run(cm_task)).unwrap();

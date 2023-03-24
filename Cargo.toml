@@ -2,17 +2,20 @@
 resolver = "2"
 members = [
   "apollo",
-  "wl_server",
-  "wl_spec",
-  "wl_scanner",
-  "wl_scanner_support",
-  "wl_types",
-  "wl_macros",
-  "wl_io",
-  "wl_io_traits",
-  "wl_protocol",
+  "runa-wayland-protocols",
+  "runa-io",
+  "runa-io-traits",
+  "runa-macros",
+  "runa-wayland-types",
+  "runa-core",
   "crescent",
   "input-event-codes",
+
+  # tools that deals with wayland protocol specs
+  "wayland-tools/parser",
+  "wayland-tools/codegen",
+  "wayland-tools/scanner",
+  "wayland-tools/macros"
 ]
 exclude = [
   "testbench"
@@ -23,6 +26,7 @@ tracing = { version = "0.1", features = [ "release_max_level_off" ] }
 hashbrown = "0.13"
 ahash = "0.8"
 anyhow = "1.0.70"
+bitflags = "2.0.2"
 futures-lite = "1.12.0"
 futures-util = "0.3.24"
 thiserror = "1.0.35"
@@ -33,3 +37,9 @@ pin-project-lite = "0.2"
 ordered-float = "3.5.0"
 indexmap = "1.9.2"
 tinyvec = "1.6.0"
+rustix = "0.37.3"
+syn = "1.0.109"
+proc-macro2 = "1.0.53"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"

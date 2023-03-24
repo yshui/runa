@@ -1,0 +1,10 @@
+[package]
+name = "runa-wayland-spec-parser"
+description = "Parsing and representing wayland protocol files"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[dependencies]
+quick-xml = "0.28.1"
+thiserror.workspace = true

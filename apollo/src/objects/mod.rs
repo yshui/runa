@@ -1,9 +1,9 @@
 use std::future::Future;
 
 use hashbrown::{HashMap, HashSet};
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
-use wl_server::{
+use runa_io::traits::WriteMessage;
+use runa_wayland_protocols::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
+use runa_core::{
     connection::{
         event_handler::{Abortable, AutoAbortHandle},
         traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, Store},
@@ -121,7 +121,7 @@ where
 
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
         async move {
-            use wl_server::objects::AnyObject;
+            use runa_core::objects::AnyObject;
             let objects = ctx.objects_mut();
             let object = objects.remove(object_id).unwrap();
             let object = object.cast::<Self>().unwrap();

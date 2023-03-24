@@ -1,17 +1,18 @@
 use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
-use wl_io::traits::WriteMessage;
-use wl_protocol::stable::xdg_shell::{
+use runa_io::traits::WriteMessage;
+use runa_wayland_types::{NewId, Object as WaylandObject, Str};
+use runa_wayland_protocols::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
     xdg_wm_base::v5 as xdg_wm_base,
 };
-use wl_server::{
+use runa_core::{
     connection::{
         event_handler::{Abortable, AutoAbortHandle},
         traits::{Client, ClientParts, EventDispatcher, EventHandlerAction, Store},
     },
-    error::Error,
+    error::{Error, ProtocolError},
     events::EventSource,
     objects::wayland_object,
 };
@@ -47,8 +48,8 @@ where
     fn get_xdg_surface(
         ctx: &mut Ctx,
         _object_id: u32,
-        id: wl_types::NewId,
-        surface: wl_types::Object,
+        id: NewId,
+        surface: WaylandObject,
     ) -> Self::GetXdgSurfaceFut<'_> {
         use crate::objects::compositor;
         async move {
@@ -80,7 +81,7 @@ where
     fn create_positioner(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
+        id: NewId,
     ) -> Self::CreatePositionerFut<'_> {
         async move { unimplemented!() }
     }
@@ -89,7 +90,7 @@ where
 struct LayoutEventHandler {
     surface_object_id: u32,
 }
-use wl_server::connection::traits::EventHandler;
+use runa_core::connection::traits::EventHandler;
 impl<Ctx: Client> EventHandler<Ctx> for LayoutEventHandler
 where
     Ctx::ServerContext: HasShell,
@@ -220,7 +221,7 @@ impl std::fmt::Display for SurfaceError {
 
 impl std::error::Error for SurfaceError {}
 
-impl wl_protocol::ProtocolError for SurfaceError {
+impl ProtocolError for SurfaceError {
     fn fatal(&self) -> bool {
         true
     }
@@ -237,7 +238,7 @@ where
     Ctx::Object: From<TopLevel<S>>,
     <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
 {
-    type Error = wl_server::error::Error;
+    type Error = runa_core::error::Error;
 
     type AckConfigureFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -260,9 +261,9 @@ where
     fn get_popup(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
-        parent: wl_types::Object,
-        positioner: wl_types::Object,
+        id: NewId,
+        parent: WaylandObject,
+        positioner: WaylandObject,
     ) -> Self::GetPopupFut<'_> {
         async move { unimplemented!() }
     }
@@ -270,7 +271,7 @@ where
     fn get_toplevel(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
+        id: NewId,
     ) -> Self::GetToplevelFut<'_> {
         async move {
             let ClientParts {
@@ -316,7 +317,7 @@ where
                 role.pending_serial.pop_front();
             }
             role.last_ack = Some(NonZeroU32::new(serial).ok_or(
-                wl_server::error::Error::UnknownFatalError("ack_configure: serial is 0"),
+                runa_core::error::Error::UnknownFatalError("ack_configure: serial is 0"),
             )?);
             Ok(())
         }
@@ -355,7 +356,7 @@ where
     Ctx::ServerContext: HasShell<Shell = S>,
     S: crate::shell::xdg::XdgShell + Shell,
 {
-    type Error = wl_server::error::Error;
+    type Error = runa_core::error::Error;
 
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type MoveFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -375,7 +376,7 @@ where
     fn move_(
         ctx: &mut Ctx,
         object_id: u32,
-        seat: wl_types::Object,
+        seat: WaylandObject,
         serial: u32,
     ) -> Self::MoveFut<'_> {
         async move { unimplemented!() }
@@ -384,7 +385,7 @@ where
     fn resize(
         ctx: &mut Ctx,
         object_id: u32,
-        seat: wl_types::Object,
+        seat: WaylandObject,
         serial: u32,
         edges: xdg_toplevel::enums::ResizeEdge,
     ) -> Self::ResizeFut<'_> {
@@ -392,7 +393,7 @@ where
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        use wl_server::objects::AnyObject;
+        use runa_core::objects::AnyObject;
         let object = ctx.objects_mut().remove(object_id).unwrap();
         let object = object.cast::<Self>().unwrap();
         object
@@ -404,7 +405,7 @@ where
     fn set_title<'a>(
         ctx: &'a mut Ctx,
         object_id: u32,
-        title: wl_types::Str<'a>,
+        title: Str<'a>,
     ) -> Self::SetTitleFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
@@ -417,7 +418,7 @@ where
     fn set_parent(
         ctx: &mut Ctx,
         object_id: u32,
-        parent: wl_types::Object,
+        parent: WaylandObject,
     ) -> Self::SetParentFut<'_> {
         async move { unimplemented!() }
     }
@@ -425,7 +426,7 @@ where
     fn set_app_id<'a>(
         ctx: &'a mut Ctx,
         object_id: u32,
-        app_id: wl_types::Str<'a>,
+        app_id: Str<'a>,
     ) -> Self::SetAppIdFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
@@ -474,7 +475,7 @@ where
     fn set_fullscreen(
         ctx: &mut Ctx,
         object_id: u32,
-        output: wl_types::Object,
+        output: WaylandObject,
     ) -> Self::SetFullscreenFut<'_> {
         async move { unimplemented!() }
     }
@@ -486,7 +487,7 @@ where
     fn show_window_menu(
         ctx: &mut Ctx,
         object_id: u32,
-        seat: wl_types::Object,
+        seat: WaylandObject,
         serial: u32,
         x: i32,
         y: i32,

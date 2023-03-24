@@ -17,19 +17,20 @@ use std::{future::Future, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
 use hashbrown::HashSet;
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{
-    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output,
-    wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
-    wl_surface::v6 as wl_surface,
-};
-use wl_server::{
+use runa_core::{
     connection::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
-    error,
+    error::{self, ProtocolError},
     events::{broadcast::Ring, EventSource},
     objects::wayland_object,
+};
+use runa_io::traits::WriteMessage;
+use runa_wayland_types as wayland_types;
+use runa_wayland_protocols::wayland::{
+    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output,
+    wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
+    wl_surface::v6 as wl_surface,
 };
 
 use crate::{
@@ -139,7 +140,7 @@ impl std::fmt::Display for SurfaceError {
 
 impl std::error::Error for SurfaceError {}
 
-impl wl_protocol::ProtocolError for SurfaceError {
+impl ProtocolError for SurfaceError {
     fn wayland_error(&self) -> Option<(u32, u32)> {
         Some((self.object_id, self.kind as u32))
     }
@@ -153,7 +154,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
 impl<Ctx: Client, S: shell::Shell> wl_surface::RequestDispatch<Ctx> for Surface<S>
 where
     Ctx::ServerContext: HasShell<Shell = S> + HasBuffer<Buffer = S::Buffer>,
-    Ctx::Object: From<wl_server::objects::Callback>,
+    Ctx::Object: From<runa_core::objects::Callback>,
 {
     type Error = error::Error;
 
@@ -169,7 +170,7 @@ where
     type SetInputRegionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
     type SetOpaqueRegionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
 
-    fn frame(ctx: &mut Ctx, object_id: u32, callback: wl_types::NewId) -> Self::FrameFut<'_> {
+    fn frame(ctx: &mut Ctx, object_id: u32, callback: wayland_types::NewId) -> Self::FrameFut<'_> {
         async move {
             let ClientParts {
                 objects,
@@ -182,7 +183,7 @@ where
                     let mut shell = server_context.shell().borrow_mut();
                     let state = surface.pending_mut(&mut shell);
                     state.add_frame_callback(callback.0);
-                    wl_server::objects::Callback::default().into()
+                    runa_core::objects::Callback::default().into()
                 })
                 .is_some();
             if !inserted {
@@ -196,7 +197,7 @@ where
     fn attach(
         ctx: &mut Ctx,
         object_id: u32,
-        buffer: wl_types::Object,
+        buffer: wayland_types::Object,
         x: i32,
         y: i32,
     ) -> Self::AttachFut<'_> {
@@ -265,7 +266,7 @@ where
             let mut shell = server_context.shell().borrow_mut();
             this.inner
                 .commit(&mut shell, &mut state.scratch_buffer)
-                .map_err(wl_server::error::Error::UnknownFatalError)?;
+                .map_err(runa_core::error::Error::UnknownFatalError)?;
 
             Ok(())
         }
@@ -285,7 +286,7 @@ where
     fn set_input_region(
         ctx: &mut Ctx,
         object_id: u32,
-        region: wl_types::Object,
+        region: wayland_types::Object,
     ) -> Self::SetInputRegionFut<'_> {
         async move { unimplemented!() }
     }
@@ -293,9 +294,12 @@ where
     fn set_opaque_region(
         ctx: &mut Ctx,
         object_id: u32,
-        region: wl_types::Object,
+        region: wayland_types::Object,
     ) -> Self::SetOpaqueRegionFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!("set_opaque_region not implemented");
+            Ok(())
+        }
     }
 
     fn set_buffer_transform(
@@ -367,7 +371,7 @@ where
     fn create_surface(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
+        id: wayland_types::NewId,
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
         async move {
@@ -420,7 +424,7 @@ where
     fn create_region(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
+        id: wayland_types::NewId,
     ) -> Self::CreateRegionFut<'_> {
         async { unimplemented!() }
     }
@@ -492,7 +496,7 @@ where
                         connection
                             .as_mut()
                             .send(*object_id, wl_surface::events::Leave {
-                                output: wl_types::Object(*id),
+                                output: wayland_types::Object(*id),
                             })
                             .await?;
                     }
@@ -504,7 +508,7 @@ where
                         connection
                             .as_mut()
                             .send(*object_id, wl_surface::events::Enter {
-                                output: wl_types::Object(*id),
+                                output: wayland_types::Object(*id),
                             })
                             .await?;
                     }
@@ -551,7 +555,7 @@ where
     fn place_above(
         ctx: &mut Ctx,
         object_id: u32,
-        sibling: wl_types::Object,
+        sibling: wayland_types::Object,
     ) -> Self::PlaceAboveFut<'_> {
         async move { unimplemented!() }
     }
@@ -559,7 +563,7 @@ where
     fn place_below(
         ctx: &mut Ctx,
         object_id: u32,
-        sibling: wl_types::Object,
+        sibling: wayland_types::Object,
     ) -> Self::PlaceBelowFut<'_> {
         async move { unimplemented!() }
     }
@@ -603,7 +607,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl wl_protocol::ProtocolError for Error {
+impl ProtocolError for Error {
     fn wayland_error(&self) -> Option<(u32, u32)> {
         match self {
             Error::BadSurface {
@@ -627,7 +631,7 @@ where
     Ctx::ServerContext: HasShell<Shell = S>,
     Ctx::Object: From<Subsurface<S>>,
 {
-    type Error = wl_server::error::Error;
+    type Error = runa_core::error::Error;
 
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type GetSubsurfaceFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -639,9 +643,9 @@ where
     fn get_subsurface(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
-        surface: wl_types::Object,
-        parent: wl_types::Object,
+        id: wayland_types::NewId,
+        surface: wayland_types::Object,
+        parent: wayland_types::Object,
     ) -> Self::GetSubsurfaceFut<'_> {
         tracing::debug!(
             "get_subsurface, id: {:?}, surface: {:?}, parent: {:?}",

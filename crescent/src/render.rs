@@ -12,7 +12,7 @@ use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt};
 use winit::{dpi::PhysicalSize, event::Event};
-use wl_protocol::wayland::wl_shm::v1 as wl_shm;
+use runa_wayland_protocols::wayland::wl_shm::v1 as wl_shm;
 
 use crate::shell::DefaultShell;
 

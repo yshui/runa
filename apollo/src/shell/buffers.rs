@@ -1,7 +1,7 @@
 use std::{cell::Cell, fmt::Debug, rc::Rc};
 
 use derivative::Derivative;
-use wl_server::events::{single_state, EventSource};
+use runa_core::events::{single_state, EventSource};
 
 use crate::utils::geometry::{coords, Extent};
 

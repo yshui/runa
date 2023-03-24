@@ -1,7 +1,7 @@
 use std::future::Future;
 
-use wl_protocol::stable::xdg_shell::xdg_wm_base::v5 as xdg_wm_base;
-use wl_server::{
+use runa_wayland_protocols::stable::xdg_shell::xdg_wm_base::v5 as xdg_wm_base;
+use runa_core::{
     connection::traits::Client,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,

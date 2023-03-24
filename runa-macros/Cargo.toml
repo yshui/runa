@@ -1,0 +1,27 @@
+[package]
+name = "runa-macros"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+darling = "0.14.1"
+heck = "0.4.0"
+proc-macro2.workspace = true
+quote = "1.0.21"
+syn = { workspace = true, features = ["visit-mut"] }
+
+[dev-dependencies]
+futures-executor = "0.3"
+futures-lite.workspace = true
+runa-wayland-scanner = { path = "../wayland-tools/scanner" }
+num_enum = "0.5.7"
+futures-task = "0.3.24"
+runa-io = { path = "../runa-io" }
+
+[features]
+default = [ "tracing" ]
+# logging from generated code
+tracing = []

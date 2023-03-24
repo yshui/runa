@@ -1,3 +1,3 @@
 [submodule "protocols/wayland-protocols"]
-	path = protocols/wayland-protocols
+	path = runa-wayland-protocols/spec/wayland-protocols
 	url = https://gitlab.freedesktop.org/wayland/wayland-protocols

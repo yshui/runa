@@ -6,15 +6,16 @@ use std::{
 };
 
 use dlv_list::{Index, VecList};
-use spin::mutex::Mutex;
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{
-    wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
-};
-use wl_server::{
+use runa_core::{
     connection::traits::{Client, ClientParts, Store},
-    error,
+    error::{self, ProtocolError},
     objects::{wayland_object, DISPLAY_ID},
+};
+use runa_io::traits::WriteMessage;
+use runa_wayland_types::{Fd as WaylandFd, NewId};
+use spin::mutex::Mutex;
+use runa_wayland_protocols::wayland::{
+    wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
 
 use crate::{
@@ -133,7 +134,7 @@ impl std::fmt::Display for ShmError {
 
 impl std::error::Error for ShmError {}
 
-impl wl_protocol::ProtocolError for ShmError {
+impl ProtocolError for ShmError {
     fn fatal(&self) -> bool {
         match self {
             ShmError::Mapping(..) => true,
@@ -163,8 +164,8 @@ where
     fn create_pool(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
-        mut fd: wl_types::Fd,
+        id: NewId,
+        mut fd: WaylandFd,
         size: i32,
     ) -> Self::CreatePoolFut<'_> {
         tracing::debug!("creating shm_pool with size {}", size);
@@ -174,7 +175,7 @@ where
                 conn.send(DISPLAY_ID, wl_display::events::Error {
                     code:      wl_shm::enums::Error::InvalidStride as u32,
                     object_id: object_id.into(),
-                    message:   wl_types::Str(b"invalid size"),
+                    message:   b"invalid size".into(),
                 })
                 .await?;
                 return Ok(())
@@ -215,7 +216,7 @@ where
                     .send(DISPLAY_ID, wl_display::events::Error {
                         code:      wl_display::enums::Error::InvalidObject as u32,
                         object_id: object_id.into(),
-                        message:   wl_types::Str(b"id already in use"),
+                        message:   b"id already in use".into(),
                     })
                     .await?;
             }
@@ -302,12 +303,12 @@ where
     fn create_buffer(
         ctx: &mut Ctx,
         object_id: u32,
-        id: wl_types::NewId,
+        id: NewId,
         offset: i32,
         width: i32,
         height: i32,
         stride: i32,
-        format: wl_protocol::wayland::wl_shm::v1::enums::Format,
+        format: runa_wayland_protocols::wayland::wl_shm::v1::enums::Format,
     ) -> Self::CreateBufferFut<'_> {
         async move {
             let ClientParts {
@@ -338,7 +339,7 @@ where
                 })
                 .is_some();
             if !inserted {
-                Err(wl_server::error::Error::IdExists(id.0))
+                Err(runa_core::error::Error::IdExists(id.0))
             } else {
                 Ok(())
             }

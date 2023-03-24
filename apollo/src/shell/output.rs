@@ -5,8 +5,8 @@ use std::{
 
 use hashbrown::HashMap;
 use ordered_float::NotNan;
-use wl_io::traits::WriteMessage;
-use wl_server::events::{self, EventSource};
+use runa_io::traits::WriteMessage;
+use runa_core::events::{self, EventSource};
 
 use crate::utils::{
     geometry::{coords, Extent, Point, Rectangle, Scale, Transform},
@@ -38,6 +38,8 @@ pub struct Output {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(transparent)]
     pub struct OutputChange: u32 {
         const GEOMETRY = 1;
         const NAME = 2;
@@ -198,7 +200,7 @@ impl Output {
         client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
-        use wl_protocol::wayland::wl_output::v4 as wl_output;
+        use runa_wayland_protocols::wayland::wl_output::v4 as wl_output;
         let geometry = self.geometry();
         let physical_size = self.physical_size();
         client
@@ -210,8 +212,8 @@ impl Output {
                     physical_width:  physical_size.w as i32,
                     physical_height: physical_size.h as i32,
                     subpixel:        wl_output::enums::Subpixel::Unknown, // TODO
-                    make:            wl_types::Str(self.make().as_bytes()),
-                    model:           wl_types::Str(self.model().as_bytes()),
+                    make:            self.make().as_bytes().into(),
+                    model:           self.model().as_bytes().into(),
                     transform:       wl_output::enums::Transform::Normal, // TODO
                 }),
             )
@@ -224,12 +226,12 @@ impl Output {
         client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
-        use wl_protocol::wayland::wl_output::v4 as wl_output;
+        use runa_wayland_protocols::wayland::wl_output::v4 as wl_output;
         client
             .send(
                 object_id,
                 wl_output::Event::Name(wl_output::events::Name {
-                    name: wl_types::Str(self.name().as_bytes()),
+                    name: self.name().as_bytes().into(),
                 }),
             )
             .await
@@ -240,7 +242,7 @@ impl Output {
         client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
-        use wl_protocol::wayland::wl_output::v4 as wl_output;
+        use runa_wayland_protocols::wayland::wl_output::v4 as wl_output;
         client
             .send(object_id, wl_output::events::Scale {
                 factor: (self.scale.get().x / 120) as i32,
@@ -253,7 +255,7 @@ impl Output {
         client: &mut T,
         object_id: u32,
     ) -> std::io::Result<()> {
-        use wl_protocol::wayland::wl_output::v4 as wl_output;
+        use runa_wayland_protocols::wayland::wl_output::v4 as wl_output;
         client
             .send(
                 object_id,

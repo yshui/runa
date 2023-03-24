@@ -1,0 +1,23 @@
+[package]
+name = "runa-wayland-scanner-codegen"
+description = "Generate code from wayland protocol specifications"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+heck = "0.4.0"
+proc-macro2 = "1.0.43"
+quote = "1.0.21"
+rust-format = { version = "0.3.4", features = ["token_stream"] }
+thiserror = "1.0.33"
+spec-parser = { package = "runa-wayland-spec-parser", path = "../parser" }
+syn = "1.0.109"
+linkify = "0.9.0"
+regex = "1.6.0"
+lazy_static = "1.4.0"
+ahash = "0.8.1"
+
+[dev-dependencies]
+rust-format = { version = "0.3.4", features = ["token_stream"] }
+runa-wayland-scanner = { path = "../scanner" }
+spec-parser = { package = "runa-wayland-spec-parser", path = "../parser" }

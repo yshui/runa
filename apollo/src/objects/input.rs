@@ -1,20 +1,20 @@
 use std::future::Future;
 
 use ordered_float::NotNan;
-use wl_io::traits::WriteMessage;
-use wl_protocol::wayland::{
-    wl_keyboard::v9 as wl_keyboard, wl_pointer::v9 as wl_pointer, wl_seat::v9 as wl_seat,
-    wl_surface::v6 as wl_surface,
-};
-use wl_server::{
+use runa_core::{
     connection::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
-    error::Error,
+    error::{Error, ProtocolError},
     events::{broadcast::Receiver, EventSource},
     objects::wayland_object,
 };
-use wl_types::NewId;
+use runa_io::traits::WriteMessage;
+use runa_wayland_types::{Fixed, NewId, Object as WaylandObject};
+use runa_wayland_protocols::wayland::{
+    wl_keyboard::v9 as wl_keyboard, wl_pointer::v9 as wl_pointer, wl_seat::v9 as wl_seat,
+    wl_surface::v6 as wl_surface,
+};
 
 use crate::{
     objects::compositor,
@@ -36,7 +36,7 @@ pub enum SeatError {
     MissingCapability(u32, wl_seat::enums::Capability),
 }
 
-impl wl_protocol::ProtocolError for SeatError {
+impl ProtocolError for SeatError {
     fn fatal(&self) -> bool {
         true
     }
@@ -58,13 +58,13 @@ impl wl_protocol::ProtocolError for SeatError {
 macro_rules! def_new_surface_handler {
     ($event:ty, $receiver:ty) => {
         struct NewSurfaceHandler;
-        impl<Ctx, Sh, Server> wl_server::connection::traits::EventHandler<Ctx> for NewSurfaceHandler
+        impl<Ctx, Sh, Server> runa_core::connection::traits::EventHandler<Ctx> for NewSurfaceHandler
         where
             Ctx: Client<ServerContext = Server>,
             Sh: Shell,
             Server: HasShell<Shell = Sh>,
         {
-            type Message = wl_server::connection::traits::StoreEvent;
+            type Message = runa_core::connection::traits::StoreEvent;
 
             type Future<'ctx> = impl Future<
                     Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync>>,
@@ -77,7 +77,7 @@ macro_rules! def_new_surface_handler {
                 server_context: &'ctx Ctx::ServerContext,
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
-                use wl_server::connection::traits::{GetError, StoreEventKind};
+                use runa_core::connection::traits::{GetError, StoreEventKind};
                 let Some(receiver_state) = objects.get_state::<$receiver>() else {
                                         return futures_util::future::ok(EventHandlerAction::Stop)
                                     };
@@ -224,7 +224,7 @@ where
             connection
                 .send(id.0, wl_keyboard::events::Keymap {
                     format: keymap.format,
-                    fd:     wl_types::Fd::Owned(keymap.fd.try_clone().unwrap()),
+                    fd:     keymap.fd.try_clone().unwrap().into(),
                     size:   keymap.size,
                 })
                 .await?;
@@ -326,7 +326,7 @@ where
                         connection
                             .send(id, wl_keyboard::events::Keymap {
                                 format: keymap.format,
-                                fd:     wl_types::Fd::Owned(keymap.fd.try_clone().unwrap()),
+                                fd:     keymap.fd.try_clone().unwrap().into(),
                                 size:   keymap.size,
                             })
                             .await?;
@@ -359,7 +359,7 @@ async fn send_to_all_keyboards<Ctx, M>(
 ) -> std::io::Result<()>
 where
     Ctx: Client,
-    M: wl_io::traits::ser::Serialize + Clone + Unpin + std::fmt::Debug,
+    M: runa_io::traits::ser::Serialize + Clone + Unpin + std::fmt::Debug,
 {
     for id in objects.ids_by_type::<Keyboard>() {
         connection.send(id, message.clone()).await?;
@@ -399,7 +399,7 @@ where
                                 connection,
                                 wl_keyboard::events::Leave {
                                     serial:  0,
-                                    surface: wl_types::Object(message.object_id),
+                                    surface: WaylandObject(message.object_id),
                                 },
                             )
                             .await?;
@@ -419,7 +419,7 @@ where
                                 connection,
                                 wl_keyboard::events::Leave {
                                     serial:  0,
-                                    surface: wl_types::Object(id),
+                                    surface: WaylandObject(id),
                                 },
                             )
                             .await?;
@@ -430,7 +430,7 @@ where
                             connection,
                             wl_keyboard::events::Enter {
                                 serial:  0,
-                                surface: wl_types::Object(message.object_id),
+                                surface: WaylandObject(message.object_id),
                                 keys:    &state.keys,
                             },
                         )
@@ -538,7 +538,7 @@ impl<Ctx> wl_pointer::RequestDispatch<Ctx> for Pointer
 where
     Ctx: Client,
 {
-    type Error = wl_server::error::Error;
+    type Error = runa_core::error::Error;
 
     type ReleaseFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type SetCursorFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -554,7 +554,7 @@ where
         ctx: &mut Ctx,
         object_id: u32,
         serial: u32,
-        surface: wl_types::Object,
+        surface: WaylandObject,
         hotspot_x: i32,
         hotspot_y: i32,
     ) -> Self::SetCursorFut<'_> {
@@ -578,7 +578,7 @@ async fn send_to_all_pointers<Ctx, M>(
 where
     Ctx: Client,
     <Ctx as Client>::ServerContext: HasShell,
-    M: wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug + Copy,
+    M: runa_io::traits::ser::Serialize + Unpin + std::fmt::Debug + Copy,
 {
     for object_id in objects.ids_by_type::<Pointer>() {
         connection.send(object_id, event).await?;
@@ -617,7 +617,7 @@ where
                         connection,
                         wl_pointer::events::Leave {
                             serial:  0,
-                            surface: wl_types::Object(old),
+                            surface: WaylandObject(old),
                         },
                     )
                     .await?;
@@ -631,9 +631,9 @@ where
                 self.focus = Some((message.object_id, coords));
                 send_to_all_pointers::<Ctx, _>(objects, connection, wl_pointer::events::Enter {
                     serial:    0,
-                    surface:   wl_types::Object(message.object_id),
-                    surface_x: wl_types::Fixed::from_num(coords.x.into_inner()),
-                    surface_y: wl_types::Fixed::from_num(coords.y.into_inner()),
+                    surface:   WaylandObject(message.object_id),
+                    surface_x: Fixed::from_num(coords.x.into_inner()),
+                    surface_y: Fixed::from_num(coords.y.into_inner()),
                 })
                 .await?;
             }
@@ -646,8 +646,8 @@ where
                             connection,
                             wl_pointer::events::Motion {
                                 time:      message.time,
-                                surface_x: wl_types::Fixed::from_num(coords.x.into_inner()),
-                                surface_y: wl_types::Fixed::from_num(coords.y.into_inner()),
+                                surface_x: Fixed::from_num(coords.x.into_inner()),
+                                surface_y: Fixed::from_num(coords.y.into_inner()),
                             },
                         )
                         .await?;
@@ -672,7 +672,7 @@ where
                         connection,
                         wl_pointer::events::Leave {
                             serial:  0,
-                            surface: wl_types::Object(message.object_id),
+                            surface: WaylandObject(message.object_id),
                         },
                     )
                     .await?;

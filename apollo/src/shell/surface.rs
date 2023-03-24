@@ -9,10 +9,11 @@ use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
 use ordered_float::NotNan;
+use runa_wayland_types::NewId;
 use tinyvec::TinyVec;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
-use wl_protocol::wayland::wl_pointer::v9 as wl_pointer;
-use wl_server::{
+use runa_wayland_protocols::wayland::wl_pointer::v9 as wl_pointer;
+use runa_core::{
     events::{broadcast, single_state, EventSource},
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
@@ -63,8 +64,8 @@ pub mod roles {
 
     use derivative::Derivative;
     use dlv_list::Index;
-    use wl_protocol::wayland::wl_subsurface;
-    use wl_server::provide_any;
+    use runa_wayland_protocols::wayland::wl_subsurface;
+    use runa_core::provide_any;
 
     use crate::{
         shell::Shell,
@@ -856,7 +857,7 @@ impl<S: Shell> Drop for Surface<S> {
 impl<S: Shell> Surface<S> {
     #[must_use]
     pub fn new(
-        object_id: wl_types::NewId,
+        object_id: NewId,
         pointer_events: broadcast::Ring<PointerEvent>,
         keyboard_events: broadcast::Ring<KeyboardEvent>,
     ) -> Self {

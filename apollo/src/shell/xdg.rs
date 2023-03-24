@@ -1,10 +1,11 @@
 use std::{collections::VecDeque, num::NonZeroU32};
 
 use derivative::Derivative;
-use wl_protocol::stable::xdg_shell::{
+use runa_wayland_types::NewId;
+use runa_wayland_protocols::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };
-use wl_server::provide_any::Demand;
+use runa_core::provide_any::Demand;
 
 use super::Shell;
 use crate::utils::geometry::{coords, Extent, Point, Rectangle};
@@ -39,7 +40,7 @@ pub struct Surface {
 
 impl Surface {
     #[inline]
-    pub fn new(object_id: wl_types::NewId) -> Self {
+    pub fn new(object_id: NewId) -> Self {
         Self {
             active:           false,
             geometry:         None,

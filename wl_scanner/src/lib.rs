@@ -512,6 +512,11 @@ fn generate_dispatch_trait(
         EventOrRequest::Event => format_ident!("EventDispatch"),
         EventOrRequest::Request => format_ident!("RequestDispatch"),
     };
+    let hidden = if matches!(event_or_request, EventOrRequest::Event) {
+        quote!(#[doc(hidden)])
+    } else {
+        quote!()
+    };
     let methods = messages.iter().map(|m| {
         let name = if m.name == "move" || m.name == "type" {
             format_ident!("{}_", m.name)
@@ -541,6 +546,7 @@ fn generate_dispatch_trait(
         .iter()
         .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
     quote! {
+        #hidden
         pub trait #ty<Ctx> {
             type Error: ::wl_scanner_support::ProtocolError;
             #(

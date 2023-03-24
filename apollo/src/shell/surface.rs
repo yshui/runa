@@ -709,7 +709,7 @@ impl<S: Shell> SurfaceState<S> {
     /// Assuming `token` is going to be released, scan the tree for any
     /// transient children that can be freed as well, and append them to
     /// `queue`.
-    pub fn scan_for_free(token: S::Token, shell: &S, queue: &mut Vec<S::Token>) {
+    pub fn scan_for_freeing(token: S::Token, shell: &S, queue: &mut Vec<S::Token>) {
         let this = shell.get(token);
         let mut head = queue.len();
         let parent = this.parent();
@@ -928,7 +928,7 @@ impl<S: Shell> Surface<S> {
         self.set_current(new_current);
         tracing::trace!("new surface state: {:?}", shell.get(new_current));
 
-        SurfaceState::scan_for_free(old_current, shell, scratch_buffer);
+        SurfaceState::scan_for_freeing(old_current, shell, scratch_buffer);
         tracing::debug!("potential freeable surface states: {:?}", scratch_buffer);
         for &child_token in &scratch_buffer[..] {
             let child_state = shell.get_mut(child_token);
@@ -1012,7 +1012,9 @@ impl<S: Shell> Surface<S> {
         tracing::debug!(?self, "generic surface commit");
 
         if let Some(role) = self.role.borrow_mut().as_mut() {
-            role.pre_commit(shell, self)?;
+            if role.is_active() {
+                role.pre_commit(shell, self)?;
+            }
         }
         let new_current = self.pending_key();
         let old_current = self.current_key();
@@ -1031,7 +1033,9 @@ impl<S: Shell> Surface<S> {
         // Call post_commit hooks before we free the old states, they might still need
         // them.
         if let Some(role) = self.role.borrow_mut().as_mut() {
-            role.post_commit(shell, self);
+            if role.is_active() {
+                role.post_commit(shell, self);
+            }
         }
         shell.post_commit(Some(old_current), new_current);
 
@@ -1111,17 +1115,31 @@ impl<S: Shell> Surface<S> {
         shell.get_mut(self.current_key())
     }
 
+    /// Returns true if the surface has a role attached. This will keep
+    /// returning true even after the role has been deactivated.
     #[must_use]
     pub fn has_role(&self) -> bool {
         self.role.borrow().is_some()
     }
 
+    /// Returns true if the surface has a role, and that role is active.
+    #[must_use]
+    pub fn role_is_active(&self) -> bool {
+        self.role
+            .borrow()
+            .as_ref()
+            .map(|r| r.is_active())
+            .unwrap_or(false)
+    }
+
+    /// Borrow the role object of the surface.
     #[must_use]
     pub fn role<T: Role<S>>(&self) -> Option<Ref<T>> {
         let role = self.role.borrow();
         Ref::filter_map(role, |r| r.as_ref().and_then(|r| request_ref(&**r))).ok()
     }
 
+    /// Mutably borrow the role object of the surface.
     #[must_use]
     pub fn role_mut<T: Role<S>>(&self) -> Option<RefMut<T>> {
         let role = self.role.borrow_mut();
@@ -1213,6 +1231,8 @@ impl<S: Shell> Surface<S> {
     pub fn deactivate_role(&self, shell: &mut S) {
         if let Some(role) = self.role.borrow_mut().as_mut() {
             role.deactivate(shell);
+            shell.get_mut(self.current_key()).role_state = None;
+            shell.get_mut(self.pending_key()).role_state = None;
             shell.role_deactivated(self.current_key(), role.name());
         };
     }

@@ -181,7 +181,6 @@ where
     type SetWindowGeometryFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        // TODO remove from WmBaseState::pending_configure
         async move { unimplemented!() }
     }
 
@@ -281,7 +280,7 @@ pub struct TopLevel<S: Shell>(
 impl<Ctx: Client, S: Shell> xdg_toplevel::RequestDispatch<Ctx> for TopLevel<S>
 where
     Ctx::ServerContext: HasShell<Shell = S>,
-    <Ctx::ServerContext as HasShell>::Shell: crate::shell::xdg::XdgShell,
+    S: crate::shell::xdg::XdgShell + Shell,
 {
     type Error = wl_server::error::Error;
 

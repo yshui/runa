@@ -24,11 +24,11 @@ use apollo::{
 use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use ordered_float::NotNan;
+use runa_core::events::{broadcast::Broadcast, EventSource};
+use runa_wayland_protocols::wayland::wl_pointer::v9 as wl_pointer;
 use slotmap::{DefaultKey, SlotMap};
 use tinyvec::TinyVec;
 use winit::event::MouseButton;
-use runa_wayland_protocols::wayland::wl_pointer::v9 as wl_pointer;
-use runa_core::events::{broadcast::Broadcast, EventSource};
 use xkbcommon::xkb;
 
 #[derive(Derivative)]
@@ -230,8 +230,9 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
     pub fn key(&mut self, key: u8, pressed: bool) {
         if pressed {
             if self.keys.contains(&key) {
-                tracing::warn!(
-                    "Received pressed event for key {}, which was already pressed",
+                tracing::trace!(
+                    "Received pressed event for key {}, which was already pressed ignoring. This \
+                     is normal because of X11 key repeats.",
                     key
                 );
                 return

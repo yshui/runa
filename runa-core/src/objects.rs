@@ -10,21 +10,19 @@ use std::{
     task::{ready, Context, Poll},
 };
 
-use runa_wayland_types::{NewId, Str};
 use ::runa_wayland_protocols::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
-use tracing::debug;
 use runa_io::traits::WriteMessage;
-
 #[doc(inline)]
 pub use runa_macros::wayland_object;
-
 #[doc(no_inline)]
 pub use runa_macros::Object;
+use runa_wayland_types::{NewId, Str};
+use tracing::debug;
 
 use crate::{
-    connection::traits::{Client, ClientParts, Store},
+    client::traits::{Client, ClientParts, Store},
     globals::{Bind, GlobalMeta},
     server::{self, Globals},
 };
@@ -190,7 +188,7 @@ pub trait MonoObject: 'static {
 /// An `AnyObject` can be seen as a union of multiple `MonoObject` types. Its
 /// `Object` trait implementation can be generated using the `[derive(Object)]`
 /// macro.
-pub trait Object<Ctx: crate::connection::traits::Client>: 'static {
+pub trait Object<Ctx: crate::client::traits::Client>: 'static {
     type Request<'a>: runa_io::traits::de::Deserialize<'a>
     where
         Ctx: 'a;
@@ -267,11 +265,7 @@ where
         }
     }
 
-    fn get_registry(
-        ctx: &mut Ctx,
-        object_id: u32,
-        registry: NewId,
-    ) -> Self::GetRegistryFut<'_> {
+    fn get_registry(ctx: &mut Ctx, object_id: u32, registry: NewId) -> Self::GetRegistryFut<'_> {
         assert!(ctx.objects().get::<Self>(object_id).unwrap().initialized);
         async move {
             use server::Server;
@@ -376,7 +370,7 @@ impl MonoObject for Callback {
     fn new_singleton_state() {}
 }
 
-impl<Ctx: crate::connection::traits::Client> Object<Ctx> for Callback {
+impl<Ctx: crate::client::traits::Client> Object<Ctx> for Callback {
     type Error = crate::error::Error;
     type Request<'a> = Infallible where Ctx: 'a;
 

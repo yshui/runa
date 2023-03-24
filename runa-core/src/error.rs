@@ -57,16 +57,6 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for Error {
     }
 }
 
-impl From<crate::connection::traits::GetError> for Error {
-    fn from(e: crate::connection::traits::GetError) -> Self {
-        use crate::connection::traits::GetError::*;
-        match e {
-            IdNotFound(id) => Self::UnknownObject(id),
-            TypeMismatch(id) => Self::InvalidObject(id),
-        }
-    }
-}
-
 impl Error {
     pub fn custom<E>(e: E) -> Self
     where

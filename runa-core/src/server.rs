@@ -6,7 +6,7 @@ use std::{cell::RefCell, future::Future, rc::Rc};
 use derivative::Derivative;
 
 use crate::{
-    connection::traits::Client,
+    client::traits::Client,
     events::{self, EventSource},
     globals::Global,
     Serial,

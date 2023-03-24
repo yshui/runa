@@ -13,8 +13,8 @@ use runa_wayland_protocols::wayland::{
     wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor, wl_surface::v6 as wl_surface,
 };
 use runa_core::{
-    connection::{
-        event_handler::Abortable,
+    client::{
+        event_handlers::Abortable,
         traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
     },
     events::EventSource,

@@ -4,7 +4,9 @@ use runa_io::traits::WriteMessage;
 use runa_wayland_protocols::wayland::{wl_display, wl_registry::v1 as wl_registry};
 
 use crate::{
-    connection::traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction},
+    client::traits::{
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, StoreEvent,
+    },
     events::EventSource,
     objects::DISPLAY_ID,
     server::{GlobalsUpdate, Server},
@@ -90,7 +92,7 @@ impl<Ctx: Client> Bind<Ctx> for Display {
     type BindFut<'a > = impl Future<Output = std::io::Result<()>> + 'a where Self: 'a, Ctx: 'a;
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
-        use crate::connection::traits::Store;
+        use crate::client::traits::Store;
         let ClientParts {
             objects,
             event_dispatcher,
@@ -103,7 +105,7 @@ impl<Ctx: Client> Bind<Ctx> for Display {
 
         struct DisplayEventHandler;
         impl<Ctx: Client> EventHandler<Ctx> for DisplayEventHandler {
-            type Message = crate::connection::traits::StoreEvent;
+            type Message = StoreEvent;
 
             type Future<'ctx> = impl Future<
                     Output = Result<
@@ -120,7 +122,7 @@ impl<Ctx: Client> Bind<Ctx> for Display {
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 async move {
-                    use crate::connection::traits::StoreEventKind::*;
+                    use crate::client::traits::StoreEventKind::*;
                     if matches!(message.kind, Removed { .. } | Replaced { .. }) {
                         // Replaced can really only happen for server created objects, because
                         // we haven't sent the DeleteId event yet, so the client can't have

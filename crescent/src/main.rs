@@ -1,7 +1,6 @@
 #![feature(type_alias_impl_trait)]
 use std::{
     cell::RefCell,
-    future::Future,
     os::{fd::OwnedFd, unix::net::UnixStream},
     pin::Pin,
     rc::Rc,
@@ -13,15 +12,8 @@ use apollo::{
     utils::geometry::{Extent, Point},
 };
 use futures_util::{select, TryStreamExt};
-use smol::{block_on, LocalExecutor};
-use runa_io::{
-    buf::BufReaderWithFd,
-    traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
-    Connection,
-};
-use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 use runa_core::{
-    connection::{
+    client::{
         traits::{Client, ClientParts, Store as _},
         EventDispatcher, Store,
     },
@@ -31,6 +23,13 @@ use runa_core::{
     renderer_capability::RendererCapability,
     server::Globals,
 };
+use runa_io::{
+    buf::BufReaderWithFd,
+    traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
+    Connection,
+};
+use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
+use smol::{block_on, LocalExecutor};
 mod render;
 mod shell;
 use shell::DefaultShell;
@@ -270,12 +269,18 @@ impl CrescentClient {
 
 impl Client for CrescentClient {
     type Connection = Connection<runa_io::WriteWithFd>;
+    type DispatchFut<'a, R> = runa_core::client::Dispatch<'a, Self, R> where R: runa_io::traits::buf::AsyncBufReadWithFd + 'a;
     type EventDispatcher = EventDispatcher<Self>;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
 
-    runa_core::impl_dispatch!();
+    fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+    where
+        R: runa_io::traits::buf::AsyncBufReadWithFd,
+    {
+        runa_core::client::dispatch_to(self, reader)
+    }
 
     fn server_context(&self) -> &Self::ServerContext {
         &self.state

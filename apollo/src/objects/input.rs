@@ -2,19 +2,20 @@ use std::future::Future;
 
 use ordered_float::NotNan;
 use runa_core::{
-    connection::traits::{
-        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
+    client::traits::{
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, GetError, Store,
+        StoreEvent, StoreEventKind,
     },
     error::{Error, ProtocolError},
     events::{broadcast::Receiver, EventSource},
     objects::wayland_object,
 };
 use runa_io::traits::WriteMessage;
-use runa_wayland_types::{Fixed, NewId, Object as WaylandObject};
 use runa_wayland_protocols::wayland::{
     wl_keyboard::v9 as wl_keyboard, wl_pointer::v9 as wl_pointer, wl_seat::v9 as wl_seat,
     wl_surface::v6 as wl_surface,
 };
+use runa_wayland_types::{Fixed, NewId, Object as WaylandObject};
 
 use crate::{
     objects::compositor,
@@ -58,13 +59,13 @@ impl ProtocolError for SeatError {
 macro_rules! def_new_surface_handler {
     ($event:ty, $receiver:ty) => {
         struct NewSurfaceHandler;
-        impl<Ctx, Sh, Server> runa_core::connection::traits::EventHandler<Ctx> for NewSurfaceHandler
+        impl<Ctx, Sh, Server> EventHandler<Ctx> for NewSurfaceHandler
         where
             Ctx: Client<ServerContext = Server>,
             Sh: Shell,
             Server: HasShell<Shell = Sh>,
         {
-            type Message = runa_core::connection::traits::StoreEvent;
+            type Message = StoreEvent;
 
             type Future<'ctx> = impl Future<
                     Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync>>,
@@ -77,7 +78,6 @@ macro_rules! def_new_surface_handler {
                 server_context: &'ctx Ctx::ServerContext,
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
-                use runa_core::connection::traits::{GetError, StoreEventKind};
                 let Some(receiver_state) = objects.get_state::<$receiver>() else {
                                         return futures_util::future::ok(EventHandlerAction::Stop)
                                     };

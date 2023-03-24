@@ -5,7 +5,7 @@ use futures_lite::stream::StreamExt;
 use hashbrown::{hash_map, HashMap};
 use thiserror::Error;
 
-pub mod connection;
+pub mod client;
 pub mod error;
 pub mod events;
 pub mod globals;
@@ -270,7 +270,7 @@ macro_rules! globals {
             }
         )*
         impl $crate::globals::GlobalMeta for $N {
-            type Object = <$ctx as $crate::connection::traits::Client>::Object;
+            type Object = <$ctx as $crate::client::traits::Client>::Object;
             fn interface(&self) -> &'static str {
                 match self {
                     $(

@@ -788,7 +788,7 @@ pub fn interface_message_dispatch_for_enum(
             #[inline]
             fn on_disconnect(
                 &mut self,
-                server_ctx: &mut <#context_param as #crate_::connection::traits::Client>::ServerContext,
+                server_ctx: &mut <#context_param as #crate_::client::traits::Client>::ServerContext,
                 state: &mut dyn ::std::any::Any
             ) {
                 match self {
@@ -801,7 +801,7 @@ pub fn interface_message_dispatch_for_enum(
                 msg: Self::Request<'a>,
             ) -> Self::Fut<'a> {
                 async move {
-                    use #crate_::connection::traits::Store;
+                    use #crate_::client::traits::Store;
                     match ctx.objects().get::<Self>(object_id) {
                         Ok(obj) => {
                             // We are doing this weird dance here because if we do `if let

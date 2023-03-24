@@ -4,8 +4,8 @@ use hashbrown::{HashMap, HashSet};
 use runa_io::traits::WriteMessage;
 use runa_wayland_protocols::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
 use runa_core::{
-    connection::{
-        event_handler::{Abortable, AutoAbortHandle},
+    client::{
+        event_handlers::{Abortable, AutoAbortHandle},
         traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, Store},
     },
     error::Error,

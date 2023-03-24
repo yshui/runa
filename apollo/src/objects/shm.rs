@@ -7,7 +7,7 @@ use std::{
 
 use dlv_list::{Index, VecList};
 use runa_core::{
-    connection::traits::{Client, ClientParts, Store},
+    client::traits::{Client, ClientParts, Store},
     error::{self, ProtocolError},
     objects::{wayland_object, DISPLAY_ID},
 };

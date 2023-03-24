@@ -18,7 +18,7 @@ use std::{future::Future, pin::Pin, rc::Rc};
 use derivative::Derivative;
 use hashbrown::HashSet;
 use runa_core::{
-    connection::traits::{
+    client::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error::{self, ProtocolError},
@@ -26,12 +26,12 @@ use runa_core::{
     objects::wayland_object,
 };
 use runa_io::traits::WriteMessage;
-use runa_wayland_types as wayland_types;
 use runa_wayland_protocols::wayland::{
     wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output,
     wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
     wl_surface::v6 as wl_surface,
 };
+use runa_wayland_types as wayland_types;
 
 use crate::{
     shell::{

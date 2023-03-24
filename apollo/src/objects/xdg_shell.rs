@@ -1,21 +1,21 @@
 use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
-use runa_io::traits::WriteMessage;
-use runa_wayland_types::{NewId, Object as WaylandObject, Str};
-use runa_wayland_protocols::stable::xdg_shell::{
-    xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
-    xdg_wm_base::v5 as xdg_wm_base,
-};
 use runa_core::{
-    connection::{
-        event_handler::{Abortable, AutoAbortHandle},
-        traits::{Client, ClientParts, EventDispatcher, EventHandlerAction, Store},
+    client::{
+        event_handlers::{Abortable, AutoAbortHandle},
+        traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
     },
     error::{Error, ProtocolError},
     events::EventSource,
     objects::wayland_object,
 };
+use runa_io::traits::WriteMessage;
+use runa_wayland_protocols::stable::xdg_shell::{
+    xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
+    xdg_wm_base::v5 as xdg_wm_base,
+};
+use runa_wayland_types::{NewId, Object as WaylandObject, Str};
 
 use crate::{
     shell::{surface::LayoutEvent, xdg, HasShell, Shell},
@@ -90,7 +90,6 @@ where
 struct LayoutEventHandler {
     surface_object_id: u32,
 }
-use runa_core::connection::traits::EventHandler;
 impl<Ctx: Client> EventHandler<Ctx> for LayoutEventHandler
 where
     Ctx::ServerContext: HasShell,
@@ -268,11 +267,7 @@ where
         async move { unimplemented!() }
     }
 
-    fn get_toplevel(
-        ctx: &mut Ctx,
-        object_id: u32,
-        id: NewId,
-    ) -> Self::GetToplevelFut<'_> {
+    fn get_toplevel(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetToplevelFut<'_> {
         async move {
             let ClientParts {
                 objects,
@@ -373,12 +368,7 @@ where
     type UnsetFullscreenFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type UnsetMaximizedFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn move_(
-        ctx: &mut Ctx,
-        object_id: u32,
-        seat: WaylandObject,
-        serial: u32,
-    ) -> Self::MoveFut<'_> {
+    fn move_(ctx: &mut Ctx, object_id: u32, seat: WaylandObject, serial: u32) -> Self::MoveFut<'_> {
         async move { unimplemented!() }
     }
 
@@ -402,11 +392,7 @@ where
         futures_util::future::ok(())
     }
 
-    fn set_title<'a>(
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        title: Str<'a>,
-    ) -> Self::SetTitleFut<'a> {
+    fn set_title<'a>(ctx: &'a mut Ctx, object_id: u32, title: Str<'a>) -> Self::SetTitleFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
@@ -415,19 +401,11 @@ where
         }
     }
 
-    fn set_parent(
-        ctx: &mut Ctx,
-        object_id: u32,
-        parent: WaylandObject,
-    ) -> Self::SetParentFut<'_> {
+    fn set_parent(ctx: &mut Ctx, object_id: u32, parent: WaylandObject) -> Self::SetParentFut<'_> {
         async move { unimplemented!() }
     }
 
-    fn set_app_id<'a>(
-        ctx: &'a mut Ctx,
-        object_id: u32,
-        app_id: Str<'a>,
-    ) -> Self::SetAppIdFut<'a> {
+    fn set_app_id<'a>(ctx: &'a mut Ctx, object_id: u32, app_id: Str<'a>) -> Self::SetAppIdFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();

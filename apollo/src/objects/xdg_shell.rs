@@ -165,6 +165,24 @@ pub struct Surface<S: Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<S>>,
 }
 
+#[derive(thiserror::Error, Debug)]
+enum SurfaceError {
+    #[error("Surface was destroyed before its role object")]
+    DefunctRoleObject(u32),
+}
+
+impl wl_protocol::ProtocolError for SurfaceError {
+    fn fatal(&self) -> bool {
+        true
+    }
+
+    fn wayland_error(&self) -> Option<(u32, u32)> {
+        match self {
+            SurfaceError::DefunctRoleObject(object_id) => Some((*object_id, 0)),
+        }
+    }
+}
+
 #[wayland_object]
 impl<Ctx: Client, S: Shell> xdg_surface::RequestDispatch<Ctx> for Surface<S>
 where
@@ -181,7 +199,14 @@ where
     type SetWindowGeometryFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        async move { unimplemented!() }
+        let object = ctx.objects().get::<Self>(object_id).unwrap();
+        if object.inner.role_is_active() {
+            return futures_util::future::err(Error::custom(SurfaceError::DefunctRoleObject(
+                object_id,
+            )))
+        }
+        ctx.objects_mut().remove(object_id);
+        futures_util::future::ok(())
     }
 
     fn get_popup(
@@ -319,8 +344,13 @@ where
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        // TODO remove from WmBaseState::pending_configure
-        async move { unimplemented!() }
+        use wl_server::objects::AnyObject;
+        let object = ctx.objects_mut().remove(object_id).unwrap();
+        let object = object.cast::<Self>().unwrap();
+        object
+            .0
+            .deactivate_role(&mut ctx.server_context().shell().borrow_mut());
+        futures_util::future::ok(())
     }
 
     fn set_title<'a>(

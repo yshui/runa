@@ -1696,7 +1696,7 @@
 	wl_output.transform enum the invalid_transform protocol error
 	is raised.
       </description>
-      <arg name="transform" type="int" enum="wl_output.transform"
+      <arg name="transform" type="uint" enum="wl_output.transform"
 	   summary="transform for interpreting buffer contents"/>
     </request>
 
@@ -1819,7 +1819,7 @@
 	transform to their content and use wl_surface.set_buffer_transform to
 	indicate the transform they have rendered with.
       </description>
-      <arg name="transform" type="int" enum="wl_output.transform"
+      <arg name="transform" type="uint" enum="wl_output.transform"
 	   summary="preferred transform"/>
     </event>
    </interface>
@@ -2724,7 +2724,7 @@
 	   summary="textual description of the manufacturer"/>
       <arg name="model" type="string"
 	   summary="textual description of the model"/>
-      <arg name="transform" type="int" enum="transform"
+      <arg name="transform" type="uint" enum="transform"
 	   summary="transform that maps framebuffer to output"/>
     </event>
 

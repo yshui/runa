@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ahash::AHashMap as HashMap;
 use heck::{ToPascalCase, ToShoutySnekCase};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -708,57 +710,32 @@ fn wrap_links(line: &str) -> String {
 }
 
 use lazy_static::lazy_static;
-use regex::{Captures, Regex};
+use regex::Regex;
 lazy_static! {
     static ref LINKREF_REGEX: Regex = Regex::new(r"\[([0-9]+)\]").unwrap();
-    static ref LINKREF_REGEX_WITH_SPACE: Regex = Regex::new(r"\s*\[([0-9]+)\]").unwrap();
 }
 fn generate_doc_comment(description: &Option<(String, String)>) -> TokenStream {
     if let Some((summary, desc)) = description {
-        let link_refs: HashMap<u32, &str> = desc
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                LINKREF_REGEX
-                    .captures(line)
-                    .and_then(|m| {
-                        if m.get(0).unwrap().start() != 0 {
-                            None
-                        } else {
-                            Some(m)
-                        }
-                    })
-                    .and_then(|m| m.get(1))
-                    .and_then(|refcap| {
-                        if let Ok(refnum) = refcap.as_str().parse::<u32>() {
-                            Some((refnum, line[refcap.end() + 1..].trim()))
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .collect();
-        let desc = desc.split('\n').filter_map(|s| {
+        let desc = desc.split('\n').map(|s| {
             let s = s.trim();
             if let Some(m) = LINKREF_REGEX.find(s) {
                 if m.start() == 0 {
-                    return None
+                    // Fix cases like "[0] link". Change it to "[0]: link"
+                    let s: Cow<'_, _> = if !s[m.end()..].starts_with(':') {
+                        format!("{}:{}", s[..m.end()].trim(), s[m.end()..].trim()).into()
+                    } else {
+                        s.into()
+                    };
+                    return quote! {
+                        #[doc = #s]
+                    }
                 }
             }
-            let mut s = wrap_links(s);
-            s = LINKREF_REGEX_WITH_SPACE
-                .replace(&s, |m: &Captures| {
-                    let refnum = m.get(1).unwrap().as_str().parse::<u32>().unwrap();
-                    let link = link_refs.get(&refnum).unwrap();
-                    format!("<a href={link}><sup>{refnum}</sup></a>")
-                })
-                .into_owned();
-            s = s.replace('[', "\\[").replace(']', "\\]");
-            Some(quote! {
+            let s = wrap_links(s);
+            quote! {
                 #[doc = #s]
-            })
+            }
         });
-        let summary = summary.replace('[', "\\[").replace(']', "\\]");
         quote! {
             #[doc = #summary]
             #[doc = ""]

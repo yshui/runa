@@ -90,20 +90,21 @@ pub trait HasShell: buffers::HasBuffer {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepeatInfo {
-    pub rate:  u32,
-    pub delay: u32,
+    pub rate:  i32,
+    pub delay: i32,
 }
 
 #[derive(Clone, Debug)]
 pub struct Keymap {
-    format: wl_keyboard::enums::KeymapFormat,
-    fd:     Rc<std::os::unix::io::OwnedFd>,
-    size:   u32,
+    pub format: wl_keyboard::enums::KeymapFormat,
+    pub fd:     Rc<std::os::unix::io::OwnedFd>,
+    pub size:   u32,
 }
 
 #[derive(Clone, Debug)]
 pub enum SeatEvent {
     KeymapChanged(Keymap),
+    RepeatInfoChanged(RepeatInfo),
 }
 
 pub trait Seat: EventSource<SeatEvent> {

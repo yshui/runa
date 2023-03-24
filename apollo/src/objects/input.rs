@@ -204,7 +204,8 @@ where
             let ClientParts {
                 objects,
                 event_dispatcher,
-                ..
+                server_context,
+                connection,
             } = ctx.as_mut_parts();
 
             // Subscribe to keyboard events if there are surface objects in the store,
@@ -216,6 +217,22 @@ where
             let (_, state) = objects
                 .insert_with_state(id.0, Keyboard)
                 .map_err(|_| Error::IdExists(id.0))?;
+
+            let repeat_info = server_context.repeat_info();
+            let keymap = server_context.keymap();
+            connection
+                .send(id.0, wl_keyboard::events::Keymap {
+                    format: keymap.format,
+                    fd:     wl_types::Fd::Owned(keymap.fd.try_clone().unwrap()),
+                    size:   keymap.size,
+                })
+                .await?;
+            connection
+                .send(id.0, wl_keyboard::events::RepeatInfo {
+                    rate:  repeat_info.rate,
+                    delay: repeat_info.delay,
+                })
+                .await?;
             if let Some(event_source) = state.event_source.take() {
                 // This is our first pointer object, setup listeners
                 tracing::debug!("First keyboard object, add event handler");
@@ -223,6 +240,8 @@ where
                 event_dispatcher
                     .add_event_handler(event_source, KeyboardEventHandler { focus: None });
                 event_dispatcher.add_event_handler(objects.subscribe(), NewSurfaceHandler);
+                event_dispatcher
+                    .add_event_handler(server_context.subscribe(), KeyboardConfigHandler);
             }
             Ok(())
         }
@@ -254,7 +273,7 @@ impl Default for KeyboardState {
 
 impl Drop for KeyboardState {
     fn drop(&mut self) {
-        // Last keyboard object is dropped, stop listening to keyboard events
+        // Last keyboard object is dropped, stop listening for keyboard events
         self.handle.replace(None);
     }
 }
@@ -276,6 +295,58 @@ impl<Ctx: Client> wl_keyboard::RequestDispatch<Ctx> for Keyboard {
     }
 }
 
+struct KeyboardConfigHandler;
+
+impl<Ctx> EventHandler<Ctx> for KeyboardConfigHandler
+where
+    Ctx: Client,
+{
+    type Message = crate::shell::SeatEvent;
+
+    type Future<'ctx> = impl Future<Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync>>>
+        + 'ctx;
+
+    fn handle_event<'ctx>(
+        &'ctx mut self,
+        objects: &'ctx mut <Ctx as Client>::ObjectStore,
+        connection: &'ctx mut <Ctx as Client>::Connection,
+        server_context: &'ctx <Ctx as Client>::ServerContext,
+        message: &'ctx mut Self::Message,
+    ) -> Self::Future<'ctx> {
+        use crate::shell::SeatEvent::*;
+        async move {
+            if objects.ids_by_type::<Keyboard>().next().is_none() {
+                // No keyboard objects left, stop listening for seat events
+                return Ok(EventHandlerAction::Stop)
+            }
+            match message {
+                KeymapChanged(keymap) =>
+                    for id in objects.ids_by_type::<Keyboard>() {
+                        connection
+                            .send(id, wl_keyboard::events::Keymap {
+                                format: keymap.format,
+                                fd:     wl_types::Fd::Owned(keymap.fd.try_clone().unwrap()),
+                                size:   keymap.size,
+                            })
+                            .await?;
+                    },
+                RepeatInfoChanged(repeat_info) => {
+                    send_to_all_keyboards::<Ctx, _>(
+                        objects,
+                        connection,
+                        wl_keyboard::events::RepeatInfo {
+                            rate:  repeat_info.rate,
+                            delay: repeat_info.delay,
+                        },
+                    )
+                    .await?;
+                },
+            }
+            Ok(EventHandlerAction::Keep)
+        }
+    }
+}
+
 struct KeyboardEventHandler {
     focus: Option<(u32, crate::shell::surface::KeyboardState)>,
 }
@@ -289,7 +360,7 @@ where
     Ctx: Client,
     M: wl_io::traits::ser::Serialize + Clone + Unpin + std::fmt::Debug,
 {
-    for (id, _) in objects.by_type::<Keyboard>() {
+    for id in objects.ids_by_type::<Keyboard>() {
         connection.send(id, message.clone()).await?;
     }
     Ok(())
@@ -313,10 +384,6 @@ where
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {
-            if objects.by_type::<Keyboard>().next().is_none() {
-                // No keyboard objects left, stop listening for events
-                return Ok(EventHandlerAction::Stop)
-            }
             match &mut message.activity {
                 KeyboardActivity::Leave =>
                     if let Some((id, _)) = self.focus.take() {
@@ -512,7 +579,7 @@ where
     <Ctx as Client>::ServerContext: HasShell,
     M: wl_io::traits::ser::Serialize + Unpin + std::fmt::Debug + Copy,
 {
-    for (object_id, _) in objects.by_type::<Pointer>() {
+    for object_id in objects.ids_by_type::<Pointer>() {
         connection.send(object_id, event).await?;
     }
     Ok(())

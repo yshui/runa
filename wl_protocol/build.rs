@@ -8,10 +8,12 @@ fn main() {
     let protocols =
         std::path::Path::new(&std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("protocols");
     let out_dir = std::env::var("OUT_DIR").unwrap();
+    println!("cargo:rerun-if-changed={}", protocols.display());
     let generate_from_dir = |name: &str| {
         let dest_path = std::path::Path::new(&out_dir).join(&format!("{name}_generated.rs"));
         let mut outfile = std::fs::File::create(dest_path).unwrap();
-        for dir in std::fs::read_dir(protocols.join("wayland-protocols").join(name)).unwrap() {
+        let dir_path = protocols.join("wayland-protocols").join(name);
+        for dir in std::fs::read_dir(dir_path).unwrap() {
             let dir = dir.unwrap();
             let metadata = dir.metadata().unwrap();
             if !metadata.is_dir() {
@@ -37,6 +39,7 @@ fn main() {
             }
         }
     };
+
     let contents = std::fs::read_to_string(protocols.join("wayland.xml")).unwrap();
     let protocol = wl_spec::parse::parse(contents.as_bytes()).unwrap();
     let source = generate_protocol(&protocol).unwrap().to_string();

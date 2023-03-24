@@ -226,6 +226,7 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
                 objects,
                 connection,
                 event_dispatcher,
+                ..
             } = client.as_mut_parts();
             let caps = server_context.capabilities();
             let name = server_context.name().as_bytes().into();

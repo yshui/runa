@@ -276,12 +276,12 @@ impl Client for CrescentClient {
     }
 
     fn as_mut_parts(&mut self) -> ClientParts<'_, Self> {
-        ClientParts {
-            server_context:   &self.state,
-            connection:       &mut self.tx,
-            objects:          &mut self.store,
-            event_dispatcher: &mut self.event_dispatcher,
-        }
+        ClientParts::new(
+            &self.state,
+            &mut self.store,
+            &mut self.tx,
+            &mut self.event_dispatcher,
+        )
     }
 }
 

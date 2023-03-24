@@ -222,11 +222,28 @@ pub mod traits {
         );
     }
 
+    #[non_exhaustive]
     pub struct ClientParts<'a, C: Client> {
         pub server_context:   &'a C::ServerContext,
         pub objects:          &'a mut C::ObjectStore,
         pub connection:       &'a mut C::Connection,
         pub event_dispatcher: &'a mut C::EventDispatcher,
+    }
+
+    impl<'a, C: Client> ClientParts<'a, C> {
+        pub fn new(
+            server_context: &'a C::ServerContext,
+            objects: &'a mut C::ObjectStore,
+            connection: &'a mut C::Connection,
+            event_dispatcher: &'a mut C::EventDispatcher,
+        ) -> Self {
+            Self {
+                server_context,
+                objects,
+                connection,
+                event_dispatcher,
+            }
+        }
     }
 
     /// A client connection

@@ -206,6 +206,7 @@ where
                 event_dispatcher,
                 server_context,
                 connection,
+                ..
             } = ctx.as_mut_parts();
 
             // Subscribe to keyboard events if there are surface objects in the store,

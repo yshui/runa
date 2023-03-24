@@ -6,3 +6,4 @@ pub mod objects;
 pub mod shell;
 pub mod time;
 pub mod utils;
+pub mod renderer_capability;

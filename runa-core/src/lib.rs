@@ -11,7 +11,6 @@ pub mod events;
 pub mod globals;
 pub mod objects;
 pub mod provide_any;
-pub mod renderer_capability;
 pub mod server;
 pub mod utils;
 

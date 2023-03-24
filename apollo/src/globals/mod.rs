@@ -13,8 +13,8 @@ use runa_core::{
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
-    renderer_capability::RendererCapability,
 };
+use crate::renderer_capability::RendererCapability;
 use runa_io::traits::WriteMessage;
 use runa_wayland_protocols::wayland::{
     wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v9 as wl_seat,

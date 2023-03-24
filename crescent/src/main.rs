@@ -10,6 +10,7 @@ use anyhow::Result;
 use apollo::{
     shell::{buffers::HasBuffer, HasShell, Keymap, RepeatInfo, SeatEvent},
     utils::geometry::{Extent, Point},
+    renderer_capability::RendererCapability,
 };
 use futures_util::{select, TryStreamExt};
 use runa_core::{
@@ -20,7 +21,6 @@ use runa_core::{
     events::broadcast::Broadcast,
     globals::Bind,
     objects::{Object, DISPLAY_ID},
-    renderer_capability::RendererCapability,
     server::Globals,
 };
 use runa_io::{
@@ -245,8 +245,8 @@ impl HasShell for Crescent {
 }
 
 impl RendererCapability for Crescent {
-    fn formats(&self) -> Vec<runa_core::renderer_capability::Format> {
-        use runa_core::renderer_capability::Format;
+    fn formats(&self) -> Vec<apollo::renderer_capability::Format> {
+        use apollo::renderer_capability::Format;
         vec![Format::Argb8888]
     }
 }

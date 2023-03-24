@@ -1,9 +1,15 @@
 #![feature(type_alias_impl_trait)]
-use std::{cell::RefCell, future::Future, os::unix::net::UnixStream, pin::Pin, rc::Rc};
+use std::{
+    cell::RefCell,
+    future::Future,
+    os::{fd::OwnedFd, unix::net::UnixStream},
+    pin::Pin,
+    rc::Rc,
+};
 
 use anyhow::Result;
 use apollo::{
-    shell::{buffers::HasBuffer, HasShell, SeatEvent},
+    shell::{buffers::HasBuffer, HasShell, Keymap, RepeatInfo, SeatEvent},
     utils::geometry::{Extent, Point},
 };
 use futures_util::{select, TryStreamExt};
@@ -13,7 +19,7 @@ use wl_io::{
     traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
     Connection,
 };
-use wl_protocol::wayland::wl_seat::v8 as wl_seat;
+use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_seat::v8 as wl_seat};
 use wl_server::{
     connection::{
         traits::{Client, ClientParts, Store as _},
@@ -35,12 +41,13 @@ pub struct CrescentState {
     shell:       Rc<RefCell<<Crescent as HasShell>::Shell>>,
     executor:    LocalExecutor<'static>,
     seat_events: Broadcast<SeatEvent>,
+    keymap:      Keymap,
 }
 
 impl apollo::shell::Seat for Crescent {
     fn capabilities(&self) -> wl_seat::enums::Capability {
         use wl_seat::enums::Capability;
-        Capability::POINTER
+        Capability::POINTER | Capability::KEYBOARD
     }
 
     fn name(&self) -> &str {
@@ -48,11 +55,14 @@ impl apollo::shell::Seat for Crescent {
     }
 
     fn keymap(&self) -> &apollo::shell::Keymap {
-        todo!()
+        &self.0.keymap
     }
 
     fn repeat_info(&self) -> apollo::shell::RepeatInfo {
-        todo!()
+        RepeatInfo {
+            rate:  25,
+            delay: 600,
+        }
     }
 }
 
@@ -285,9 +295,104 @@ impl Client for CrescentClient {
     }
 }
 
+fn from_bytes_until_nul(bytes: &[u8]) -> Result<(&str, &[u8])> {
+    let nul = bytes
+        .iter()
+        .position(|&b| b == 0)
+        .ok_or_else(|| anyhow::anyhow!("No nul byte found"))?;
+    let (head, rest) = bytes.split_at(nul);
+    Ok((
+        std::str::from_utf8(head).map_err(|_| anyhow::anyhow!("Invalid utf8"))?,
+        &rest[1..],
+    ))
+}
+
+fn get_keymap_from_xserver() -> Result<xkbcommon::xkb::Keymap> {
+    use x11rb::{atom_manager, connection::Connection, protocol::xproto::ConnectionExt};
+    atom_manager! {
+        pub Atoms:
+        AtomsCookie {
+            _XKB_RULES_NAMES,
+            STRING,
+        }
+    }
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let atoms = Atoms::new(&conn)?.reply()?;
+    let props = conn
+        .get_property(false, root, atoms._XKB_RULES_NAMES, atoms.STRING, 0, 0)?
+        .reply()?;
+    if props.format != 8 {
+        return Err(anyhow::anyhow!(
+            "Invalid format for __XKB_RULES_NAMES: {}",
+            props.format
+        ))
+    }
+    let props = conn
+        .get_property(
+            false,
+            root,
+            atoms._XKB_RULES_NAMES,
+            atoms.STRING,
+            0,
+            (props.bytes_after + 3) / 4,
+        )?
+        .reply()?;
+
+    let (rules, rest) = from_bytes_until_nul(&props.value)?;
+    let (model, rest) = from_bytes_until_nul(rest)?;
+    let (layout, rest) = from_bytes_until_nul(rest)?;
+    let (variant, rest) = from_bytes_until_nul(rest)?;
+    let (options, _) = from_bytes_until_nul(rest)?;
+    tracing::debug!(
+        "Got keymap from X server: rules={rules}, model={model}, layout={layout}, \
+         variant={variant}, options={options}",
+    );
+    xkbcommon::xkb::Keymap::new_from_names(
+        &xkbcommon::xkb::Context::new(0),
+        rules,
+        model,
+        layout,
+        variant,
+        Some(options.to_owned()),
+        0,
+    )
+    .ok_or_else(|| anyhow::anyhow!("Failed to create keymap"))
+}
+
+fn get_keymap_as_fd(keymap: &xkbcommon::xkb::Keymap) -> Result<(OwnedFd, u64)> {
+    use std::io::Write;
+    let fd = memfd::MemfdOptions::new()
+        .allow_sealing(true)
+        .create("crescent-keymap")?;
+    let mut file = fd.into_file();
+    write!(
+        file,
+        "{}",
+        keymap.get_as_string(xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1)
+    )?;
+    file.flush()?;
+
+    let fd = memfd::Memfd::try_from_file(file)
+        .map_err(|_| anyhow::anyhow!("Failed to convert file to memfd"))?;
+    fd.add_seals(&[
+        memfd::FileSeal::SealShrink,
+        memfd::FileSeal::SealGrow,
+        memfd::FileSeal::SealFutureWrite, /* SealWrite has this problem on Linux where the
+                                           * recipient can't create a shared, read-only mapping
+                                           * of this file. this could break some clients */
+        memfd::FileSeal::SealSeal,
+    ])?;
+    let size = fd.as_file().metadata()?.len();
+    Ok((fd.into_file().into(), size))
+}
+
 fn main() -> Result<()> {
     use futures_util::future;
     tracing_subscriber::fmt::init();
+    let keymap = get_keymap_from_xserver()?;
+    let (keymap_fd, keymap_size) = get_keymap_as_fd(&keymap)?;
+
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let (event_tx, event_rx) = smol::channel::unbounded();
     let _el = std::thread::spawn(move || {
@@ -324,9 +429,14 @@ fn main() -> Result<()> {
     let window = rx.recv().unwrap();
     let server = Crescent(Rc::new(CrescentState {
         globals:     RefCell::new(AnyGlobal::globals().collect()),
-        shell:       Rc::new(RefCell::new(DefaultShell::new(&output))),
+        shell:       Rc::new(RefCell::new(DefaultShell::new(&output, &keymap))),
         executor:    LocalExecutor::new(),
         seat_events: Default::default(),
+        keymap:      Keymap {
+            format: wl_keyboard::enums::KeymapFormat::XkbV1,
+            fd:     Rc::new(keymap_fd),
+            size:   keymap_size as u32,
+        },
     }));
     // Add output global and make sure its id is what we expect.
     tracing::debug!("globals {:?}", server.0.globals.borrow());

@@ -7,7 +7,9 @@ use apollo::{
     shell::{
         buffers,
         output::OutputChange,
-        surface::{self, roles::subsurface_iter, PointerEventKind},
+        surface::{
+            self, roles::subsurface_iter, KeyboardActivity, KeyboardState, PointerEventKind,
+        },
         xdg::{Layout, XdgShell},
         Shell, ShellEvent,
     },
@@ -23,9 +25,11 @@ use derivative::Derivative;
 use dlv_list::{Index, VecList};
 use ordered_float::NotNan;
 use slotmap::{DefaultKey, SlotMap};
+use tinyvec::TinyVec;
 use winit::event::MouseButton;
 use wl_protocol::wayland::wl_pointer::v8 as wl_pointer;
 use wl_server::events::{broadcast::Broadcast, EventSource};
+use xkbcommon::xkb;
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
@@ -39,10 +43,13 @@ pub struct DefaultShell<S: buffers::BufferLike> {
     shell_event:      Broadcast<ShellEvent>,
     position_offset:  Point<i32, coords::Screen>,
     screen:           apollo::shell::output::Screen,
+    #[derivative(Debug = "ignore")]
+    keyboard_state:   xkb::State,
+    keys:             TinyVec<[u8; 8]>,
 }
 
 impl<B: buffers::BufferLike> DefaultShell<B> {
-    pub fn new(output: &Rc<apollo::shell::output::Output>) -> Self {
+    pub fn new(output: &Rc<apollo::shell::output::Output>, keymap: &xkb::Keymap) -> Self {
         Self {
             storage:          Default::default(),
             stack:            Default::default(),
@@ -51,6 +58,8 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             pointer_focus:    None,
             pointer_position: None,
             screen:           apollo::shell::output::Screen::new_single_output(output),
+            keyboard_state:   xkb::State::new(keymap),
+            keys:             Default::default(),
         }
     }
 }
@@ -143,7 +152,14 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         }
         tracing::trace!("No surface under pointer");
         if let Some((surface, relative_position)) = found {
+            let focus_changed = old_pointer_focus
+                .as_ref()
+                .map_or(true, |weak| !Weak::ptr_eq(weak, &surface));
+            tracing::debug!("{focus_changed} {old_pointer_focus:?} {surface:?}");
             self.pointer_focus = Some(surface.clone());
+            if focus_changed {
+                self.send_keyboard_state();
+            }
             Some((surface.upgrade().unwrap(), relative_position))
         } else {
             if let Some(weak_surface) = old_pointer_focus {
@@ -151,9 +167,28 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                     // Nothing under the pointer, send a leave event to the last surface
                     // we sent a pointer event to.
                     surface.pointer_event(PointerEventKind::Leave);
+                    surface.keyboard_event(KeyboardActivity::Leave);
                 }
             }
             None
+        }
+    }
+
+    fn send_keyboard_state(&self) {
+        tracing::debug!("Sending keyboard state");
+        if let Some(focus) = self.pointer_focus.as_ref().and_then(|s| s.upgrade()) {
+            let state = KeyboardState {
+                keys:                self.keys.clone(),
+                locked_modifiers:    self.keyboard_state.serialize_mods(xkb::STATE_MODS_LOCKED),
+                latched_modifiers:   self.keyboard_state.serialize_mods(xkb::STATE_MODS_LATCHED),
+                depressed_modifiers: self
+                    .keyboard_state
+                    .serialize_mods(xkb::STATE_MODS_DEPRESSED),
+                effective_layout:    self
+                    .keyboard_state
+                    .serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE),
+            };
+            focus.keyboard_event(KeyboardActivity::Key(state));
         }
     }
 
@@ -190,6 +225,41 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 wl_pointer::enums::ButtonState::Released
             },
         });
+    }
+
+    pub fn key(&mut self, key: u8, pressed: bool) {
+        if pressed {
+            if self.keys.contains(&key) {
+                tracing::warn!(
+                    "Received pressed event for key {}, which was already pressed",
+                    key
+                );
+                return
+            }
+            self.keys.push(key);
+        } else {
+            if !self.keys.contains(&key) {
+                tracing::warn!(
+                    "Received release event for key {}, which was not pressed",
+                    key
+                );
+                return
+            }
+            self.keys.retain(|k| *k != key);
+        }
+
+        // update state
+        // Offset the keycode by 8, as the evdev XKB rules reflect X's
+        // broken keycode system, which starts at 8.
+        self.keyboard_state.update_key(
+            key as u32 + 8,
+            if pressed {
+                xkb::KeyDirection::Down
+            } else {
+                xkb::KeyDirection::Up
+            },
+        );
+        self.send_keyboard_state();
     }
 
     fn update_subtree_outputs(

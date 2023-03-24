@@ -514,6 +514,10 @@ impl Renderer {
                                     let pressed = matches!(state, winit::event::ElementState::Pressed);
                                     self.shell.borrow_mut().pointer_button(button, pressed);
                                 }
+                                WindowEvent::KeyboardInput { input, .. } => {
+                                    let pressed = matches!(input.state, winit::event::ElementState::Pressed);
+                                    self.shell.borrow_mut().key(input.scancode as u8, pressed);
+                                }
                                 _ => {
                                     tracing::trace!("Unhandled window event: {:?}", event);
                                 }

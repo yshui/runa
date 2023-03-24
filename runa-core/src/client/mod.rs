@@ -16,7 +16,6 @@
 const CLIENT_MAX_ID: u32 = 0xfeffffff;
 
 pub mod event_dispatcher;
-pub mod event_handlers;
 pub mod store;
 pub mod traits;
 

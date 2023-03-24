@@ -2,9 +2,8 @@ use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
 use runa_core::{
-    client::{
-        event_handlers::{Abortable, AutoAbortHandle},
-        traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
+    client::traits::{
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error::{Error, ProtocolError},
     events::EventSource,
@@ -284,13 +283,13 @@ where
 
                     // Start listening to layout events
                     let rx = <_ as EventSource<LayoutEvent>>::subscribe(&*surface);
-                    let (handler, abort) = Abortable::new(LayoutEventHandler {
+                    let (rx, abort_handle) = futures_util::stream::abortable(rx);
+                    event_dispatcher.add_event_handler(rx, LayoutEventHandler {
                         surface_object_id: surface.object_id(),
                     });
-                    event_dispatcher.add_event_handler(rx, handler);
-                    // `abort.auto_abort()` creates a handle which will stop the event handler when
-                    // the TopLevel object is destroyed.
-                    TopLevel(surface, abort.auto_abort()).into()
+                    // `abort_handle.into()` creates a handle which will terminate the event stream
+                    // when the TopLevel object is destroyed.
+                    TopLevel(surface, abort_handle.into()).into()
                 })
                 .is_some();
             if !inserted {
@@ -342,7 +341,7 @@ where
 #[derivative(Debug(bound = ""))]
 pub struct TopLevel<S: Shell>(
     pub(crate) Rc<crate::shell::surface::Surface<S>>,
-    AutoAbortHandle,
+    crate::utils::AutoAbort,
 );
 
 #[wayland_object]

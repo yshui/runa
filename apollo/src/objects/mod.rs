@@ -1,16 +1,13 @@
 use std::future::Future;
 
 use hashbrown::{HashMap, HashSet};
-use runa_io::traits::WriteMessage;
-use runa_wayland_protocols::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
 use runa_core::{
-    client::{
-        event_handlers::{Abortable, AutoAbortHandle},
-        traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, Store},
-    },
+    client::traits::{Client, EventDispatcher, EventHandler, EventHandlerAction, Store},
     error::Error,
     objects::wayland_object,
 };
+use runa_io::traits::WriteMessage;
+use runa_wayland_protocols::wayland::{wl_buffer::v1 as wl_buffer, wl_output::v4 as wl_output};
 
 use crate::{
     shell::{
@@ -29,7 +26,7 @@ pub mod xdg_shell;
 #[derive(Debug)]
 pub struct Buffer<B> {
     pub(crate) buffer:    AttachableBuffer<B>,
-    _event_handler_abort: AutoAbortHandle,
+    _event_handler_abort: crate::utils::AutoAbort,
 }
 
 impl<B: BufferLike> Buffer<B> {
@@ -64,14 +61,13 @@ impl<B: BufferLike> Buffer<B> {
         }
         let buffer = buffer.into();
         let object_id = buffer.object_id();
-        let event_handler = BufferEventHandler { object_id };
-        let (event_handler, abort_handle) = Abortable::new(event_handler);
+        let rx = buffer.subscribe();
+        let (rx, abort_handle) = futures_util::stream::abortable(rx);
         let ret = Self {
             buffer:               AttachableBuffer::new(buffer),
-            _event_handler_abort: abort_handle.auto_abort(),
+            _event_handler_abort: abort_handle.into(),
         };
-        let rx = ret.buffer.inner.subscribe();
-        event_dispatcher.add_event_handler(rx, event_handler);
+        event_dispatcher.add_event_handler(rx, BufferEventHandler { object_id });
         ret
     }
 
@@ -106,7 +102,7 @@ pub struct OutputState {
 pub struct Output {
     /// The corresponding shell output object.
     pub(crate) output:              WeakPtr<ShellOutput>,
-    pub(crate) event_handler_abort: Option<AutoAbortHandle>,
+    pub(crate) event_handler_abort: Option<crate::utils::AutoAbort>,
 }
 
 #[wayland_object(state = "OutputState")]

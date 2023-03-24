@@ -6,6 +6,23 @@ use std::{
 
 pub mod geometry;
 
+/// Wrapper of `futures_util::stream::AbortHandle` that automatically abort the
+/// stream when dropped.
+#[derive(Debug)]
+pub(crate) struct AutoAbort(futures_util::stream::AbortHandle);
+
+impl From<futures_util::stream::AbortHandle> for AutoAbort {
+    fn from(value: futures_util::stream::AbortHandle) -> Self {
+        Self(value)
+    }
+}
+
+impl Drop for AutoAbort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// A wrapper of `Rc` that implements `Hash` and `Eq` by comparing
 /// raw pointer addresses.
 #[derive(Debug)]
@@ -114,7 +131,7 @@ impl<T> From<Weak<T>> for WeakPtr<T> {
     }
 }
 
-pub mod stream {
+pub(crate) mod stream {
     use std::{
         cell::RefCell,
         pin::Pin,

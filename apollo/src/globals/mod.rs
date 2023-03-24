@@ -6,22 +6,21 @@ use std::{
 pub mod xdg_shell;
 
 use derivative::Derivative;
-use runa_io::traits::WriteMessage;
-use runa_wayland_types::Object as WaylandObject;
-use runa_wayland_protocols::wayland::{
-    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v9 as wl_seat,
-    wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor, wl_surface::v6 as wl_surface,
-};
 use runa_core::{
-    client::{
-        event_handlers::Abortable,
-        traits::{Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store},
+    client::traits::{
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     events::EventSource,
     globals::{Bind, GlobalMeta, MaybeConstInit},
     impl_global_for,
     renderer_capability::RendererCapability,
 };
+use runa_io::traits::WriteMessage;
+use runa_wayland_protocols::wayland::{
+    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v9 as wl_seat,
+    wl_shm::v1 as wl_shm, wl_subcompositor::v1 as wl_subcompositor, wl_surface::v6 as wl_surface,
+};
+use runa_wayland_types::Object as WaylandObject;
 
 use crate::{
     shell::{
@@ -368,10 +367,8 @@ where
 
             // Start a new event handler for this shell output
             let rx = self.shell_output.subscribe();
-            let handler = OutputChangeEventHandler { object_id };
-            let (handler, abort) = Abortable::new(handler);
-            let auto_abort = abort.auto_abort();
-            event_dispatcher.add_event_handler(rx, handler);
+            let (rx, abort_handle) = futures_util::stream::abortable(rx);
+            event_dispatcher.add_event_handler(rx, OutputChangeEventHandler { object_id });
 
             // Add this output to the set of all outputs
             let state = objects.get_state_mut::<Self::Object>().unwrap();
@@ -381,8 +378,8 @@ where
                 .or_default()
                 .insert(object_id);
             let this = objects.get_mut::<Self::Object>(object_id).unwrap();
-            // This will automatically stop the event handler when the output is destroyed
-            this.event_handler_abort = Some(auto_abort);
+            // This will automatically terminate the stream when the output is destroyed
+            this.event_handler_abort = Some(abort_handle.into());
 
             Ok(())
         }

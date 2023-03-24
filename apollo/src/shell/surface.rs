@@ -1230,10 +1230,13 @@ impl<S: Shell> Surface<S> {
 
     pub fn deactivate_role(&self, shell: &mut S) {
         if let Some(role) = self.role.borrow_mut().as_mut() {
-            role.deactivate(shell);
-            shell.get_mut(self.current_key()).role_state = None;
-            shell.get_mut(self.pending_key()).role_state = None;
-            shell.role_deactivated(self.current_key(), role.name());
+            if role.is_active() {
+                role.deactivate(shell);
+                shell.get_mut(self.current_key()).role_state = None;
+                shell.get_mut(self.pending_key()).role_state = None;
+                shell.role_deactivated(self.current_key(), role.name());
+                assert!(!role.is_active());
+            }
         };
     }
 

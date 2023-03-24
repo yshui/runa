@@ -19,7 +19,7 @@ use wl_io::{
     traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
     Connection,
 };
-use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_seat::v8 as wl_seat};
+use wl_protocol::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 use wl_server::{
     connection::{
         traits::{Client, ClientParts, Store as _},

@@ -19,9 +19,9 @@ use derivative::Derivative;
 use hashbrown::HashSet;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_compositor::v5 as wl_compositor, wl_output::v4 as wl_output,
+    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output,
     wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
-    wl_surface::v5 as wl_surface,
+    wl_surface::v6 as wl_surface,
 };
 use wl_server::{
     connection::traits::{
@@ -126,12 +126,13 @@ impl std::fmt::Display for SurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use wl_surface::enums::Error::*;
         match self.kind {
-            InvalidScale => write!(f, "invalid scale"),
+            InvalidScale => write!(f, "buffer scale value is invalid for surface"),
             InvalidTransform => {
-                write!(f, "invalid transform")
+                write!(f, "buffer transform value is invalid for surface")
             },
-            InvalidOffset => write!(f, "invalid offset"),
-            InvalidSize => write!(f, "invalid size"),
+            InvalidOffset => write!(f, "buffer offset is invalid"),
+            InvalidSize => write!(f, "buffer size is invalid"),
+            DefunctRoleObject => write!(f, "surface was destroyed before its role object"),
         }
     }
 }
@@ -318,6 +319,13 @@ where
                 ..
             } = ctx.as_mut_parts();
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
+
+            if this.inner.role_is_active() {
+                return Err(error::Error::custom(SurfaceError {
+                    object_id,
+                    kind: wl_surface::enums::Error::DefunctRoleObject,
+                }))
+            }
 
             this.inner.destroy(
                 &mut server_context.shell().borrow_mut(),

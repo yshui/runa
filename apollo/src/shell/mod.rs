@@ -4,7 +4,7 @@ pub mod surface;
 pub mod xdg;
 use std::{cell::RefCell, rc::Rc};
 
-use wl_protocol::wayland::{wl_keyboard::v8 as wl_keyboard, wl_seat::v8 as wl_seat};
+use wl_protocol::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 use wl_server::events::EventSource;
 
 #[derive(Clone, Debug)]

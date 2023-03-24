@@ -3,8 +3,8 @@ use std::future::Future;
 use ordered_float::NotNan;
 use wl_io::traits::WriteMessage;
 use wl_protocol::wayland::{
-    wl_keyboard::v8 as wl_keyboard, wl_pointer::v8 as wl_pointer, wl_seat::v8 as wl_seat,
-    wl_surface::v5 as wl_surface,
+    wl_keyboard::v9 as wl_keyboard, wl_pointer::v9 as wl_pointer, wl_seat::v9 as wl_seat,
+    wl_surface::v6 as wl_surface,
 };
 use wl_server::{
     connection::traits::{

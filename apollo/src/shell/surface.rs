@@ -11,7 +11,7 @@ use hashbrown::HashSet;
 use ordered_float::NotNan;
 use tinyvec::TinyVec;
 use tinyvecdeq::tinyvecdeq::TinyVecDeq;
-use wl_protocol::wayland::wl_pointer::v8 as wl_pointer;
+use wl_protocol::wayland::wl_pointer::v9 as wl_pointer;
 use wl_server::{
     events::{broadcast, single_state, EventSource},
     provide_any::{request_mut, request_ref, Demand, Provider},

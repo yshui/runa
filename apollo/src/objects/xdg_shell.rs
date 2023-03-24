@@ -165,11 +165,60 @@ pub struct Surface<S: Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<S>>,
 }
 
-#[derive(thiserror::Error, Debug)]
-enum SurfaceError {
-    #[error("Surface was destroyed before its role object")]
-    DefunctRoleObject(u32),
+struct SurfaceError {
+    kind:      xdg_surface::enums::Error,
+    object_id: u32,
 }
+
+impl std::fmt::Debug for SurfaceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use xdg_surface::enums::Error::*;
+        match self.kind {
+            DefunctRoleObject => {
+                write!(
+                    f,
+                    "Surface {} was destroyed before its role object",
+                    self.object_id
+                )
+            },
+            NotConstructed => {
+                write!(f, "Surface {} was not fully constructed", self.object_id)
+            },
+            AlreadyConstructed => {
+                write!(f, "Surface {} was already constructed", self.object_id)
+            },
+            UnconfiguredBuffer => {
+                write!(
+                    f,
+                    "Attaching a buffer to an unconfigured surface {}",
+                    self.object_id
+                )
+            },
+            InvalidSerial => {
+                write!(
+                    f,
+                    "Invalid serial number when acking a configure event, xdg_surface: {}",
+                    self.object_id
+                )
+            },
+            InvalidSize => {
+                write!(
+                    f,
+                    "Width or height was zero or negative, xdg_surface: {}",
+                    self.object_id
+                )
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for SurfaceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <Self as std::fmt::Debug>::fmt(self, f)
+    }
+}
+
+impl std::error::Error for SurfaceError {}
 
 impl wl_protocol::ProtocolError for SurfaceError {
     fn fatal(&self) -> bool {
@@ -177,9 +226,7 @@ impl wl_protocol::ProtocolError for SurfaceError {
     }
 
     fn wayland_error(&self) -> Option<(u32, u32)> {
-        match self {
-            SurfaceError::DefunctRoleObject(object_id) => Some((*object_id, 0)),
-        }
+        Some((self.object_id, self.kind as u32))
     }
 }
 
@@ -201,9 +248,10 @@ where
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
         let object = ctx.objects().get::<Self>(object_id).unwrap();
         if object.inner.role_is_active() {
-            return futures_util::future::err(Error::custom(SurfaceError::DefunctRoleObject(
+            return futures_util::future::err(Error::custom(SurfaceError {
                 object_id,
-            )))
+                kind: xdg_surface::enums::Error::DefunctRoleObject,
+            }))
         }
         ctx.objects_mut().remove(object_id);
         futures_util::future::ok(())

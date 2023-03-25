@@ -401,7 +401,7 @@ fn main() -> Result<()> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let (event_tx, event_rx) = smol::channel::unbounded();
     let _el = std::thread::spawn(move || {
-        use winit::platform::unix::EventLoopBuilderExtUnix;
+        use winit::platform::x11::EventLoopBuilderExtX11;
         let el = winit::event_loop::EventLoopBuilder::new()
             .with_any_thread(true)
             .build();

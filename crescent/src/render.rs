@@ -96,8 +96,11 @@ impl Renderer {
         size: PhysicalSize<u32>,
         shell: Rc<RefCell<DefaultShell<Buffer>>>,
     ) -> Renderer {
-        let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
-        let surface = unsafe { instance.create_surface(handle) };
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends:             wgpu::Backends::PRIMARY,
+            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc,
+        });
+        let surface = unsafe { instance.create_surface(handle) }.unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
@@ -106,7 +109,7 @@ impl Renderer {
             })
             .await
             .unwrap();
-        let format = surface.get_supported_formats(&adapter)[0];
+        let format = surface.get_capabilities(&adapter).formats[0];
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -222,6 +225,7 @@ impl Renderer {
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Index Buffer"),
@@ -301,6 +305,7 @@ impl Renderer {
                         },
                         usage:           wgpu::TextureUsages::TEXTURE_BINDING |
                             wgpu::TextureUsages::COPY_DST,
+                        view_formats:    &[],
                     })
                 });
                 if buffer.get_damage() {
@@ -475,6 +480,7 @@ impl Renderer {
                                 height:       new_size.height,
                                 present_mode: wgpu::PresentMode::Fifo,
                                 alpha_mode:   wgpu::CompositeAlphaMode::Auto,
+                                view_formats: vec![],
                             });
                             tx.try_send(surface).unwrap();
                             self.uniform = Self::create_uniforms(&self.device, &self.uniform_layout, new_size);

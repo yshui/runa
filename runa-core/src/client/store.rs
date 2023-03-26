@@ -1,13 +1,21 @@
+//! Reference implementation of the [`traits::Store`](super::traits::Store) trait.
+
 use std::any::{Any, TypeId};
 
 use derivative::Derivative;
 use futures_core::Stream;
 use hashbrown::{hash_map, HashMap};
-use indexmap::{IndexSet, IndexMap};
+use indexmap::{IndexMap, IndexSet};
 
 use super::{traits, CLIENT_MAX_ID};
 use crate::{events, objects};
 
+/// A reference object store implementation
+///
+/// # Note
+///
+/// You must call [`Store::clear_for_disconnect`] before the object store is
+/// dropped. Otherwise, the object store will panic.
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound = ""))]
 pub struct Store<Object> {
@@ -19,7 +27,7 @@ pub struct Store<Object> {
     /// Number of server side IDs left
     #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
     ids_left:     u32,
-    event_source: events::aggregate::Sender<StoreEventAggregate>,
+    event_source: events::aggregate::Sender<UpdatesAggregate>,
 }
 
 impl<Object: objects::AnyObject> Store<Object> {
@@ -40,8 +48,8 @@ impl<Object: objects::AnyObject> Store<Object> {
             hash_map::Entry::Vacant(_) => panic!("Incosistent object store state"),
         };
 
-        self.event_source.send(traits::StoreEvent {
-            kind:      traits::StoreEventKind::Removed { interface },
+        self.event_source.send(traits::StoreUpdate {
+            kind:      traits::StoreUpdateKind::Removed { interface },
             object_id: id,
         });
         Some(object)
@@ -66,8 +74,8 @@ impl<Object: objects::AnyObject> Store<Object> {
                     .or_insert_with(|| (object.new_singleton_state(), IndexSet::new()));
                 ids.insert(id);
                 let ret = v.insert(object);
-                self.event_source.send(traits::StoreEvent {
-                    kind:      traits::StoreEventKind::Inserted { interface },
+                self.event_source.send(traits::StoreUpdate {
+                    kind:      traits::StoreUpdateKind::Inserted { interface },
                     object_id: id,
                 });
                 Some((ret, &mut **state))
@@ -77,30 +85,30 @@ impl<Object: objects::AnyObject> Store<Object> {
 }
 
 #[derive(Debug, Default)]
-struct StoreEventAggregate {
+struct UpdatesAggregate {
     /// Map object ID to the diff that needs to be applied.
-    events: IndexMap<u32, traits::StoreEventKind>,
+    events: IndexMap<u32, traits::StoreUpdateKind>,
 }
 
-impl Iterator for StoreEventAggregate {
-    type Item = traits::StoreEvent;
+impl Iterator for UpdatesAggregate {
+    type Item = traits::StoreUpdate;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.events
             .pop()
-            .map(|(object_id, kind)| traits::StoreEvent { object_id, kind })
+            .map(|(object_id, kind)| traits::StoreUpdate { object_id, kind })
     }
 }
 
-impl StoreEventAggregate {
-    fn extend_one(&mut self, id: u32, item: traits::StoreEventKind) {
+impl UpdatesAggregate {
+    fn extend_one(&mut self, id: u32, item: traits::StoreUpdateKind) {
         use indexmap::map::Entry;
         match self.events.entry(id) {
             Entry::Vacant(v) => {
                 v.insert(item);
             },
             Entry::Occupied(mut o) => {
-                use traits::StoreEventKind::*;
+                use traits::StoreUpdateKind::*;
                 match (o.get(), &item) {
                     (Inserted { .. }, Removed { .. }) => {
                         // Inserted + Removed = ()
@@ -141,8 +149,8 @@ impl StoreEventAggregate {
     }
 }
 
-impl Extend<traits::StoreEvent> for StoreEventAggregate {
-    fn extend<T: IntoIterator<Item = traits::StoreEvent>>(&mut self, iter: T) {
+impl Extend<traits::StoreUpdate> for UpdatesAggregate {
+    fn extend<T: IntoIterator<Item = traits::StoreUpdate>>(&mut self, iter: T) {
         for event in iter {
             self.extend_one(event.object_id, event.kind);
         }
@@ -151,7 +159,7 @@ impl Extend<traits::StoreEvent> for StoreEventAggregate {
 
 impl<O> Store<O> {
     /// Remove all objects from the store. MUST be called before the store is
-    /// dropped, to ensure on_disconnect is called for all objects.
+    /// dropped, to ensure `on_disconnect` is called for all objects.
     pub fn clear_for_disconnect<Ctx>(&mut self, server_ctx: &mut Ctx::ServerContext)
     where
         Ctx: traits::Client,
@@ -180,8 +188,8 @@ impl<Object> Drop for Store<Object> {
     }
 }
 
-impl<O: objects::AnyObject> events::EventSource<traits::StoreEvent> for Store<O> {
-    type Source = impl Stream<Item = traits::StoreEvent> + 'static;
+impl<O: objects::AnyObject> events::EventSource<traits::StoreUpdate> for Store<O> {
+    type Source = impl Stream<Item = traits::StoreUpdate> + 'static;
 
     fn subscribe(&self) -> Self::Source {
         self.event_source.subscribe()
@@ -362,8 +370,8 @@ impl<O: objects::AnyObject> traits::Store<O> for Store<O> {
 
                 let ret = v.insert(object.into());
 
-                self.event_source.send(traits::StoreEvent {
-                    kind:      traits::StoreEventKind::Inserted {
+                self.event_source.send(traits::StoreUpdate {
+                    kind:      traits::StoreUpdateKind::Inserted {
                         interface: T::INTERFACE,
                     },
                     object_id: id,

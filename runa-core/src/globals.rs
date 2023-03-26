@@ -1,3 +1,5 @@
+//! Traits and type related to wayland globals
+
 use std::{future::Future, pin::Pin};
 
 use runa_io::traits::WriteMessage;
@@ -5,27 +7,43 @@ use runa_wayland_protocols::wayland::{wl_display, wl_registry::v1 as wl_registry
 
 use crate::{
     client::traits::{
-        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, StoreEvent,
+        Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, StoreUpdate,
     },
     events::EventSource,
     objects::DISPLAY_ID,
-    server::{GlobalsUpdate, Server},
+    server::traits::{GlobalStore, GlobalsUpdate, Server},
 };
 
-pub trait GlobalMeta {
+/// A monomorphic global
+///
+/// i.e. a global with a concrete type. This is analogous to the
+/// [`MonoObject`](crate::objects::MonoObject) trait for objects.
+pub trait MonoGlobal: Sized {
+    /// Type of the proxy object for this global.
     type Object;
-    /// Create a proxy of this global, called when the client tries to bound
-    /// the global.
-    fn new_object(&self) -> Self::Object;
-    fn interface(&self) -> &'static str;
-    fn version(&self) -> u32;
+
+    /// The interface name of this global.
+    const INTERFACE: &'static str;
+    /// The version number of this global.
+    const VERSION: u32;
+    /// A value that can be used to create an instance of `Self`. Or None if
+    /// there is no compile time default value.
+    const MAYBE_DEFAULT: Option<Self>;
+    /// Create a new proxy object of this global.
+    fn new_object() -> Self::Object;
 }
 
-pub trait Bind<Ctx>: GlobalMeta {
+/// Bind a global to a client
+///
+/// TODO: authorization support, i.e. some globals should only be accessible to
+/// authorized clients.
+pub trait Bind<Ctx> {
+    /// Type of future returned by [`bind`](Self::bind).
     type BindFut<'a>: Future<Output = std::io::Result<()>> + 'a
     where
         Ctx: 'a,
         Self: 'a;
+
     /// Setup a proxy of this global, the proxy object has already been inserted
     /// into the client's object store, with the given object id.
     ///
@@ -34,57 +52,55 @@ pub trait Bind<Ctx>: GlobalMeta {
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a>;
 }
 
-/// A value that can be initialized with a constant
-pub trait MaybeConstInit: Sized {
-    /// A value that can be used to create an instance of `Self`.
-    const INIT: Option<Self>;
-}
+/// A polymorphic global
+///
+/// This is analogous to the [`AnyObject`](crate::objects::AnyObject) trait for
+/// objects, as well as the [`Any`](std::any::Any) trait.
+///
+/// Typically a polymorphic global type will be a enum of all the global types
+/// used in the compositor. If you have such an enum, the
+/// [`globals`](crate::globals) macro will generate this trait impl for you.
+///
+/// Unlike `AnyObject`, this trait doesn't have a `cast_mut` method because
+/// globals are shared so it's not possible to get a unique reference to them.
+pub trait AnyGlobal {
+    /// Type of the proxy object for this global. Since this global is
+    /// polymorphic, the type of the proxy object is also polymorphic. This
+    /// should match the object type you have in you
+    /// [`Client`](crate::client::traits::Client) trait implementation.
+    type Object: crate::objects::AnyObject;
 
-pub trait Global<Ctx>: MaybeConstInit + Bind<Ctx> {
+    /// Create a proxy of this global, called when the client tries to bound
+    /// the global. The new proxy object will be incomplete until [`Bind::bind`]
+    /// is called with that object.
+    fn new_object(&self) -> Self::Object;
+
+    /// The interface name of this global.
+    fn interface(&self) -> &'static str;
+
+    /// The version number of this global.
+    fn version(&self) -> u32;
+
+    /// Cast this polymorphic global to a more concrete type.
     fn cast<T: 'static>(&self) -> Option<&T>
     where
-        Self: 'static + Sized,
-    {
-        (self as &dyn std::any::Any).downcast_ref()
-    }
+        Self: 'static + Sized;
 }
 
-/// Implement Global trait using the default implementation
-/// This could be a blanket impl, but that would deprive the user of the ability
-/// to have specialized impl for their own types. Not until we have
-/// specialization in Rust...
-#[macro_export]
-macro_rules! impl_global_for {
-    ($ty:ty $(where $($tt:tt)*)?) => {
-        impl<Ctx> $crate::globals::Global<Ctx> for $ty
-        where $ty: MaybeConstInit + $crate::globals::Bind<Ctx>,
-              $($($tt)*)?
-        {
-        }
-    };
-}
-
-#[derive(Debug, Default)]
+/// Implementation of the `wl_display` global
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Display;
-impl_global_for!(Display);
 
-impl MaybeConstInit for Display {
-    const INIT: Option<Self> = Some(Display);
-}
-
-impl GlobalMeta for Display {
+impl MonoGlobal for Display {
     type Object = crate::objects::Display;
 
-    fn interface(&self) -> &'static str {
-        wl_display::v1::NAME
-    }
+    const INTERFACE: &'static str = wl_display::v1::NAME;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_display::v1::VERSION;
 
-    fn version(&self) -> u32 {
-        wl_display::v1::VERSION
-    }
-
-    fn new_object(&self) -> Self::Object {
-        crate::objects::Display::default()
+    #[inline]
+    fn new_object() -> Self::Object {
+        crate::objects::Display { initialized: false }
     }
 }
 
@@ -99,13 +115,13 @@ impl<Ctx: Client> Bind<Ctx> for Display {
             ..
         } = client.as_mut_parts();
         objects
-            .get_mut::<Self::Object>(object_id)
+            .get_mut::<<Self as MonoGlobal>::Object>(object_id)
             .unwrap()
             .initialized = true;
 
         struct DisplayEventHandler;
         impl<Ctx: Client> EventHandler<Ctx> for DisplayEventHandler {
-            type Message = StoreEvent;
+            type Message = StoreUpdate;
 
             type Future<'ctx> = impl Future<
                     Output = Result<
@@ -122,7 +138,7 @@ impl<Ctx: Client> Bind<Ctx> for Display {
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 async move {
-                    use crate::client::traits::StoreEventKind::*;
+                    use crate::client::traits::StoreUpdateKind::*;
                     if matches!(message.kind, Removed { .. } | Replaced { .. }) {
                         // Replaced can really only happen for server created objects, because
                         // we haven't sent the DeleteId event yet, so the client can't have
@@ -151,26 +167,18 @@ impl<Ctx: Client> Bind<Ctx> for Display {
 /// If you use this as your registry global implementation, you must also use
 /// [`crate::objects::Registry`] as your client side registry proxy
 /// implementation.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Registry;
-impl_global_for!(Registry);
 
-impl MaybeConstInit for Registry {
-    const INIT: Option<Self> = Some(Registry);
-}
-
-impl GlobalMeta for Registry {
+impl MonoGlobal for Registry {
     type Object = crate::objects::Registry;
 
-    fn interface(&self) -> &'static str {
-        wl_registry::NAME
-    }
+    const INTERFACE: &'static str = wl_registry::NAME;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_registry::VERSION;
 
-    fn version(&self) -> u32 {
-        wl_registry::VERSION
-    }
-
-    fn new_object(&self) -> Self::Object {
+    #[inline]
+    fn new_object() -> Self::Object {
         crate::objects::Registry(None)
     }
 }
@@ -180,7 +188,6 @@ impl<Ctx: Client> Bind<Ctx> for Registry {
 
     fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
         async move {
-            use crate::server::Globals;
             let ClientParts {
                 server_context,
                 connection,

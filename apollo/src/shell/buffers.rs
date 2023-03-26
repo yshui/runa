@@ -6,10 +6,6 @@ use runa_core::events::{single_state, EventSource};
 use crate::utils::geometry::{coords, Extent};
 
 /// The base buffer trait.
-///
-/// If you want to add a new type of buffer to use with this crate, you need to
-/// provide a `&dyn Buffer` from [`ObjectMeta::provide`] function your buffer
-/// object implements.
 pub trait BufferLike: EventSource<BufferEvent> + Debug + 'static {
     // TODO: take rectangles
     fn damage(&self);

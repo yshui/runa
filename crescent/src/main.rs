@@ -21,7 +21,7 @@ use runa_core::{
     events::broadcast::Broadcast,
     globals::Bind,
     objects::{Object, DISPLAY_ID},
-    server::Globals,
+    server::traits::GlobalStore,
 };
 use runa_io::{
     buf::BufReaderWithFd,
@@ -127,7 +127,7 @@ pub enum AnyObject {
     Buffer(apollo::objects::Buffer<render::Buffer>),
 }
 
-impl runa_core::server::Server for Crescent {
+impl runa_core::server::traits::Server for Crescent {
     type ClientContext = CrescentClient;
     type Conn = UnixStream;
     type Error = ();

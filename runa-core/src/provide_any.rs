@@ -1,6 +1,7 @@
 //! The provide_any API "borrowed" from the Rust libstd.
 //!
-//! Remove after the API is stabilized. (see: https://github.com/rust-lang/rust/issues/96024)
+//! Remove after the API is stabilized. (see: <https://github.com/rust-lang/rust/issues/96024>)
+#![allow(missing_docs, missing_debug_implementations)]
 
 use std::any::TypeId;
 
@@ -46,7 +47,7 @@ mod tags {
     #[derive(Debug)]
     pub struct Value<T: 'static>(PhantomData<T>);
 
-    impl<'a, T: 'static> Type<'a> for Value<T> {
+    impl<T: 'static> Type<'_> for Value<T> {
         type Reified = T;
     }
 
@@ -55,7 +56,7 @@ mod tags {
     #[derive(Debug)]
     pub struct MaybeSizedValue<T: ?Sized + 'static>(PhantomData<T>);
 
-    impl<'a, T: ?Sized + 'static> MaybeSizedType<'a> for MaybeSizedValue<T> {
+    impl<T: ?Sized + 'static> MaybeSizedType<'_> for MaybeSizedValue<T> {
         type Reified = T;
     }
 
@@ -139,7 +140,7 @@ pub struct Demand<'a>(dyn Erased<'a> + 'a);
 
 pub struct Receiver<'a, 'b, I: tags::Type<'a>>(&'b mut TaggedOption<'a, I>);
 
-impl<'a, 'b, I: tags::Type<'a>> Receiver<'a, 'b, I> {
+impl<'a, I: tags::Type<'a>> Receiver<'a, '_, I> {
     #[inline]
     pub fn provide(&mut self, value: I::Reified) {
         self.0 .0 = Some(value)
@@ -247,7 +248,7 @@ impl<'a> Demand<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for Demand<'a> {
+impl std::fmt::Debug for Demand<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Demand").finish_non_exhaustive()
     }

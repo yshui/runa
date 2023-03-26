@@ -121,7 +121,7 @@ impl<'a, W: WriteMessage + Unpin + ?Sized + 'a> Future for Flush<'a, W> {
 ///
 /// This is similar to `Sink`, but instead of accepting only one type of
 /// Items, it accepts any type that implements
-/// [`wl_io::traits::ser::Serialize`].
+/// [`Serialize`](crate::ser::Serialize).
 pub trait WriteMessage {
     /// Reserve space for a message
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;

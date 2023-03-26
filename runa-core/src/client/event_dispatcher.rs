@@ -1,3 +1,6 @@
+//! Default implementation of the
+//! [`traits::EventDispatcher`](super::traits::EventDispatcher) trait.
+
 use std::{
     any::Any,
     future::Future,
@@ -241,6 +244,7 @@ where
 
 type BoxedAnyEventHandler<Ctx> = Pin<Box<dyn AnyEventHandler<Ctx = Ctx>>>;
 
+/// A reference implementation of the event dispatcher
 pub struct EventDispatcher<Ctx> {
     handlers:       FuturesUnordered<StreamFuture<BoxedAnyEventHandler<Ctx>>>,
     active_handler: Option<BoxedAnyEventHandler<Ctx>>,
@@ -264,6 +268,7 @@ impl<Ctx> Default for EventDispatcher<Ctx> {
 }
 
 impl<Ctx> EventDispatcher<Ctx> {
+    /// Create a new event dispatcher
     pub fn new() -> Self {
         Self::default()
     }
@@ -332,6 +337,9 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
         }
     }
 
+    /// Wait for the next event from the event dispatcher. Returns a future that
+    /// resolves to a [`PendingEvent`], the caller should call
+    /// [`PendingEvent::handle`] to handle the event.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> impl FusedFuture<Output = PendingEvent<'_, Ctx>> + '_ {
         struct Next<'a, Ctx> {
@@ -349,7 +357,7 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
             }
         }
 
-        impl<'a, Ctx: traits::Client + 'static> FusedFuture for Next<'a, Ctx> {
+        impl<Ctx: traits::Client + 'static> FusedFuture for Next<'_, Ctx> {
             fn is_terminated(&self) -> bool {
                 self.dispatcher.is_none()
             }
@@ -382,16 +390,28 @@ impl<Ctx: traits::Client + 'static> EventDispatcher<Ctx> {
     }
 }
 
+/// A pending event that needs to be handled.
+#[derive(Debug)]
 pub struct PendingEvent<'a, Ctx> {
     dispatcher: &'a mut EventDispatcher<Ctx>,
 }
 
+/// Type of future returned by [`PendingEvent::handle`].
 pub struct PendingEventFut<'dispatcher, 'ctx, Ctx: traits::Client> {
     dispatcher: &'dispatcher mut EventDispatcher<Ctx>,
     fut:        Option<Pin<Box<dyn AnyEventHandler<Ctx = Ctx> + 'ctx>>>,
 }
 
-impl<'dispatcher, 'ctx, Ctx: traits::Client> Future for PendingEventFut<'dispatcher, 'ctx, Ctx> {
+impl<Ctx: traits::Client + std::fmt::Debug> std::fmt::Debug for PendingEventFut<'_, '_, Ctx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingEventFut")
+            .field("dispatcher", &self.dispatcher)
+            .field("fut", &"…")
+            .finish()
+    }
+}
+
+impl<Ctx: traits::Client> Future for PendingEventFut<'_, '_, Ctx> {
     type Output = EventHandlerOutput;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -399,7 +419,7 @@ impl<'dispatcher, 'ctx, Ctx: traits::Client> Future for PendingEventFut<'dispatc
     }
 }
 
-impl<'dispatcher, 'ctx, Ctx: traits::Client> Drop for PendingEventFut<'dispatcher, 'ctx, Ctx> {
+impl<Ctx: traits::Client> Drop for PendingEventFut<'_, '_, Ctx> {
     fn drop(&mut self) {
         if let Some(fut) = self.fut.take() {
             let (fut, action) = fut.stop_handle();

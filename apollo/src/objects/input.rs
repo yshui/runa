@@ -4,10 +4,10 @@ use ordered_float::NotNan;
 use runa_core::{
     client::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, GetError, Store,
-        StoreEvent, StoreEventKind,
+        StoreUpdate, StoreUpdateKind,
     },
     error::{Error, ProtocolError},
-    events::{broadcast::Receiver, EventSource},
+    events::EventSource,
     objects::wayland_object,
 };
 use runa_io::traits::WriteMessage;
@@ -23,10 +23,7 @@ use crate::{
         surface::{KeyboardActivity, KeyboardEvent, PointerEvent},
         HasShell, Shell,
     },
-    utils::{
-        geometry::{coords, Point},
-        stream::{self, Replace, Replaceable},
-    },
+    utils::geometry::{coords, Point},
 };
 #[derive(Default, Debug)]
 pub struct Seat;
@@ -50,7 +47,7 @@ impl ProtocolError for SeatError {
     }
 }
 
-/// Macro for create a event handler that handles StoreEvent, and when it
+/// Macro for create a event handler that handles StoreUpdate, and when it
 /// detects the first surface object is inserted into the store, it will
 /// subscribe to `$event` from the surface, and register the event source in
 /// `$receiver`'s singleton state.
@@ -65,7 +62,7 @@ macro_rules! def_new_surface_handler {
             Sh: Shell,
             Server: HasShell<Shell = Sh>,
         {
-            type Message = StoreEvent;
+            type Message = StoreUpdate;
 
             type Future<'ctx> = impl Future<
                     Output = Result<EventHandlerAction, Box<dyn std::error::Error + Send + Sync>>,
@@ -82,10 +79,10 @@ macro_rules! def_new_surface_handler {
                                         return futures_util::future::ok(EventHandlerAction::Stop)
                                     };
                 match message.kind {
-                    StoreEventKind::Inserted {
+                    StoreUpdateKind::Inserted {
                         interface: wl_surface::NAME,
                     } |
-                    StoreEventKind::Replaced {
+                    StoreUpdateKind::Replaced {
                         new_interface: wl_surface::NAME,
                         ..
                     } => {
@@ -249,35 +246,68 @@ where
     }
 }
 
-pub struct KeyboardState {
-    /// Handle for starting/stopping listening to keyboard events. We use a
-    /// Replace here because we need to start/stop the listener in another
-    /// event handler, i.e. without access to the event_dispatcher. This is the
-    /// same for [`PointerState`].
-    handle:       Replace<Receiver<KeyboardEvent>>,
-    /// Event source paired with the Replace in `handle`. This is only ever no
-    /// None when the first Keyboard object is just inserted.
-    /// [`Seat::get_keyboard`] will take this out and register it
-    /// with the event dispatcher. Same for [`PointerState`].
-    event_source: Option<Replaceable<Receiver<KeyboardEvent>>>,
-}
+mod states {
+    use runa_core::events::broadcast::Receiver;
 
-impl Default for KeyboardState {
-    fn default() -> Self {
-        let (event_source, handle) = stream::replaceable();
-        Self {
-            handle,
-            event_source: Some(event_source),
+    use crate::{
+        shell::surface::{KeyboardEvent, PointerEvent},
+        utils::stream::{self, Replace, Replaceable},
+    };
+
+    pub struct KeyboardState {
+        /// Handle for starting/stopping listening to keyboard events. We use a
+        /// Replace here because we need to start/stop the listener in another
+        /// event handler, i.e. without access to the event_dispatcher. This is
+        /// the same for [`PointerState`].
+        pub(super) handle:       Replace<Receiver<KeyboardEvent>>,
+        /// Event source paired with the Replace in `handle`. This is only ever
+        /// no None when the first Keyboard object is just inserted.
+        /// `Seat::get_keyboard` will take this out and register it
+        /// with the event dispatcher. Same for [`PointerState`].
+        pub(super) event_source: Option<Replaceable<Receiver<KeyboardEvent>>>,
+    }
+
+    impl Default for KeyboardState {
+        fn default() -> Self {
+            let (event_source, handle) = stream::replaceable();
+            Self {
+                handle,
+                event_source: Some(event_source),
+            }
+        }
+    }
+
+    impl Drop for KeyboardState {
+        fn drop(&mut self) {
+            // Last keyboard object is dropped, stop listening for keyboard events
+            self.handle.replace(None);
+        }
+    }
+
+    pub struct PointerState {
+        pub(super) handle:       Replace<Receiver<PointerEvent>>,
+        pub(super) event_source: Option<Replaceable<Receiver<PointerEvent>>>,
+    }
+
+    impl Default for PointerState {
+        fn default() -> Self {
+            let (event_source, handle) = stream::replaceable();
+            Self {
+                handle,
+                event_source: Some(event_source),
+            }
+        }
+    }
+
+    impl Drop for PointerState {
+        fn drop(&mut self) {
+            // Stop listening for pointer events when the last pointer object is dropped
+            self.handle.replace(None);
         }
     }
 }
 
-impl Drop for KeyboardState {
-    fn drop(&mut self) {
-        // Last keyboard object is dropped, stop listening for keyboard events
-        self.handle.replace(None);
-    }
-}
+pub(crate) use states::*;
 
 #[derive(Debug, Default)]
 pub struct Keyboard;
@@ -505,28 +535,6 @@ where
             }
             Ok(EventHandlerAction::Keep)
         }
-    }
-}
-
-pub struct PointerState {
-    handle:       Replace<Receiver<PointerEvent>>,
-    event_source: Option<Replaceable<Receiver<PointerEvent>>>,
-}
-
-impl Default for PointerState {
-    fn default() -> Self {
-        let (event_source, handle) = stream::replaceable();
-        Self {
-            handle,
-            event_source: Some(event_source),
-        }
-    }
-}
-
-impl Drop for PointerState {
-    fn drop(&mut self) {
-        // Stop listening for pointer events when the last pointer object is dropped
-        self.handle.replace(None);
     }
 }
 

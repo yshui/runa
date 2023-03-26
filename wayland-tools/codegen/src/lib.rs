@@ -541,6 +541,14 @@ fn generate_dispatch_trait(
             -> Self::#retty<'a>;
         }
     });
+    let fut_docs = messages.iter().map(|m| {
+        let name: Cow<'_, _> = if m.name == "move" || m.name == "type" {
+            format!("{}_", m.name).into()
+        } else {
+            m.name.as_str().into()
+        };
+        format!("Type of future returned by [`{name}`](Self::{name})")
+    });
     let futs = messages
         .iter()
         .map(|m| format_ident!("{}Fut", m.name.to_pascal_case()));
@@ -549,6 +557,7 @@ fn generate_dispatch_trait(
         pub trait #ty<Ctx> {
             type Error;
             #(
+                #[doc = #fut_docs]
                 type #futs<'a>: ::std::future::Future<Output = ::std::result::Result<(), Self::Error>> + 'a
                     where Ctx: 'a;
             )*

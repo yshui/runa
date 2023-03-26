@@ -1,7 +1,21 @@
-//! These are a set of objects the client can acquire. These objects typically
-//! implement the RequestDispatch trait of one of the wayland interfaces. As
-//! well as a `InterfaceMeta` trait to provide information about the interface,
-//! and allowing them to be cast into trait objects and stored together.
+//! Interfaces for wayland objects
+//!
+//! This module defines common interfaces for wayland objects. [`MonoObject`]
+//! describes a object with a concrete type, whereas [`AnyObject`] describes a
+//! type erased object, akin to `dyn Any`.
+//!
+//! Note these interfaces really only represents part of what a wayland object
+//! does. These objects would also implement one of the `RequestDispatch` traits
+//! generated from the wayland protocol specification, which will be used by the
+//! [`Object`] trait to handle wayland requests.
+//!
+//! Normally, you wouldn't implement traits defined here by hand, but instead
+//! use the [`#[derive(Object)]`](runa_macros::Object) or the
+//! [`#[wayland_object]`](wayland_object) attribute to generate the impls for
+//! you.
+//!
+//! Reference implementations of the core wayland objects: `wl_display`,
+//! `wl_registry`, and `wl_callback` are also provided here.
 
 use std::{
     convert::Infallible,
@@ -14,7 +28,37 @@ use ::runa_wayland_protocols::wayland::{
     wl_callback, wl_display::v1 as wl_display, wl_registry::v1 as wl_registry,
 };
 use runa_io::traits::WriteMessage;
-#[doc(inline)]
+/// Generate `Object` impls for types that implement `RequestDispatch` for a
+/// certain interface. Should be attached to `RequestDispatch` impls.
+///
+/// It deserialize a message from a deserializer, and calls appropriate function
+/// in the `RequestDispatch` based on the message content. Your impl of
+/// `RequestDispatch` should contains an error type that can be converted from
+/// deserailization error.
+///
+/// # Arguments
+///
+/// * `message` - The message type. By default, this attribute try to cut the
+///   "Dispatch" suffix from the trait name. i.e.
+///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1::Request`.
+/// * `interface` - The interface name. By default, this attribute finds the
+///   parent of the `RequestDispatch` trait, i.e.
+///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1`; then attach
+///   `::NAME` to it as the interface.
+/// * `on_disconnect` - The function to call when the client disconnects. Used
+///   for the [`Object::on_disconnect`](crate::objects::Object::on_disconnect)
+///   impl.
+/// * `crate` - The path to the `runa_core` crate. "runa_core" by default.
+/// * `state` - The type of the singleton state associated with the object. See
+///   [`MonoObject::SingletonState`](crate::objects::MonoObject::SingletonState)
+///   for more information. If not set, this will be a unit type (e.g. `()`). An
+///   optional where clause can be added, which will be attached to the impl for
+///   `MonoObject`.
+/// * `state_init` - An expression to create the initial value of the state.
+///   This expression must be evaluate-able in const context. By default, if
+///   `state` is not set, this will be `()`; otherwise this will be
+///   `Default::default`, which must be defined as an associated constant. Note
+///   you don't need to wrap this in `Some`.
 pub use runa_macros::wayland_object;
 #[doc(no_inline)]
 pub use runa_macros::Object;
@@ -23,8 +67,8 @@ use tracing::debug;
 
 use crate::{
     client::traits::{Client, ClientParts, Store},
-    globals::{Bind, GlobalMeta},
-    server::{self, Globals},
+    globals::{AnyGlobal, Bind},
+    server::traits::{GlobalStore, Server},
 };
 
 /// A polymorphic object, i.e. it's an union of multiple objects types.
@@ -35,9 +79,9 @@ use crate::{
 ///
 /// # Example
 ///
-/// Normally you won't need to worry about this, as this is generated
-/// automatically by `#[derive(Object)]`, but here is an example of how to
-/// implement this trait.
+/// Normally you won't need to worry about implementing this trait, as this can
+/// be generated automatically by [`#[derive(Object)]`](runa_macros::Object),
+/// but here is an example of how to implement this trait.
 ///
 /// ```rust
 /// use std::any::Any;
@@ -140,10 +184,15 @@ pub trait AnyObject: 'static + Sized {
     /// # Note
     ///
     /// This concrete type of the returned value must be consistent with
-    /// [`MonoObject::SingletonState`], otherwise the `Store` implementation
-    /// might panic. You don't need to worry about this if you use
-    /// `#[derive(Object)]` and `#[wayland_object]` macros to generate the
-    /// implementation.
+    /// [`MonoObject::SingletonState`] for the `MonoObject` object contained in
+    /// this `AnyObject`, otherwise the `Store` implementation might panic.
+    ///
+    /// i.e. if [`Self::type_id`] returns `std::any::TypeId::of::<A>()`, then
+    /// this method must return `Box::new(<A as
+    /// MonoObject>::new_singleton_state())`.
+    ///
+    /// You don't need to worry about this if you use `#[derive(Object)]`
+    /// and `#[wayland_object]` macros to generate the implementation.
     fn new_singleton_state(&self) -> Box<dyn std::any::Any>;
 
     /// Type id of the concrete object type. If this is an enum of multiple
@@ -171,8 +220,11 @@ pub trait MonoObject: 'static {
     /// state is managed by the object store, and it will be dropped when
     /// the last object of the type is dropped.
     type SingletonState: 'static;
+
+    /// Create a new instance of the singleton state.
     fn new_singleton_state() -> Self::SingletonState;
 
+    /// The wayland interface implemented by this object.
     const INTERFACE: &'static str;
 }
 
@@ -186,16 +238,23 @@ pub trait MonoObject: 'static {
 /// implementation with the help of the `#[wayland_object]` macro.
 ///
 /// An `AnyObject` can be seen as a union of multiple `MonoObject` types. Its
-/// `Object` trait implementation can be generated using the `[derive(Object)]`
-/// macro.
+/// `Object` trait implementation can be generated using the
+/// [`#[derive(Object)]`](runa_macros::Object) macro.
 pub trait Object<Ctx: crate::client::traits::Client>: 'static {
+    /// The type of wayland messages that this object can receive.
+    /// This is what the [`dispatch`](Self::dispatch) method accepts.
     type Request<'a>: runa_io::traits::de::Deserialize<'a>
     where
         Ctx: 'a;
+
+    /// Error returned by the [`dispatch`](Self::dispatch) method.
     type Error: crate::error::ProtocolError;
+
+    /// The future type returned by the [`dispatch`](Self::dispatch) method.
     type Fut<'a>: Future<Output = (Result<(), Self::Error>, usize, usize)> + 'a
     where
         Ctx: 'a;
+
     /// A function that will be called when the client disconnects. It should
     /// free up allocated resources if any. This function only gets reference to
     /// the server context, because:
@@ -216,9 +275,9 @@ pub trait Object<Ctx: crate::client::traits::Client>: 'static {
         _state: &mut dyn std::any::Any,
     ) {
     }
-    /// Dispatch requests to the interface implementation. Returns a future,
+    /// Dispatch a wayland request to this object. Returns a future,
     /// that resolves to (Result, usize, usize), which are the result of the
-    /// request, the number of bytes and file descriptors in the message,
+    /// request, the number of bytes and file descriptors in the request,
     /// respectively.
     fn dispatch<'a>(ctx: &'a mut Ctx, object_id: u32, msg: Self::Request<'a>) -> Self::Fut<'a>;
 }
@@ -268,7 +327,6 @@ where
     fn get_registry(ctx: &mut Ctx, object_id: u32, registry: NewId) -> Self::GetRegistryFut<'_> {
         assert!(ctx.objects().get::<Self>(object_id).unwrap().initialized);
         async move {
-            use server::Server;
             debug!("wl_display.get_registry {}", registry);
             let ClientParts {
                 server_context,
@@ -303,6 +361,7 @@ where
     }
 }
 
+/// Default wl_registry implementation
 #[derive(Debug)]
 pub struct Registry(pub(crate) Option<futures_util::future::AbortHandle>);
 
@@ -331,9 +390,10 @@ where
         _version: u32,
         id: NewId,
     ) -> Self::BindFut<'a> {
+        // TODO: remember the version requested by the client, and adjust objects
+        // behavior accordingly.
         tracing::debug!("bind name:{name}, id:{id}");
         async move {
-            use crate::server::Server;
             let ClientParts {
                 server_context,
                 objects,
@@ -358,7 +418,8 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+/// Default wl_callback implementation
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Callback {
     fired: bool,
 }

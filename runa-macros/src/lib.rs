@@ -254,35 +254,6 @@ fn filter_generics(generics: &mut syn::Generics, ty: &mut syn::Type) -> Result<(
     Ok(())
 }
 
-/// Generate `Object` impls for types that implement `RequestDispatch` for a
-/// certain interface. Should be attached to `RequestDispatch` impls.
-///
-/// It deserialize a message from a deserializer, and calls appropriate function
-/// in the `RequestDispatch` based on the message content. Your impl of
-/// `RequestDispatch` should contains an error type that can be converted from
-/// deserailization error.
-///
-/// # Arguments
-///
-/// * `message` - The message type. By default, this attribute try to cut the
-///   "Dispatch" suffix from the trait name. i.e.
-///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1::Request`.
-/// * `interface` - The interface name. By default, this attribute finds the
-///   parent of the `RequestDispatch` trait, i.e.
-///   `wl_buffer::v1::RequestDispatch` will become `wl_buffer::v1`; then attach
-///   `::NAME` to it as the interface.
-/// * `on_disconnect` - The function to call when the client disconnects. Used
-///   for the [`runa_core::objects::Object::on_disconnect`] impl.
-/// * `crate` - The path to the `runa_core` crate. "runa_core" by default.
-/// * `state` - The type of the singleton state associated with the object. See
-///   [`runa_core::objects::MonoObject::SingletonState`] for more information.
-///   If not set, this will be a never type (e.g. `!`). An optional where clause
-///   can be added, which will be attached to the impl for `MonoObject`.
-/// * `state_init` - An expression to create the initial value of the state.
-///   This expression must be evaluate-able in const context. By default, if
-///   `state` is not set, this will be `None`; otherwise this will be
-///   `<state>::INIT`, which must be defined as an associated constant. Note you
-///   don't need to wrap this in `Some`.
 #[proc_macro_attribute]
 pub fn wayland_object(
     attr: proc_macro::TokenStream,
@@ -535,10 +506,7 @@ pub fn wayland_object(
 /// If `context` is not set, the generated implementation will be generic over
 /// the the context type (i.e. the type parameter `Ctx` of
 /// `Object`). If your object types are generic over the
-/// context type too, then you must name it `Ctx`. i.e. if you wrote `impl<Ctx>
-/// Object<Ctx> for Variant<Ctx>`, for some variant `Variant`,
-/// then the generic parameter has to be called `Ctx` on the enum too.
-/// If not, `Ctx` cannot appear in the generic parameters.
+/// context type too, then you must name that generic parameter `Ctx` too.
 ///
 /// If `context` is set, the generated implementation will be an impl of
 /// `Object<$context>`.
@@ -547,12 +515,42 @@ pub fn wayland_object(
 ///
 /// This also derives `impl From<Variant> for Enum` for each of the variants
 ///
+/// # Examples
+///
+/// For the generic case:
+///
+/// ```ignore
+/// #[derive(Object)]
+/// pub enum Objects<Ctx> { // this must be called `Ctx`
+///     Display(MyDisplayObject<Ctx>),
+/// }
+/// ```
+///
+/// This will generate:
+///
+/// ```ignore
+/// impl<Ctx> Object<Ctx> for Objects<Ctx> {
+///     // ..
+/// }
+/// impl<Ctx> From<MyDisplayObject<Ctx>> for Object<Ctx> {
+///     // ..
+/// }
+/// ```
+///
+/// If the generic parameter is named something else, such as `T`, this will be generated:
+///
+/// ```ignore
+/// impl<Ctx, T> Object<Ctx> for Objects<T> {
+///     // ..
+/// }
+/// ```
+///
 /// # Attributes
 ///
 /// Accept attributes in the form of `#[wayland(...)]`.
 ///
 /// * `crate` - The path to the `runa-core` crate. "runa_core" by default.
-/// * `context`
+/// * `context` - See above
 #[proc_macro_derive(Object, attributes(wayland))]
 pub fn interface_message_dispatch_for_enum(
     orig_item: proc_macro::TokenStream,

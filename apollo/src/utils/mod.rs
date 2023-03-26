@@ -29,10 +29,12 @@ impl Drop for AutoAbort {
 pub struct RcPtr<T>(Rc<T>);
 
 impl<T> RcPtr<T> {
+    /// Create a new `RcPtr` from a value.
     pub fn new(value: T) -> Self {
         Self(Rc::new(value))
     }
 
+    /// Return the inner `Rc`.
     pub fn into_inner(self) -> Rc<T> {
         self.0
     }
@@ -94,19 +96,28 @@ impl<T> Clone for WeakPtr<T> {
 }
 
 impl<T> WeakPtr<T> {
-    pub fn new(t: &Rc<T>) -> Self {
+    /// Create a `WeakPtr` by downgrading a `Rc`.
+    pub fn from_rc(t: &Rc<T>) -> Self {
         Self(Rc::downgrade(t))
     }
 
+    /// Create an empty `WeakPtr`.
+    pub fn new() -> Self {
+        Self(Weak::new())
+    }
+
+    /// Attempt to upgrade the `WeakPtr` to an `Rc`.
     pub fn upgrade(&self) -> Option<Rc<T>> {
         self.0.upgrade()
     }
 
+    /// Return the inner `Weak`.
     pub fn into_inner(self) -> Weak<T> {
         self.0
     }
 
-    pub fn as_weak(&self) -> &Weak<T> {
+    /// Get a reference to the inner `Weak`.
+    pub const fn as_weak(&self) -> &Weak<T> {
         &self.0
     }
 }

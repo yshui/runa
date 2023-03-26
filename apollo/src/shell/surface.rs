@@ -262,11 +262,6 @@ pub mod roles {
     /// Double ended iterator for iterating over a surface and its subsurfaces.
     /// The forward order is bottom to top. This uses the committed states of
     /// the surfaces.
-    ///
-    /// You need to be careful to not call surface commit while iterating. It
-    /// won't cause any memory unsafety, but it could cause non-sensical
-    /// results, panics, or infinite loops. Since commit calls
-    /// [`Shell::commit`], you could check for this case there.
     #[allow(clippy::needless_lifetimes)]
     pub fn subsurface_iter<'a, S: Shell>(
         root: S::Token,
@@ -803,8 +798,10 @@ pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
     current:                    Cell<Option<S::Token>>,
-    /// The pending state of the surface, this will be moved to [`current`] when
+    /// The pending state of the surface, this will be moved to [`Self::current`] when
     /// commit is called
+    ///
+    /// FIXME: this implementation is not comformant to the wayland protocol spec.
     pending:                    Cell<Option<S::Token>>,
     /// Set of all states associated with this surface
     /// XXX: XXX: maybe delete this? instead, track the set of all unfired frame

@@ -1,6 +1,6 @@
 //! Per-client state
 //!
-//! A wayland compositor likely needs to maintain a set of states for each
+//! A wayland compositor needs to maintain a set of states for each
 //! connected wayland client. For example, each client could have a set of bound
 //! objects. This module defines a common interface for such state types, so a
 //! crate that implements different wayland protcol interfaces can rely on this
@@ -9,6 +9,12 @@
 //!
 //! See [`traits`] for definition of the interface. The rest of this module
 //! provides some reference implementations of these interfaces.
+//!
+//! The documentation on [`traits::Client`] should give you a good idea of how
+//! most of the stuffs fit together.
+//!
+//! See also the crate level documentation for how `Client` fits into the
+//! overall picture.
 
 /// Wayland divides the ID space into a client portion and a server portion. The
 /// client is only allowed to allocate IDs up to this number, above this number
@@ -21,11 +27,12 @@ pub mod traits;
 
 use std::{future::Future, os::fd::RawFd, pin::Pin};
 
-#[doc(no_inline)]
+#[doc(inline)]
 pub use event_dispatcher::EventDispatcher;
-#[doc(no_inline)]
+#[doc(inline)]
 pub use store::Store;
 
+/// Type of future returned by [`dispatch_to`].
 pub type Dispatch<'a, Ctx, R>
 where
     Ctx: traits::Client + 'a,
@@ -33,20 +40,24 @@ where
     R: runa_io::traits::buf::AsyncBufReadWithFd + 'a,
 = impl Future<Output = bool> + 'a;
 
-/// Reference implementation of the [`traits::Client::dispatch`] method. You can
-/// simply call this function as the implementation of your own `dispatch`
-/// method.
+/// Reference implementation of the [`traits::Client::dispatch`] method.
+///
+/// This function reads a message from `reader`, looks up the corresponding
+/// object, and then calls the object's `dispatch` method to handle the message.
+/// It then checks if the `dispatch` method returned an error, and if so, sends
+/// the error to the client. The returned future resolves to a boolean, which
+/// indicates whether the client should be disconnected.
+///
+/// You can simply call this function as the implementation of your own
+/// `dispatch` method.
 ///
 /// Notice there is a type bound requiring `Ctx::Object` to accept a `(&[u8],
-/// &[RawFd])` as its request type. This would be the case if you use the
-/// [`crate::objects::Object`] derive macro to generate you object type. If not,
-/// you are supposed to deserialize a wayland message from the
+/// &[RawFd])` as its request type. This would be the case if you use
+/// [`#[derive(Object)`](crate::objects::Object) to generate you object type. If
+/// not, you are supposed to deserialize a wayland message from a
 /// `(&[u8], &[RawFd])` tuple yourself and then dispatch the deserialized
 /// message properly.
-pub fn dispatch_to<'a, Ctx, R>(
-    ctx: &'a mut Ctx,
-    mut reader: Pin<&'a mut R>,
-) -> Dispatch<'a, Ctx, R>
+pub fn dispatch_to<'a, Ctx, R>(ctx: &'a mut Ctx, mut reader: Pin<&'a mut R>) -> Dispatch<'a, Ctx, R>
 where
     R: runa_io::traits::buf::AsyncBufReadWithFd,
     Ctx: traits::Client,

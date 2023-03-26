@@ -11,10 +11,8 @@ use runa_core::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     events::EventSource,
-    globals::{Bind, GlobalMeta, MaybeConstInit},
-    impl_global_for,
+    globals::{Bind, MonoGlobal},
 };
-use crate::renderer_capability::RendererCapability;
 use runa_io::traits::WriteMessage;
 use runa_wayland_protocols::wayland::{
     wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_seat::v9 as wl_seat,
@@ -23,6 +21,7 @@ use runa_wayland_protocols::wayland::{
 use runa_wayland_types::Object as WaylandObject;
 
 use crate::{
+    renderer_capability::RendererCapability,
     shell::{
         output::{OutputChange, OutputChangeEvent},
         HasShell, Shell, ShellEvent,
@@ -33,24 +32,16 @@ use crate::{
 #[derive(Derivative)]
 #[derivative(Default(bound = ""), Debug(bound = ""))]
 pub struct Compositor;
-impl_global_for!(Compositor);
 
-impl MaybeConstInit for Compositor {
-    const INIT: Option<Self> = Some(Self);
-}
-impl GlobalMeta for Compositor {
+impl MonoGlobal for Compositor {
     type Object = crate::objects::compositor::Compositor;
 
-    fn interface(&self) -> &'static str {
-        wl_compositor::NAME
-    }
+    const INTERFACE: &'static str = wl_compositor::NAME;
+    const VERSION: u32 = wl_compositor::VERSION;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
 
-    fn version(&self) -> u32 {
-        wl_compositor::VERSION
-    }
-
-    fn new_object(&self) -> Self::Object {
-        crate::objects::compositor::Compositor::default()
+    fn new_object() -> Self::Object {
+        crate::objects::compositor::Compositor
     }
 }
 
@@ -69,7 +60,9 @@ where
                 ..
             } = client.as_mut_parts();
             // Check if the render event handler is already started, if not start it.
-            let state = objects.get_state_mut::<Self::Object>().unwrap();
+            let state = objects
+                .get_state_mut::<<Self as MonoGlobal>::Object>()
+                .unwrap();
             if !state.render_event_handler_started {
                 tracing::debug!("Starting render event handler");
                 let rx = server_context.shell().borrow().subscribe();
@@ -163,24 +156,16 @@ where
 
 #[derive(Debug)]
 pub struct Subcompositor;
-impl_global_for!(Subcompositor);
 
-impl MaybeConstInit for Subcompositor {
-    const INIT: Option<Self> = Some(Self);
-}
-impl GlobalMeta for Subcompositor {
+impl MonoGlobal for Subcompositor {
     type Object = crate::objects::compositor::Subcompositor;
 
-    fn interface(&self) -> &'static str {
-        wl_subcompositor::NAME
-    }
+    const INTERFACE: &'static str = wl_subcompositor::NAME;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_subcompositor::VERSION;
 
-    fn new_object(&self) -> Self::Object {
+    fn new_object() -> Self::Object {
         crate::objects::compositor::Subcompositor
-    }
-
-    fn version(&self) -> u32 {
-        wl_subcompositor::VERSION
     }
 }
 
@@ -194,24 +179,16 @@ impl<Ctx> Bind<Ctx> for Subcompositor {
 
 #[derive(Default)]
 pub struct Seat;
-impl_global_for!(Seat);
 
-impl MaybeConstInit for Seat {
-    const INIT: Option<Self> = Some(Self);
-}
-
-impl GlobalMeta for Seat {
+impl MonoGlobal for Seat {
     type Object = crate::objects::input::Seat;
 
-    fn interface(&self) -> &'static str {
-        wl_seat::NAME
-    }
+    const INTERFACE: &'static str = wl_seat::NAME;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_seat::VERSION;
 
-    fn version(&self) -> u32 {
-        wl_seat::VERSION
-    }
-
-    fn new_object(&self) -> Self::Object {
+    #[inline]
+    fn new_object() -> Self::Object {
         crate::objects::input::Seat
     }
 }
@@ -245,23 +222,16 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
 
 #[derive(Default)]
 pub struct Shm;
-impl_global_for!(Shm);
 
-impl MaybeConstInit for Shm {
-    const INIT: Option<Self> = Some(Self);
-}
-impl GlobalMeta for Shm {
+impl MonoGlobal for Shm {
     type Object = crate::objects::shm::Shm;
 
-    fn interface(&self) -> &'static str {
-        wl_shm::NAME
-    }
+    const INTERFACE: &'static str = wl_shm::NAME;
+    const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_shm::VERSION;
 
-    fn version(&self) -> u32 {
-        wl_shm::VERSION
-    }
-
-    fn new_object(&self) -> Self::Object {
+    #[inline]
+    fn new_object() -> Self::Object {
         crate::objects::shm::Shm
     }
 }
@@ -301,27 +271,20 @@ impl Output {
         }
     }
 }
-impl_global_for!(Output);
-impl MaybeConstInit for Output {
-    const INIT: Option<Self> = None;
-}
 
-impl GlobalMeta for Output {
+impl MonoGlobal for Output {
     type Object = crate::objects::Output;
 
-    fn new_object(&self) -> Self::Object {
+    const INTERFACE: &'static str = wl_output::NAME;
+    const MAYBE_DEFAULT: Option<Self> = None;
+    const VERSION: u32 = wl_output::VERSION;
+
+    #[inline]
+    fn new_object() -> Self::Object {
         crate::objects::Output {
-            output:              Rc::downgrade(&self.shell_output).into(),
+            output:              WeakPtr::new(),
             event_handler_abort: None,
         }
-    }
-
-    fn interface(&self) -> &'static str {
-        wl_output::NAME
-    }
-
-    fn version(&self) -> u32 {
-        wl_output::VERSION
     }
 }
 
@@ -371,13 +334,18 @@ where
             event_dispatcher.add_event_handler(rx, OutputChangeEventHandler { object_id });
 
             // Add this output to the set of all outputs
-            let state = objects.get_state_mut::<Self::Object>().unwrap();
+            let state = objects
+                .get_state_mut::<<Self as MonoGlobal>::Object>()
+                .unwrap();
             state
                 .all_outputs
                 .entry(output)
                 .or_default()
                 .insert(object_id);
-            let this = objects.get_mut::<Self::Object>(object_id).unwrap();
+            let this = objects
+                .get_mut::<<Self as MonoGlobal>::Object>(object_id)
+                .unwrap();
+            this.output = WeakPtr::from_rc(&self.shell_output);
             // This will automatically terminate the stream when the output is destroyed
             this.event_handler_abort = Some(abort_handle.into());
 

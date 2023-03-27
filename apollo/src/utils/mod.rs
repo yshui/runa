@@ -1,3 +1,5 @@
+//! Utilities (we might need to separate this out to another crate).
+
 use std::{
     hash::Hash,
     ops::Deref,
@@ -26,16 +28,17 @@ impl Drop for AutoAbort {
 /// A wrapper of `Rc` that implements `Hash` and `Eq` by comparing
 /// raw pointer addresses.
 #[derive(Debug)]
-pub struct RcPtr<T>(Rc<T>);
+pub(crate) struct RcPtr<T>(Rc<T>);
 
+#[allow(dead_code)] // anticipating future use
 impl<T> RcPtr<T> {
     /// Create a new `RcPtr` from a value.
-    pub fn new(value: T) -> Self {
+    pub(crate) fn new(value: T) -> Self {
         Self(Rc::new(value))
     }
 
     /// Return the inner `Rc`.
-    pub fn into_inner(self) -> Rc<T> {
+    pub(crate) fn into_inner(self) -> Rc<T> {
         self.0
     }
 }

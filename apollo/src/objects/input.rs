@@ -1,3 +1,5 @@
+//! Objects related to input devices, like mouse and keyboard.
+
 use std::future::Future;
 
 use ordered_float::NotNan;
@@ -16,22 +18,81 @@ use runa_wayland_protocols::wayland::{
     wl_surface::v6 as wl_surface,
 };
 use runa_wayland_types::{Fixed, NewId, Object as WaylandObject};
+use tinyvec::TinyVec;
 
 use crate::{
     objects::compositor,
     shell::{
-        surface::{KeyboardActivity, KeyboardEvent, PointerEvent},
+        surface::{KeyboardEvent, PointerEvent},
         HasShell, Shell,
     },
     utils::geometry::{coords, Point},
 };
+
+/// State of the keyboard
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyboardState {
+    /// All the currently pressed keys, most keyboard doesn't have more than
+    /// 6 key rollover, so 8 should be enough to avoid allocations for most
+    /// cases.
+    pub keys:                TinyVec<[u8; 8]>,
+    /// Depressed modifiers. What this number means is not well defined in the
+    /// wayland protocol. In practice this is whatever is returned by the
+    /// `xkb_state_serialize_mods` function.
+    pub depressed_modifiers: u32,
+    /// Latched modifiers
+    pub latched_modifiers:   u32,
+    /// Locked modifiers
+    pub locked_modifiers:    u32,
+    /// Effective keyboard layout, this is called "group" in the wayland
+    /// protocol
+    pub effective_layout:    u32,
+}
+
+/// A keyboard activity
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyboardActivity {
+    /// A key was pressed or released
+    Key(KeyboardState),
+    /// Surface lost keyboard focus
+    Leave,
+}
+
+/// A pointer activity
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerActivity {
+    /// The pointer moved
+    Motion {
+        /// The new position of the pointer
+        coords: Point<NotNan<f32>, coords::Surface>,
+    },
+    /// A button was pressed or released
+    Button {
+        /// The button that was pressed or released
+        button: u32,
+        /// Pressed or released
+        state:  wl_pointer::enums::ButtonState,
+    },
+
+    /// Surface lost pointer focus
+    Leave,
+    // TODO: axis
+    // ...
+}
+
+/// Implements the `wl_seat` interface
+///
+/// You must also use `apollo`'s compositor implementation if you use this
+/// object.
 #[derive(Default, Debug)]
 pub struct Seat {
     pub(crate) auto_abort: Option<crate::utils::AutoAbort>,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum SeatError {
+/// Errors that can occur when handling `wl_seat` requests
+#[derive(thiserror::Error, Debug, Clone, Copy)]
+enum SeatError {
+    /// The seat does not have the capability requested
     #[error("Seat does not have the capability {1:?}")]
     MissingCapability(u32, wl_seat::enums::Capability),
 }
@@ -73,8 +134,8 @@ macro_rules! def_new_surface_handler {
             fn handle_event<'ctx>(
                 &'ctx mut self,
                 objects: &'ctx mut Ctx::ObjectStore,
-                connection: &'ctx mut Ctx::Connection,
-                server_context: &'ctx Ctx::ServerContext,
+                _connection: &'ctx mut Ctx::Connection,
+                _server_context: &'ctx Ctx::ServerContext,
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 let Some(receiver_state) = objects.get_state::<$receiver>() else {
@@ -119,11 +180,15 @@ macro_rules! def_new_surface_handler {
 #[wayland_object]
 impl<Server, Sh, Ctx> wl_seat::RequestDispatch<Ctx> for Seat
 where
-    Server: crate::shell::Seat + HasShell<Shell = Sh>,
+    Server: crate::shell::Seat + HasShell<Shell = Sh> + runa_core::server::traits::Server,
     Sh: Shell,
     Ctx: Client<ServerContext = Server>,
     <Ctx as Client>::Object: From<Pointer> + From<Keyboard>,
 {
+    // TODO: according to the wayland spec, if a seat loses the keyboard or pointer
+    // capability, all currently bound pointer and keyboard objects should stop
+    // receiving events, even if later this capability is regained. This is not
+    // implemented.
     type Error = Error;
 
     type GetKeyboardFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
@@ -132,7 +197,10 @@ where
     type ReleaseFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn release(ctx: &mut Ctx, object_id: u32) -> Self::ReleaseFut<'_> {
-        async move { Ok(()) }
+        async move {
+            ctx.objects_mut().remove(object_id).unwrap();
+            Ok(())
+        }
     }
 
     fn get_pointer(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetPointerFut<'_> {
@@ -184,7 +252,9 @@ where
                     wl_seat::enums::Capability::TOUCH,
                 )))
             }
-            Ok(())
+
+            tracing::error!(object_id, ?id, "Touch support is not implemented yet");
+            Err(Error::NotImplemented("wl_seat.get_touch"))
         }
     }
 
@@ -256,6 +326,7 @@ mod states {
         utils::stream::{self, Replace, Replaceable},
     };
 
+    #[derive(Debug)]
     pub struct KeyboardState {
         /// Handle for starting/stopping listening to keyboard events. We use a
         /// Replace here because we need to start/stop the listener in another
@@ -286,6 +357,7 @@ mod states {
         }
     }
 
+    #[derive(Debug)]
     pub struct PointerState {
         pub(super) handle:       Replace<Receiver<PointerEvent>>,
         pub(super) event_source: Option<Replaceable<Receiver<PointerEvent>>>,
@@ -309,12 +381,11 @@ mod states {
     }
 }
 
-pub(crate) use states::*;
-
-#[derive(Debug, Default)]
+/// Implementation of the `wl_keyboard` interface
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Keyboard;
 
-#[wayland_object(state = "KeyboardState")]
+#[wayland_object(state = "states::KeyboardState")]
 impl<Ctx: Client> wl_keyboard::RequestDispatch<Ctx> for Keyboard {
     type Error = Error;
 
@@ -388,7 +459,7 @@ where
 }
 
 struct KeyboardEventHandler {
-    focus: Option<(u32, crate::shell::surface::KeyboardState)>,
+    focus: Option<(u32, KeyboardState)>,
 }
 
 async fn send_to_all_keyboards<Ctx, M>(
@@ -420,7 +491,7 @@ where
         &'ctx mut self,
         objects: &'ctx mut <Ctx as Client>::ObjectStore,
         connection: &'ctx mut <Ctx as Client>::Connection,
-        server_context: &'ctx <Ctx as Client>::ServerContext,
+        _server_context: &'ctx <Ctx as Client>::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {
@@ -547,10 +618,11 @@ where
     }
 }
 
-#[derive(Debug)]
+/// Implementation of the `wl_pointer` interface.
+#[derive(Debug, Clone, Copy)]
 pub struct Pointer;
 
-#[wayland_object(state = "PointerState")]
+#[wayland_object(state = "states::PointerState")]
 impl<Ctx> wl_pointer::RequestDispatch<Ctx> for Pointer
 where
     Ctx: Client,
@@ -568,7 +640,7 @@ where
     }
 
     fn set_cursor(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         serial: u32,
         surface: WaylandObject,
@@ -576,7 +648,15 @@ where
         hotspot_y: i32,
     ) -> Self::SetCursorFut<'_> {
         async move {
-            tracing::warn!("set_cursor unimplemented");
+            // TODO: NotImplemented
+            tracing::error!(
+                object_id,
+                serial,
+                ?surface,
+                hotspot_x,
+                hotspot_y,
+                "set_cursor not implemented"
+            );
             Ok(())
         }
     }
@@ -617,11 +697,10 @@ where
         &'ctx mut self,
         objects: &'ctx mut <Ctx as Client>::ObjectStore,
         connection: &'ctx mut <Ctx as Client>::Connection,
-        server_context: &'ctx <Ctx as Client>::ServerContext,
+        _server_context: &'ctx <Ctx as Client>::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {
-            use crate::shell::surface::PointerEventKind;
             if self
                 .focus
                 .map(|old| old.0 != message.object_id)
@@ -640,7 +719,7 @@ where
                     .await?;
                 }
                 self.focus = None;
-                let PointerEventKind::Motion { coords, .. } = message.kind else {
+                let PointerActivity::Motion { coords, .. } = message.kind else {
                     tracing::error!("Bug in the compositor: first pointer event on a \
                                      surface is not a motion event, ignored. (event is {message:?})");
                     return Ok(EventHandlerAction::Keep);
@@ -656,7 +735,7 @@ where
             }
             let (_, old_coords) = self.focus.as_mut().unwrap();
             match message.kind {
-                PointerEventKind::Motion { coords } =>
+                PointerActivity::Motion { coords } =>
                     if coords != *old_coords {
                         send_to_all_pointers::<Ctx, _>(
                             objects,
@@ -670,7 +749,7 @@ where
                         .await?;
                         *old_coords = coords;
                     },
-                PointerEventKind::Button { button, state } => {
+                PointerActivity::Button { button, state } => {
                     send_to_all_pointers::<Ctx, _>(
                         objects,
                         connection,
@@ -683,7 +762,7 @@ where
                     )
                     .await?;
                 },
-                PointerEventKind::Leave => {
+                PointerActivity::Leave => {
                     send_to_all_pointers::<Ctx, _>(
                         objects,
                         connection,

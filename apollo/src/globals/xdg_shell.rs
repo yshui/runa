@@ -1,3 +1,5 @@
+//! Globals defined in the xdg_shell protocol.
+
 use std::future::Future;
 
 use runa_core::{
@@ -6,7 +8,8 @@ use runa_core::{
 };
 use runa_wayland_protocols::stable::xdg_shell::xdg_wm_base::v5 as xdg_wm_base;
 
-#[derive(Debug)]
+/// Implementation of the `xdg_wm_base` global.
+#[derive(Debug, Clone, Copy)]
 pub struct WmBase;
 
 impl MonoGlobal for WmBase {
@@ -24,7 +27,7 @@ impl MonoGlobal for WmBase {
 impl<Ctx: Client> Bind<Ctx> for WmBase {
     type BindFut<'a> = impl Future<Output = std::io::Result<()>> + 'a;
 
-    fn bind<'a>(&'a self, client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
+    fn bind<'a>(&'a self, _client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
         // TODO: setup event
         futures_util::future::ok(())
     }

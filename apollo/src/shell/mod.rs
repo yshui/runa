@@ -1,17 +1,42 @@
+//! Traits and types for the shell.
+//!
+//! A shell is the user facing component of the compositor. It manages a set of
+//! surfaces, and is responsible of presenting them to the user, as well as
+//! accepting user interactions. It is in control of all the visual aspects of
+//! a compositor.
+
 pub mod buffers;
 pub mod output;
 pub mod surface;
 pub mod xdg;
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
 
-use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 use runa_core::events::EventSource;
+use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 
-#[derive(Clone, Debug)]
+/// Events emitted by a shell
+#[derive(Clone, Debug, Copy)]
 pub enum ShellEvent {
+    /// The current set of surfaces have been rendered to screen.
+    ///
+    /// TODO: in future, we wants to be finer grained. as one render doesn't
+    /// necessarily render all of the surfaces, e.g. some surfaces might not
+    /// be visible.
     Render,
 }
 
+/// Shell
+///
+/// This is the fundamental interface to the compositor's shell. A shell needs
+/// to support management of surface states, i.e. allocation, deallocation, and
+/// access. The allocated states are reference via a token, in order to avoid
+/// lifetime and ownership difficulties.
+///
+/// The shell interface also defines a number of callbacks, which `apollo` will
+/// call in response to various operations done to surfaces.
+///
+/// The shell is also an event source, it must emit the event defined in
+/// [`ShellEvent`] for various interfaces implemented here to function properly.
 pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     /// A token to surfaces.
     ///
@@ -48,7 +73,7 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     ///
     /// # Panic
     ///
-    /// Panics if any of the keys are invalid, or if any two of the keys are
+    /// May panic if any of the keys are invalid, or if any two of the keys are
     /// equal.
     fn get_disjoint_mut<const N: usize>(
         &mut self,
@@ -61,9 +86,18 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     ///
     /// # Panic
     ///
-    /// Panics if the handle is invalid.
-    fn role_added(&mut self, key: Self::Token, role: &'static str);
-    fn role_deactivated(&mut self, key: Self::Token, role: &'static str);
+    /// May panic if the handle is invalid.
+    #[allow(unused_variables)]
+    fn role_added(&mut self, key: Self::Token, role: &'static str) {}
+
+    /// Callback that is called when a surface has its assigned role
+    /// deactivated.
+    ///
+    /// # Panic
+    ///
+    /// May panic if the handle is invalid.
+    #[allow(unused_variables)]
+    fn role_deactivated(&mut self, key: Self::Token, role: &'static str) {}
 
     /// A commit happened on the surface which used to have surface state `old`.
     /// The new state is `new`. If `old` is None, this is the first commit
@@ -78,16 +112,29 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     ///
     /// # Panic
     ///
-    /// This function is allowed to panic if either handle is invalid. Or if
+    /// This function may panic if either handle is invalid. Or if
     /// `old` has never been committed before.
-    fn post_commit(&mut self, old: Option<Self::Token>, new: Self::Token);
+    #[allow(unused_variables)]
+    fn post_commit(&mut self, old: Option<Self::Token>, new: Self::Token) {}
 }
 
+/// Shell access
+///
+/// Implemented by the server context (see
+/// [`ServerContext`](runa_core::client::traits::Client::ServerContext)) to
+/// indicate that it has a shell.
 pub trait HasShell: buffers::HasBuffer {
+    /// Type of the shell
     type Shell: Shell<Buffer = <Self as buffers::HasBuffer>::Buffer>;
+
+    /// Get a reference to the shell
     fn shell(&self) -> &RefCell<Self::Shell>;
 }
 
+/// Keyboard repeat repeat_info
+///
+/// See `wl_keyboard.repeat_info` for more details.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepeatInfo {
     pub rate:  i32,
@@ -97,6 +144,7 @@ pub struct RepeatInfo {
 /// Keymap
 #[derive(Debug)]
 pub struct Keymap {
+    /// Format of the keymap
     pub format: wl_keyboard::enums::KeymapFormat,
     /// File descriptor of the keymap
     pub fd:     std::os::unix::io::OwnedFd,
@@ -119,9 +167,29 @@ pub enum SeatEvent {
     NameChanged,
 }
 
+/// Seat
+///
+/// A seat is a set of input output devices attached to a computer. This trait
+/// is mainly used by interface implementations to get information about mouse
+/// and keyboard devices attached.
+///
+/// This is also an event source, it must emit events when information about the
+/// seat changes.
+///
+/// This needs to be implemented by the
+/// [`ServerContext`](runa_core::client::traits::Client::ServerContext).
 pub trait Seat: EventSource<SeatEvent> {
+    /// Get the capabilities of the seat.
+    ///
+    /// Whether the seat has a pointer, keyboard, or touch device attached.
     fn capabilities(&self) -> wl_seat::enums::Capability;
+
+    /// Get the repeat info of the keyboard.
     fn repeat_info(&self) -> RepeatInfo;
+
+    /// Get the current keymap.
     fn keymap(&self) -> &Keymap;
+
+    /// Get the name of the seat.
     fn name(&self) -> &str;
 }

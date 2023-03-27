@@ -1,3 +1,5 @@
+//! The `wl_shm` object
+
 use std::{
     cell::{Cell, Ref, RefCell},
     future::Future,
@@ -12,11 +14,11 @@ use runa_core::{
     objects::{wayland_object, DISPLAY_ID},
 };
 use runa_io::traits::WriteMessage;
-use runa_wayland_types::{Fd as WaylandFd, NewId};
-use spin::mutex::Mutex;
 use runa_wayland_protocols::wayland::{
     wl_display::v1 as wl_display, wl_shm::v1 as wl_shm, wl_shm_pool::v1 as wl_shm_pool,
 };
+use runa_wayland_types::{Fd as WaylandFd, NewId};
+use spin::mutex::Mutex;
 
 use crate::{
     objects,
@@ -111,10 +113,11 @@ pub unsafe fn handle_sigbus(info: &libc::siginfo_t) -> bool {
     }
 }
 
-#[derive(Default, Debug)]
+/// Implementation of the `wl_shm` interface.
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Shm;
 
-pub enum ShmError {
+enum ShmError {
     Mapping(u32, i32),
 }
 
@@ -255,13 +258,14 @@ impl ShmPoolInner {
 }
 
 #[derive(Debug)]
-pub struct ShmPoolInner {
+pub(crate) struct ShmPoolInner {
     fd:   OwnedFd,
     addr: *const libc::c_void,
     len:  usize,
     map:  Index<MapRecord>,
 }
 
+/// A shm memory pool.
 #[derive(Debug)]
 pub struct ShmPool {
     inner: Rc<RefCell<ShmPoolInner>>,
@@ -281,7 +285,7 @@ impl ShmPool {
     /// the client shrunk the pool after you have mapped it, you will get a
     /// SIGBUS when accessing the removed section of memory. `handle_sigbus`
     /// will automatcally map in zero pages in that case.
-    pub unsafe fn map(&self) -> Ref<[u8]> {
+    pub unsafe fn map(&self) -> Ref<'_, [u8]> {
         Ref::map(self.inner.borrow(), |inner: &ShmPoolInner| inner.as_ref())
     }
 }
@@ -291,7 +295,7 @@ impl<B: buffers::BufferLike, Ctx> wl_shm_pool::RequestDispatch<Ctx> for ShmPool
 where
     Ctx: Client,
     Ctx::ServerContext: HasBuffer<Buffer = B>,
-    B: From<buffers::Buffer<BufferBase>>,
+    B: From<buffers::Buffer<Buffer>>,
     Ctx::Object: From<objects::Buffer<B>>,
 {
     type Error = error::Error;
@@ -324,7 +328,7 @@ where
                         buffers::Buffer::new(
                             Extent::new(width as u32, height as u32),
                             id.0,
-                            BufferBase {
+                            Buffer {
                                 pool,
                                 offset,
                                 width,
@@ -386,8 +390,9 @@ where
     }
 }
 
+/// A shm buffer
 #[derive(Debug)]
-pub struct BufferBase {
+pub struct Buffer {
     pool:   Rc<RefCell<ShmPoolInner>>,
     offset: i32,
     width:  i32,
@@ -396,29 +401,35 @@ pub struct BufferBase {
     format: wl_shm::enums::Format,
 }
 
-impl BufferBase {
+impl Buffer {
+    /// Get the pool this buffer was created from.
     pub fn pool(&self) -> ShmPool {
         ShmPool {
             inner: self.pool.clone(),
         }
     }
 
+    /// Offset of this buffer in the pool.
     pub fn offset(&self) -> i32 {
         self.offset
     }
 
+    /// Width of this buffer.
     pub fn width(&self) -> i32 {
         self.width
     }
 
+    /// Height of this buffer.
     pub fn height(&self) -> i32 {
         self.height
     }
 
+    /// Stride of this buffer.
     pub fn stride(&self) -> i32 {
         self.stride
     }
 
+    /// Format of this buffer.
     pub fn format(&self) -> wl_shm::enums::Format {
         self.format
     }

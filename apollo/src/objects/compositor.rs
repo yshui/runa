@@ -22,7 +22,7 @@ use runa_core::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
     },
     error::{self, ProtocolError},
-    events::{broadcast::Ring, EventSource},
+    events::EventSource,
     objects::wayland_object,
 };
 use runa_io::traits::WriteMessage;
@@ -38,67 +38,79 @@ use crate::{
         self,
         buffers::HasBuffer,
         output::Output as ShellOutput,
-        surface::{roles, KeyboardEvent, OutputEvent, PointerEvent},
+        surface::{roles, OutputEvent},
         HasShell, Shell,
     },
     utils::{geometry::Point, WeakPtr},
 };
 
-#[derive(Debug)]
-pub struct SurfaceState<Token> {
-    /// A queue of surface state tokens used for surface commits and
-    /// destructions.
-    scratch_buffer:  Vec<Token>,
-    /// A buffer used for handling output changed event for surfaces.
-    new_outputs:     HashSet<WeakPtr<ShellOutput>>,
-    /// Shared event source for sending pointer events
-    pointer_events:  Ring<PointerEvent>,
-    /// Shared event source for sending keyboard events
-    keyboard_events: Ring<KeyboardEvent>,
-}
+mod states {
+    use hashbrown::HashSet;
+    use runa_core::events::{broadcast::Ring, EventSource};
 
-impl<Token> EventSource<PointerEvent> for SurfaceState<Token> {
-    type Source = <Ring<PointerEvent> as EventSource<PointerEvent>>::Source;
+    use crate::{
+        shell::{
+            output::Output as ShellOutput,
+            surface::{KeyboardEvent, PointerEvent},
+        },
+        utils::WeakPtr,
+    };
 
-    fn subscribe(&self) -> Self::Source {
-        self.pointer_events.subscribe()
+    #[derive(Default, Debug, Clone, Copy)]
+    pub struct CompositorState {
+        pub(crate) render_event_handler_started: bool,
     }
-}
 
-impl<Token> EventSource<KeyboardEvent> for SurfaceState<Token> {
-    type Source = <Ring<KeyboardEvent> as EventSource<KeyboardEvent>>::Source;
-
-    fn subscribe(&self) -> Self::Source {
-        self.keyboard_events.subscribe()
+    #[derive(Debug)]
+    pub struct SurfaceState<Token> {
+        /// A queue of surface state tokens used for surface commits and
+        /// destructions.
+        pub(super) scratch_buffer:  Vec<Token>,
+        /// A buffer used for handling output changed event for surfaces.
+        pub(super) new_outputs:     HashSet<WeakPtr<ShellOutput>>,
+        /// Shared event source for sending pointer events
+        pub(super) pointer_events:  Ring<PointerEvent>,
+        /// Shared event source for sending keyboard events
+        pub(super) keyboard_events: Ring<KeyboardEvent>,
     }
-}
 
-//impl<S: Shell> EventSource<KeyboardEvent> for Surface<S> {
-//    type Source = <broadcast::Broadcast<KeyboardEvent> as
-// EventSource<KeyboardEvent>>::Source;
-//
-//    fn subscribe(&self) -> Self::Source {
-//        self.keyboard_event.subscribe()
-//    }
-//}
+    impl<Token> EventSource<PointerEvent> for SurfaceState<Token> {
+        type Source = <Ring<PointerEvent> as EventSource<PointerEvent>>::Source;
 
-impl<Token> SurfaceState<Token> {
-    pub fn surface_count(&self) -> usize {
-        self.pointer_events.sender_count() - 1
+        fn subscribe(&self) -> Self::Source {
+            self.pointer_events.subscribe()
+        }
     }
-}
 
-impl<Token> Default for SurfaceState<Token> {
-    fn default() -> Self {
-        Self {
-            scratch_buffer:  Default::default(),
-            new_outputs:     Default::default(),
-            pointer_events:  Ring::new(120),
-            keyboard_events: Ring::new(120),
+    impl<Token> EventSource<KeyboardEvent> for SurfaceState<Token> {
+        type Source = <Ring<KeyboardEvent> as EventSource<KeyboardEvent>>::Source;
+
+        fn subscribe(&self) -> Self::Source {
+            self.keyboard_events.subscribe()
+        }
+    }
+
+    impl<Token> SurfaceState<Token> {
+        pub(crate) fn surface_count(&self) -> usize {
+            self.pointer_events.sender_count() - 1
+        }
+    }
+
+    impl<Token> Default for SurfaceState<Token> {
+        fn default() -> Self {
+            Self {
+                scratch_buffer:  Default::default(),
+                new_outputs:     Default::default(),
+                pointer_events:  Ring::new(120),
+                keyboard_events: Ring::new(120),
+            }
         }
     }
 }
 
+use states::*;
+
+/// Implementation of the `wl_surface` interface.
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<Shell: shell::Shell> {
@@ -209,7 +221,6 @@ where
                 }))
             }
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let buffer_id = buffer.0;
             let buffer = ctx.objects().get::<crate::objects::Buffer<
                 <Ctx::ServerContext as HasBuffer>::Buffer,
             >>(buffer.0)?;
@@ -223,12 +234,14 @@ where
     fn damage(
         ctx: &mut Ctx,
         object_id: u32,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
+        _x: i32,
+        _y: i32,
+        _width: i32,
+        _height: i32,
     ) -> Self::DamageFut<'_> {
         async move {
+            // TODO: make use of the provided damage rectangle, instead of damage the whole
+            // buffer
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
@@ -240,12 +253,14 @@ where
     fn damage_buffer(
         ctx: &mut Ctx,
         object_id: u32,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
+        _x: i32,
+        _y: i32,
+        _width: i32,
+        _height: i32,
     ) -> Self::DamageBufferFut<'_> {
         async move {
+            // TODO: make use of the provided damage rectangle, instead of damage the whole
+            // buffer
             let this = ctx.objects().get::<Self>(object_id).unwrap();
             let mut shell = ctx.server_context().shell().borrow_mut();
             let state = this.inner.pending_mut(&mut shell);
@@ -266,7 +281,7 @@ where
             let mut shell = server_context.shell().borrow_mut();
             this.inner
                 .commit(&mut shell, &mut state.scratch_buffer)
-                .map_err(runa_core::error::Error::UnknownFatalError)?;
+                .map_err(error::Error::UnknownFatalError)?;
 
             Ok(())
         }
@@ -284,34 +299,49 @@ where
     }
 
     fn set_input_region(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         region: wayland_types::Object,
     ) -> Self::SetInputRegionFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(object_id, ?region, "set_input_region not implemented");
+            Err(error::Error::NotImplemented("wl_surface.set_input_region"))
+        }
     }
 
     fn set_opaque_region(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         region: wayland_types::Object,
     ) -> Self::SetOpaqueRegionFut<'_> {
         async move {
-            tracing::error!("set_opaque_region not implemented");
-            Ok(())
+            tracing::error!(object_id, ?region, "set_opaque_region not implemented");
+            Err(error::Error::NotImplemented("wl_surface.set_opaque_region"))
         }
     }
 
     fn set_buffer_transform(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         transform: wl_output::enums::Transform,
     ) -> Self::SetBufferTransformFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(
+                object_id,
+                ?transform,
+                "set_buffer_transform not implemented"
+            );
+            Err(error::Error::NotImplemented(
+                "wl_surface.set_buffer_transform",
+            ))
+        }
     }
 
-    fn offset(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::OffsetFut<'_> {
-        async move { unimplemented!() }
+    fn offset(_ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::OffsetFut<'_> {
+        async move {
+            tracing::error!(object_id, x, y, "offset not implemented");
+            Err(error::Error::NotImplemented("wl_surface.offset"))
+        }
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
@@ -319,7 +349,6 @@ where
             let ClientParts {
                 server_context,
                 objects,
-                connection,
                 ..
             } = ctx.as_mut_parts();
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
@@ -348,16 +377,11 @@ where
     }
 }
 
-/// The reference implementation of wl_compositor
-#[derive(Debug, Default, Clone)]
+/// The reference implementation of the `wl_compositor` interface
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Compositor;
 
-#[derive(Default, Debug)]
-pub struct CompositorState {
-    pub(crate) render_event_handler_started: bool,
-}
-
-#[wayland_object(state = "CompositorState")]
+#[wayland_object(state = "states::CompositorState")]
 impl<Ctx: Client, Sh: Shell> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell<Shell = Sh>,
@@ -370,7 +394,7 @@ where
 
     fn create_surface(
         ctx: &mut Ctx,
-        object_id: u32,
+        _object_id: u32,
         id: wayland_types::NewId,
     ) -> Self::CreateSurfaceFut<'_> {
         use crate::shell::surface;
@@ -422,11 +446,14 @@ where
     }
 
     fn create_region(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         id: wayland_types::NewId,
     ) -> Self::CreateRegionFut<'_> {
-        async { unimplemented!() }
+        async move {
+            tracing::error!(object_id, ?id, "create_region not implemented");
+            Err(error::Error::NotImplemented("wl_compositor.create_region"))
+        }
     }
 }
 
@@ -454,7 +481,7 @@ where
         &'ctx mut self,
         objects: &'ctx mut <Ctx as Client>::ObjectStore,
         connection: &'ctx mut <Ctx as Client>::Connection,
-        server_context: &'ctx <Ctx as Client>::ServerContext,
+        _server_context: &'ctx <Ctx as Client>::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {
@@ -522,6 +549,7 @@ where
     }
 }
 
+/// Implementation of the `wl_subsurface` interface
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Subsurface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
@@ -540,32 +568,50 @@ where
     type SetPositionFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type SetSyncFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn set_sync(ctx: &mut Ctx, object_id: u32) -> Self::SetSyncFut<'_> {
-        async move { unimplemented!() }
+    fn set_sync(_ctx: &mut Ctx, object_id: u32) -> Self::SetSyncFut<'_> {
+        async move {
+            tracing::error!(object_id, "set_sync not implemented");
+            Err(error::Error::NotImplemented("wl_subsurface.set_sync"))
+        }
     }
 
-    fn set_desync(ctx: &mut Ctx, object_id: u32) -> Self::SetDesyncFut<'_> {
-        async move { unimplemented!() }
+    fn set_desync(_ctx: &mut Ctx, object_id: u32) -> Self::SetDesyncFut<'_> {
+        async move {
+            tracing::error!(object_id, "set_desync not implemented");
+            Err(error::Error::NotImplemented("wl_subsurface.set_desync"))
+        }
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            let subsurface = ctx.objects().get::<Self>(object_id).unwrap();
+            let shell = ctx.server_context().shell();
+            subsurface.0.deactivate_role(&mut shell.borrow_mut());
+            ctx.objects_mut().remove(object_id).unwrap();
+            Ok(())
+        }
     }
 
     fn place_above(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         sibling: wayland_types::Object,
     ) -> Self::PlaceAboveFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(object_id, ?sibling, "place_above not implemented");
+            Err(error::Error::NotImplemented("wl_subsurface.place_above"))
+        }
     }
 
     fn place_below(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         sibling: wayland_types::Object,
     ) -> Self::PlaceBelowFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(object_id, ?sibling, "place_below not implemented");
+            Err(error::Error::NotImplemented("wl_subsurface.place_below"))
+        }
     }
 
     fn set_position(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::SetPositionFut<'_> {
@@ -586,14 +632,19 @@ where
     }
 }
 
-#[derive(Debug)]
+/// Implementation of the `wl_subcompositor` interface
+#[derive(Debug, Clone, Copy)]
 pub struct Subcompositor;
 
-#[derive(Debug)]
-pub enum Error {
+/// Errors that can occur when handling subcompositor related requests
+#[derive(Debug, Clone, Copy)]
+enum Error {
+    /// Bad surface used as parent
     BadSurface {
-        bad_surface:       u32,
-        subsurface_object: u32,
+        /// The bad surface id
+        bad_surface: u32,
+        /// The ID of the object that caused this error
+        object_id:   u32,
     },
 }
 
@@ -610,11 +661,8 @@ impl std::error::Error for Error {}
 impl ProtocolError for Error {
     fn wayland_error(&self) -> Option<(u32, u32)> {
         match self {
-            Error::BadSurface {
-                bad_surface,
-                subsurface_object,
-            } => Some((
-                *subsurface_object,
+            Error::BadSurface { object_id, .. } => Some((
+                *object_id,
                 wl_subcompositor::enums::Error::BadSurface as u32,
             )),
         }
@@ -631,13 +679,16 @@ where
     Ctx::ServerContext: HasShell<Shell = S>,
     Ctx::Object: From<Subsurface<S>>,
 {
-    type Error = runa_core::error::Error;
+    type Error = error::Error;
 
     type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type GetSubsurfaceFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            ctx.objects_mut().remove(object_id).unwrap();
+            Ok(())
+        }
     }
 
     fn get_subsurface(
@@ -658,10 +709,10 @@ where
             let surface = ctx
                 .objects()
                 .get::<Surface<S>>(surface.0)
-                .map_err(|e| {
+                .map_err(|_| {
                     Self::Error::custom(Error::BadSurface {
-                        bad_surface:       surface.0,
-                        subsurface_object: object_id,
+                        bad_surface: surface.0,
+                        object_id,
                     })
                 })?
                 .inner
@@ -669,10 +720,10 @@ where
             let parent = ctx
                 .objects()
                 .get::<Surface<S>>(parent.0)
-                .map_err(|e| {
+                .map_err(|_| {
                     Self::Error::custom(Error::BadSurface {
-                        bad_surface:       parent.0,
-                        subsurface_object: object_id,
+                        bad_surface: parent.0,
+                        object_id,
                     })
                 })?
                 .inner
@@ -686,8 +737,8 @@ where
                     &mut shell,
                 ) {
                     Err(Self::Error::custom(Error::BadSurface {
-                        bad_surface:       surface_id,
-                        subsurface_object: object_id,
+                        bad_surface: surface_id,
+                        object_id,
                     }))
                 } else {
                     drop(shell);

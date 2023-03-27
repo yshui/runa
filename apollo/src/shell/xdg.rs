@@ -1,28 +1,42 @@
+//! Types and traits for the xdg shell.
+
 use std::{collections::VecDeque, num::NonZeroU32};
 
 use derivative::Derivative;
-use runa_wayland_types::NewId;
+use runa_core::provide_any::Demand;
 use runa_wayland_protocols::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };
-use runa_core::provide_any::Demand;
+use runa_wayland_types::NewId;
 
 use super::Shell;
 use crate::utils::geometry::{coords, Extent, Point, Rectangle};
 
+/// Surface layout
+///
+/// A surface layout is where the surface is positioned on the screen, and its
+/// screen space size.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Layout {
+    /// The position of the surface on the screen.
     pub position: Option<Point<i32, coords::Screen>>,
+    /// The size of the surface on the screen.
     pub extent:   Option<Extent<u32, coords::Screen>>,
 }
 
+/// Extension of [`super::Shell`] to provide xdg shell specific informations.
 pub trait XdgShell: Shell {
-    fn layout(&self, key: Self::Token) -> Layout {
+    /// Ask the shell to calculate the layout of the given surface.
+    fn layout(&self, _key: Self::Token) -> Layout {
         Layout::default()
     }
 }
 
-/// xdg_surface role
+/// The xdg_surface "role"
+///
+/// This is not technically a role, since the surface can be assigned either a
+/// top-level or a popup role after this "role" is attached to it. But we still
+/// use the role interface because it's convenient.
 #[derive(Debug, Clone)]
 pub struct Surface {
     active:                      bool,
@@ -40,7 +54,7 @@ pub struct Surface {
 
 impl Surface {
     #[inline]
-    pub fn new(object_id: NewId) -> Self {
+    pub(crate) fn new(object_id: NewId) -> Self {
         Self {
             active:           false,
             geometry:         None,
@@ -56,7 +70,7 @@ impl Surface {
         &mut self,
         shell: &mut S,
         surface: &super::surface::Surface<S>,
-        object_id: u32,
+        _object_id: u32,
     ) -> Result<(), &'static str> {
         tracing::debug!("Committing xdg_surface");
         if surface.pending(shell).buffer().is_some() && self.last_ack.is_none() {
@@ -87,7 +101,7 @@ impl<S: Shell> super::surface::Role<S> for Surface {
         demand.provide_mut(self);
     }
 
-    fn deactivate(&mut self, shell: &mut S) {
+    fn deactivate(&mut self, _shell: &mut S) {
         if !self.active {
             return
         }
@@ -105,6 +119,7 @@ pub(crate) struct TopLevelState {
     pub(crate) max_size: Option<Extent<i32, coords::Surface>>,
 }
 
+/// The xdg_toplevel role
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct TopLevel {
@@ -118,7 +133,7 @@ pub struct TopLevel {
 }
 
 impl TopLevel {
-    pub fn new(base: Surface, object_id: u32) -> Self {
+    pub(crate) fn new(base: Surface, object_id: u32) -> Self {
         Self {
             base,
             is_active: true,
@@ -130,6 +145,7 @@ impl TopLevel {
         }
     }
 
+    /// Geometry of the surface, as defined by the xdg_toplevel role.
     pub fn geometry(&self) -> Option<Rectangle<i32, coords::Surface>> {
         self.base.geometry
     }
@@ -140,7 +156,7 @@ impl<S: XdgShell> super::surface::Role<S> for TopLevel {
         xdg_toplevel::NAME
     }
 
-    fn deactivate(&mut self, shell: &mut S) {
+    fn deactivate(&mut self, _shell: &mut S) {
         if !self.is_active {
             return
         }
@@ -177,4 +193,8 @@ impl<S: XdgShell> super::surface::Role<S> for TopLevel {
     }
 }
 
-struct Popup;
+/// The xdg_popup role
+///
+/// TODO: not implemented yet
+#[derive(Clone, Debug, Copy)]
+pub struct Popup;

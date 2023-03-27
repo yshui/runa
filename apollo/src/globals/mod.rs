@@ -1,3 +1,5 @@
+//! Globals defined in wayland protocols.
+
 use std::{
     future::Future,
     rc::{Rc, Weak},
@@ -5,7 +7,6 @@ use std::{
 
 pub mod xdg_shell;
 
-use derivative::Derivative;
 use runa_core::{
     client::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
@@ -29,16 +30,19 @@ use crate::{
     utils::WeakPtr,
 };
 
-#[derive(Derivative)]
-#[derivative(Default(bound = ""), Debug(bound = ""))]
+/// Implementation of the `wl_compositor` global.
+///
+/// You must also use `apollo`'s subsurface, and output implementations to use
+/// this.
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Compositor;
 
 impl MonoGlobal for Compositor {
     type Object = crate::objects::compositor::Compositor;
 
     const INTERFACE: &'static str = wl_compositor::NAME;
-    const VERSION: u32 = wl_compositor::VERSION;
     const MAYBE_DEFAULT: Option<Self> = Some(Self);
+    const VERSION: u32 = wl_compositor::VERSION;
 
     fn new_object() -> Self::Object {
         crate::objects::compositor::Compositor
@@ -51,7 +55,7 @@ where
 {
     type BindFut<'a> = impl Future<Output = std::io::Result<()>> + 'a where Ctx: 'a, Self: 'a;
 
-    fn bind<'a>(&'a self, client: &'a mut Ctx, object_id: u32) -> Self::BindFut<'a> {
+    fn bind<'a>(&'a self, client: &'a mut Ctx, _object_id: u32) -> Self::BindFut<'a> {
         async move {
             let ClientParts {
                 server_context,
@@ -106,7 +110,7 @@ where
             // First collect all callbacks we need to fire
             let shell = server_context.shell().borrow();
             // Send frame callback for all current surface states.
-            for (id, surface) in objects.by_type::<crate::objects::compositor::Surface<S>>() {
+            for (_, surface) in objects.by_type::<crate::objects::compositor::Surface<S>>() {
                 // Skip subsurfaces. Only iterate surface trees from the root surface, so we
                 // only gets the surface states that are current.
                 // TODO: handle desync'd subsurfaces
@@ -154,7 +158,10 @@ where
     }
 }
 
-#[derive(Debug)]
+/// Implementation of the `wl_subcompositor` global.
+///
+/// You must also use `apollo`'s compositor implementation to use this global.
+#[derive(Debug, Clone, Copy)]
 pub struct Subcompositor;
 
 impl MonoGlobal for Subcompositor {
@@ -177,7 +184,10 @@ impl<Ctx> Bind<Ctx> for Subcompositor {
     }
 }
 
-#[derive(Default)]
+/// Implementation of the `wl_seat` global.
+///
+/// You must also use `apollo`'s compositor implementation to use this global.
+#[derive(Default, Clone, Copy, Debug)]
 pub struct Seat;
 
 impl MonoGlobal for Seat {
@@ -200,9 +210,7 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
         async move {
             let ClientParts {
                 server_context,
-                objects,
                 connection,
-                event_dispatcher,
                 ..
             } = client.as_mut_parts();
             let caps = server_context.capabilities();
@@ -280,7 +288,8 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
     }
 }
 
-#[derive(Default)]
+/// Implementation of the `wl_shm` global.
+#[derive(Default, Clone, Copy, Debug)]
 pub struct Shm;
 
 impl MonoGlobal for Shm {
@@ -319,12 +328,16 @@ where
     }
 }
 
+/// Implementation of the `wl_output` global.
+///
+/// You must also use `apollo`'s compositor implementation to use this global.
 #[derive(Debug)]
 pub struct Output {
     pub(crate) shell_output: Rc<ShellOutput>,
 }
 
 impl Output {
+    /// Create a new `Output` global.
     pub fn new(output: Rc<ShellOutput>) -> Self {
         Self {
             shell_output: output,
@@ -432,9 +445,9 @@ impl<Ctx: Client> EventHandler<Ctx> for OutputChangeEventHandler {
 
     fn handle_event<'ctx>(
         &'ctx mut self,
-        objects: &'ctx mut Ctx::ObjectStore,
+        _objects: &'ctx mut Ctx::ObjectStore,
         connection: &'ctx mut Ctx::Connection,
-        server_context: &'ctx Ctx::ServerContext,
+        _server_context: &'ctx Ctx::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         async move {

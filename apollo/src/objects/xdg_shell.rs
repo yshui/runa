@@ -1,3 +1,5 @@
+//! Objects related to the xdg_shell protocol.
+
 use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
 use derivative::Derivative;
@@ -20,7 +22,9 @@ use crate::{
     shell::{surface::LayoutEvent, xdg, HasShell, Shell},
     utils::geometry::{Extent, Point, Rectangle},
 };
-#[derive(Debug)]
+
+/// Implementation of the `xdg_wm_base` interface.
+#[derive(Debug, Clone, Copy)]
 pub struct WmBase;
 
 #[wayland_object]
@@ -36,12 +40,18 @@ where
     type GetXdgSurfaceFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type PongFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn pong(ctx: &mut Ctx, object_id: u32, serial: u32) -> Self::PongFut<'_> {
-        async move { unimplemented!() }
+    fn pong(_ctx: &mut Ctx, object_id: u32, serial: u32) -> Self::PongFut<'_> {
+        async move {
+            tracing::error!(object_id, serial, "xdg_wm_base.pong not implemented");
+            Err(Error::NotImplemented("xdg_wm_base.pong"))
+        }
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            ctx.objects_mut().remove(object_id).unwrap();
+            Ok(())
+        }
     }
 
     fn get_xdg_surface(
@@ -78,11 +88,18 @@ where
     }
 
     fn create_positioner(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         id: NewId,
     ) -> Self::CreatePositionerFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(
+                object_id,
+                ?id,
+                "xdg_wm_base.create_positioner not implemented"
+            );
+            Err(Error::NotImplemented("xdg_wm_base.create_positioner"))
+        }
     }
 }
 
@@ -104,7 +121,7 @@ where
         &'ctx mut self,
         objects: &'ctx mut Ctx::ObjectStore,
         connection: &'ctx mut Ctx::Connection,
-        server_context: &'ctx Ctx::ServerContext,
+        _server_context: &'ctx Ctx::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         tracing::debug!(?message, "LayoutEventHandler::poll_handle_event");
@@ -158,6 +175,7 @@ where
     }
 }
 
+/// Implementation of the `xdg_surface` interface.
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct Surface<S: Shell> {
@@ -257,13 +275,22 @@ where
     }
 
     fn get_popup(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         id: NewId,
         parent: WaylandObject,
         positioner: WaylandObject,
     ) -> Self::GetPopupFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(
+                object_id,
+                ?id,
+                ?parent,
+                ?positioner,
+                "get_popup not implemented"
+            );
+            Err(Error::NotImplemented("xdg_wm_base.get_popup"))
+        }
     }
 
     fn get_toplevel(ctx: &mut Ctx, object_id: u32, id: NewId) -> Self::GetToplevelFut<'_> {
@@ -337,6 +364,7 @@ where
     }
 }
 
+/// Implements the `xdg_toplevel` interface.
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""))]
 pub struct TopLevel<S: Shell>(
@@ -367,18 +395,35 @@ where
     type UnsetFullscreenFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
     type UnsetMaximizedFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a where Ctx: 'a;
 
-    fn move_(ctx: &mut Ctx, object_id: u32, seat: WaylandObject, serial: u32) -> Self::MoveFut<'_> {
-        async move { unimplemented!() }
+    fn move_(
+        _ctx: &mut Ctx,
+        object_id: u32,
+        seat: WaylandObject,
+        serial: u32,
+    ) -> Self::MoveFut<'_> {
+        async move {
+            tracing::error!(object_id, ?seat, serial, "move is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.move"))
+        }
     }
 
     fn resize(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         seat: WaylandObject,
         serial: u32,
         edges: xdg_toplevel::enums::ResizeEdge,
     ) -> Self::ResizeFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(
+                object_id,
+                ?seat,
+                serial,
+                ?edges,
+                "resize is not implemented"
+            );
+            Err(Error::NotImplemented("xdg_toplevel.resize"))
+        }
     }
 
     fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
@@ -400,8 +445,11 @@ where
         }
     }
 
-    fn set_parent(ctx: &mut Ctx, object_id: u32, parent: WaylandObject) -> Self::SetParentFut<'_> {
-        async move { unimplemented!() }
+    fn set_parent(_ctx: &mut Ctx, object_id: u32, parent: WaylandObject) -> Self::SetParentFut<'_> {
+        async move {
+            tracing::error!(object_id, ?parent, "set_parent is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.set_parent"))
+        }
     }
 
     fn set_app_id<'a>(ctx: &'a mut Ctx, object_id: u32, app_id: Str<'a>) -> Self::SetAppIdFut<'a> {
@@ -441,38 +489,63 @@ where
         }
     }
 
-    fn set_maximized(ctx: &mut Ctx, object_id: u32) -> Self::SetMaximizedFut<'_> {
-        async move { unimplemented!() }
+    fn set_maximized(_ctx: &mut Ctx, object_id: u32) -> Self::SetMaximizedFut<'_> {
+        async move {
+            tracing::error!(object_id, "set_maximized is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.set_maximized"))
+        }
     }
 
-    fn set_minimized(ctx: &mut Ctx, object_id: u32) -> Self::SetMinimizedFut<'_> {
-        async move { unimplemented!() }
+    fn set_minimized(_ctx: &mut Ctx, object_id: u32) -> Self::SetMinimizedFut<'_> {
+        async move {
+            tracing::error!(object_id, "set_minimized is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.set_minimized"))
+        }
     }
 
     fn set_fullscreen(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         output: WaylandObject,
     ) -> Self::SetFullscreenFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(object_id, ?output, "set_fullscreen is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.set_fullscreen"))
+        }
     }
 
-    fn unset_maximized(ctx: &mut Ctx, object_id: u32) -> Self::UnsetMaximizedFut<'_> {
-        async move { unimplemented!() }
+    fn unset_maximized(_ctx: &mut Ctx, object_id: u32) -> Self::UnsetMaximizedFut<'_> {
+        async move {
+            tracing::error!(object_id, "unset_maximized is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.unset_maximized"))
+        }
     }
 
     fn show_window_menu(
-        ctx: &mut Ctx,
+        _ctx: &mut Ctx,
         object_id: u32,
         seat: WaylandObject,
         serial: u32,
         x: i32,
         y: i32,
     ) -> Self::ShowWindowMenuFut<'_> {
-        async move { unimplemented!() }
+        async move {
+            tracing::error!(
+                object_id,
+                ?seat,
+                serial,
+                x,
+                y,
+                "show_window_menu is not implemented"
+            );
+            Err(Error::NotImplemented("xdg_toplevel.show_window_menu"))
+        }
     }
 
-    fn unset_fullscreen(ctx: &mut Ctx, object_id: u32) -> Self::UnsetFullscreenFut<'_> {
-        async move { unimplemented!() }
+    fn unset_fullscreen(_ctx: &mut Ctx, object_id: u32) -> Self::UnsetFullscreenFut<'_> {
+        async move {
+            tracing::error!(object_id, "unset_fullscreen is not implemented");
+            Err(Error::NotImplemented("xdg_toplevel.unset_fullscreen"))
+        }
     }
 }

@@ -1,3 +1,5 @@
+//! Objects defined in wayland protocols
+
 use std::future::Future;
 
 use hashbrown::{HashMap, HashSet};
@@ -23,6 +25,7 @@ pub mod input;
 pub mod shm;
 pub mod xdg_shell;
 
+/// Implementation of the `wl_buffer` interface.
 #[derive(Debug)]
 pub struct Buffer<B> {
     pub(crate) buffer:    AttachableBuffer<B>,
@@ -30,7 +33,7 @@ pub struct Buffer<B> {
 }
 
 impl<B: BufferLike> Buffer<B> {
-    pub fn new<Ctx: Client, B2: Into<B>, E: EventDispatcher<Ctx>>(
+    pub(crate) fn new<Ctx: Client, B2: Into<B>, E: EventDispatcher<Ctx>>(
         buffer: B2,
         event_dispatcher: &mut E,
     ) -> Self {
@@ -46,10 +49,10 @@ impl<B: BufferLike> Buffer<B> {
 
             fn handle_event<'ctx>(
                 &'ctx mut self,
-                objects: &'ctx mut Ctx::ObjectStore,
+                _objects: &'ctx mut Ctx::ObjectStore,
                 connection: &'ctx mut Ctx::Connection,
-                server_context: &'ctx Ctx::ServerContext,
-                message: &'ctx mut Self::Message,
+                _server_context: &'ctx Ctx::ServerContext,
+                _message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 async move {
                     connection
@@ -70,10 +73,6 @@ impl<B: BufferLike> Buffer<B> {
         event_dispatcher.add_event_handler(rx, BufferEventHandler { object_id });
         ret
     }
-
-    pub fn buffer(&self) -> &B {
-        &self.buffer.inner
-    }
 }
 
 #[wayland_object]
@@ -92,12 +91,14 @@ where
     }
 }
 
+#[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct OutputState {
     /// A map of shell outputs to their set of object ids
     pub(crate) all_outputs: HashMap<WeakPtr<ShellOutput>, HashSet<u32>>,
 }
 
+/// Implementation of the `wl_output` interface.
 #[derive(Debug)]
 pub struct Output {
     /// The corresponding shell output object.

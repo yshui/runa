@@ -4,12 +4,11 @@ use std::{
 };
 
 use apollo::{
+    objects::input::{KeyboardActivity, KeyboardState, PointerActivity},
     shell::{
         buffers,
         output::OutputChange,
-        surface::{
-            self, roles::subsurface_iter, KeyboardActivity, KeyboardState, PointerEventKind,
-        },
+        surface::{self, roles::subsurface_iter},
         xdg::{Layout, XdgShell},
         Shell, ShellEvent,
     },
@@ -57,7 +56,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             position_offset:  Point::new(1000, 1000),
             pointer_focus:    None,
             pointer_position: None,
-            screen:           apollo::shell::output::Screen::new_single_output(output),
+            screen:           apollo::shell::output::Screen::from_single_output(output),
             keyboard_state:   xkb::State::new(keymap),
             keys:             Default::default(),
         }
@@ -166,7 +165,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 if let Some(surface) = weak_surface.upgrade() {
                     // Nothing under the pointer, send a leave event to the last surface
                     // we sent a pointer event to.
-                    surface.pointer_event(PointerEventKind::Leave);
+                    surface.pointer_event(PointerActivity::Leave);
                     surface.keyboard_event(KeyboardActivity::Leave);
                 }
             }
@@ -198,7 +197,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             return
         };
         tracing::trace!("Pointer event on surface {}", surface.object_id());
-        surface.pointer_event(PointerEventKind::Motion {
+        surface.pointer_event(PointerActivity::Motion {
             coords: relative_position,
         });
     }
@@ -217,7 +216,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             MouseButton::Middle => input_event_codes::BTN_MIDDLE,
             MouseButton::Other(_) => return,
         };
-        surface.pointer_event(PointerEventKind::Button {
+        surface.pointer_event(PointerActivity::Button {
             button,
             state: if pressed {
                 wl_pointer::enums::ButtonState::Pressed

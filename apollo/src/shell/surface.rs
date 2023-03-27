@@ -1,3 +1,9 @@
+//! Wayland surfaces
+//!
+//! This is unlike [`compositor::Surface`](crate::objects::compositor::Surface),
+//! which is a proxy object in the client's object store representing an actual
+//! surface, which is defined here.
+
 use std::{
     any::Any,
     cell::{Cell, Ref, RefCell, RefMut},
@@ -9,44 +15,54 @@ use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
 use ordered_float::NotNan;
-use runa_wayland_types::NewId;
-use tinyvec::TinyVec;
-use tinyvecdeq::tinyvecdeq::TinyVecDeq;
-use runa_wayland_protocols::wayland::wl_pointer::v9 as wl_pointer;
 use runa_core::{
     events::{broadcast, single_state, EventSource},
     provide_any::{request_mut, request_ref, Demand, Provider},
 };
+use runa_wayland_types::NewId;
+use tinyvecdeq::tinyvecdeq::TinyVecDeq;
 
 use super::{buffers::AttachedBuffer, output::Output, xdg::Layout, Shell};
 use crate::{
-    objects,
+    objects::{
+        self,
+        input::{KeyboardActivity, PointerActivity},
+    },
     utils::{
         geometry::{coords, Point, Scale},
         WeakPtr,
     },
 };
 
+/// A surface role
 pub trait Role<S: Shell>: Any {
+    /// The name of the interface of this role.
     fn name(&self) -> &'static str;
-    // As specified by the wayland protocol, a surface can be assigned a role, then
-    // have the role object destroyed. This makes the role "inactive", but the
-    // surface cannot be assigned a different role. So we keep the role object
-    // but "deactivate" it.
+    /// Returns true if the role is active.
+    ///
+    /// As specified by the wayland protocol, a surface can be assigned a role,
+    /// then have the role object destroyed. This makes the role "inactive",
+    /// but the surface cannot be assigned a different role. So we keep the
+    /// role object but "deactivate" it.
     fn is_active(&self) -> bool;
     /// Deactivate the role.
     fn deactivate(&mut self, shell: &mut S);
+    /// Provides type based access to member variables of this role.
     fn provide<'a>(&'a self, _demand: &mut Demand<'a>) {}
+    /// Provides type based access to member variables of this role.
     fn provide_mut<'a>(&'a mut self, _demand: &mut Demand<'a>) {}
     /// Called before the pending state becomes the current state, in
-    /// Surface::commit. If an error is returned, the commit will be
+    /// [`Surface::commit`]. If an error is returned, the commit will be
     /// stopped.
-    fn pre_commit(&mut self, shell: &mut S, surface: &Surface<S>) -> Result<(), &'static str> {
+    fn pre_commit(&mut self, _shell: &mut S, _surfacee: &Surface<S>) -> Result<(), &'static str> {
         Ok(())
     }
-    fn post_commit(&mut self, shell: &mut S, surface: &Surface<S>) {}
+    /// Called after the pending state becomes the current state, in
+    /// [`Surface::commit`]
+    fn post_commit(&mut self, _shell: &mut S, _surface: &Surface<S>) {}
 }
 
+/// A double-buffer state associated with a role
 pub trait RoleState: Any + DynClone + std::fmt::Debug + 'static {}
 
 impl<S: Shell> Provider for dyn Role<S> {
@@ -59,53 +75,49 @@ impl<S: Shell> Provider for dyn Role<S> {
     }
 }
 
+/// Some roles defined in the wayland protocol
 pub mod roles {
     use std::rc::{Rc, Weak};
 
     use derivative::Derivative;
     use dlv_list::Index;
-    use runa_wayland_protocols::wayland::wl_subsurface;
     use runa_core::provide_any;
+    use runa_wayland_protocols::wayland::wl_subsurface;
 
     use crate::{
         shell::Shell,
         utils::geometry::{coords, Point},
     };
 
-    /// The wl_subsurface role.
+    /// The `wl_subsurface` role.
     ///
     /// # Note about cache and pending states
     ///
     /// A surface normally has a pending and a current state. Changes are
     /// applied to the pending state first, then commited to the current
-    /// state when wl_surface.commit is called.
+    /// state when `wl_surface.commit` is called.
     ///
     /// Subsurfaces has one more state - the cached state. This state exists if
     /// the subsurface is in synchronized mode. In sync mode, commit applies
     /// pending state to a cached state, and the cached state is applied to
-    /// current state when the parent calls commit. Another way of
-    /// looking at it, is the child has a "invisible" current state, and the
-    /// parent has a whole copy of the states of its subtree (IOW a shadow
-    /// subtree). On commit, a surface will copy its children's "invisible"
-    /// current state into its own current state. This way we can keep the
-    /// semantic of "commit", i.e. the commit code doesn't have to know
-    /// anything about roles. And also localize/encapsulate where the state need
-    /// to be stored, so we don't need a global cache queue or transactions,
-    /// etc.
+    /// current state when the parent calls commit, if the partent is desynced;
+    /// otherwise the cached state becomes part of the parent's cached
+    /// state.
     ///
-    /// To avoid excessive copies, this shadow tree can be implemented with COW.
-    /// The parent holds a reference of its children's states, when a
-    /// child's state is updated, it's not done in place.
+    /// We can see this as a tree of surface states, rooted at a "top-level"
+    /// surface, such as a surface with the `xdg_toplevel` role. The root's
+    /// current state references the children's current states, and the
+    /// children's current states in turn reference the grand-children's, so
+    /// on and so forth. When a synced child commits, its current state updates,
+    /// but it doesn't update its parent's reference to its current state.
+    /// So the parent still references the previous state, until the parent
+    /// also commits.
     ///
     /// A complication is when a child is destroyed, either by destroying the
     /// surface or deactivating its role, it's immediately removed, without
-    /// going through the pending or the cached state. We could do this by
-    /// holding an indirect reference to the child's state, and allow it to
-    /// "dangle" when the child is removed.
-    ///
-    /// The role itself doesn't have any double-buffered state defined by the
-    /// protocol. set_sync/set_desync/deactivate takes effect immediately,
-    /// parent cannot be changed
+    /// going through the pending or the cached state. We can detect this by
+    /// checking if the role object is active, while going through the tree
+    /// of surfaces.
     #[derive(Derivative)]
     #[derivative(Debug, Clone(bound = ""))]
     pub struct Subsurface<S: Shell> {
@@ -146,6 +158,8 @@ pub mod roles {
     }
     impl<S: Shell> super::RoleState for SubsurfaceState<S> {}
     impl<S: Shell> Subsurface<S> {
+        /// Attach a surface to a parent surface, and add the subsurface role to
+        /// id.
         pub fn attach(
             parent: Rc<super::Surface<S>>,
             surface: Rc<super::Surface<S>>,
@@ -188,10 +202,12 @@ pub mod roles {
             true
         }
 
+        /// Returns a weak reference to the parent surface.
         pub fn parent(&self) -> &Weak<super::Surface<S>> {
             &self.parent
         }
     }
+
     impl<S: Shell> super::Role<S> for Subsurface<S> {
         fn name(&self) -> &'static str {
             wl_subsurface::v1::NAME
@@ -259,14 +275,15 @@ pub mod roles {
         }
     }
 
-    /// Double ended iterator for iterating over a surface and its subsurfaces.
-    /// The forward order is bottom to top. This uses the committed states of
-    /// the surfaces.
-    #[allow(clippy::needless_lifetimes)]
-    pub fn subsurface_iter<'a, S: Shell>(
+    /// Double ended iterator for iterating over a surface and its subsurfaces
+    /// in the order they are stacked.
+    ///
+    /// The forward order is from bottom to top. This iterates over the
+    /// committed states of the surfaces, as defined by `wl_surface.commit`.
+    pub fn subsurface_iter<S: Shell>(
         root: S::Token,
-        s: &'a S,
-    ) -> impl DoubleEndedIterator<Item = (S::Token, Point<i32, coords::Surface>)> + 'a {
+        s: &S,
+    ) -> impl DoubleEndedIterator<Item = (S::Token, Point<i32, coords::Surface>)> + '_ {
         macro_rules! generate_advance {
             ($next_in_stack:ident, $next_maybe_deactivated:ident, $next:ident, $id:literal) => {
                 /// Advance the front pointer to the next surface in the
@@ -347,13 +364,13 @@ pub mod roles {
             is_empty: bool,
         }
 
-        impl<'a, S: Shell> SubsurfaceIter<'a, S> {
+        impl<S: Shell> SubsurfaceIter<'_, S> {
             generate_advance!(next_in_stack, next_maybe_deactivated, next, 0);
 
             generate_advance!(prev_in_stack, prev_maybe_deactivated, prev, 1);
         }
 
-        impl<'a, S: Shell> Iterator for SubsurfaceIter<'a, S> {
+        impl<S: Shell> Iterator for SubsurfaceIter<'_, S> {
             type Item = (S::Token, Point<i32, coords::Surface>);
 
             fn next(&mut self) -> Option<Self::Item> {
@@ -366,7 +383,7 @@ pub mod roles {
                 }
             }
         }
-        impl<'a, S: Shell> DoubleEndedIterator for SubsurfaceIter<'a, S> {
+        impl<S: Shell> DoubleEndedIterator for SubsurfaceIter<'_, S> {
             fn next_back(&mut self) -> Option<Self::Item> {
                 if self.is_empty {
                     None
@@ -389,23 +406,6 @@ pub mod roles {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct SurfaceFlags {
-    /// Whether the surface is destroyed, pointing to the same `Cell` in the
-    /// corresponding pending state. The only bit of the current state that is
-    /// changeable.
-    ///
-    /// This is needed, because wayland spec demand a surface to be removed
-    /// immediately from the surface tree when it is destroyed, however by
-    /// our rules we cannot update the tree until commit, and in sync mode
-    /// subsurface's case it's even more complicated, since all of the
-    /// surface's anscesters must commit.
-    ///
-    /// So we keep a flag here, which is checked to skip destroyed surfaces
-    /// while traversing the tree.
-    pub destroyed: bool,
-}
-
 /// A entry in a surface's stack
 ///
 /// Each surface has a stack, composed of itself and its subsurfaces.
@@ -419,6 +419,7 @@ pub struct SurfaceStackEntry<S: Shell> {
 }
 
 impl<S: Shell> SurfaceStackEntry<S> {
+    /// Position of the surface relative to its parent.
     pub fn position(&self) -> Point<i32, coords::Surface> {
         self.position
     }
@@ -427,9 +428,6 @@ impl<S: Shell> SurfaceStackEntry<S> {
 /// To support the current state and the pending state double buffering, the
 /// surface state must be deep cloneable.
 pub struct SurfaceState<S: Shell> {
-    /// A set of flags that can be mutate even when the state is the current
-    /// state of a surface.
-    flags:                         Cell<SurfaceFlags>,
     surface:                       Weak<Surface<S>>,
     /// The index just pass the last frame callback attached to this surface.
     /// For the definition of frame callback index, see
@@ -454,7 +452,6 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::shell::buffers::BufferLike;
         f.debug_struct("SurfaceState")
-            .field("flags", &self.flags)
             .field("surface", &self.surface.upgrade().map(|s| s.object_id()))
             .field("frame_callback_end", &self.frame_callback_end)
             .field("stack", &self.stack)
@@ -466,9 +463,9 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
 }
 
 impl<S: Shell> SurfaceState<S> {
+    /// Create a new surface state
     pub fn new(surface: Rc<Surface<S>>) -> Self {
         Self {
-            flags:              Cell::new(SurfaceFlags { destroyed: false }),
             surface:            Rc::downgrade(&surface),
             frame_callback_end: 0,
             stack:              Default::default(),
@@ -480,10 +477,12 @@ impl<S: Shell> SurfaceState<S> {
         }
     }
 
+    /// Returns a reference to the surface stack in this surface state
     pub fn stack(&self) -> &VecList<SurfaceStackEntry<S>> {
         &self.stack
     }
 
+    /// Returns unique reference to the surface stack in this surface state
     pub fn stack_mut(&mut self) -> &mut VecList<SurfaceStackEntry<S>> {
         &mut self.stack
     }
@@ -491,7 +490,6 @@ impl<S: Shell> SurfaceState<S> {
 impl<S: Shell> Clone for SurfaceState<S> {
     fn clone(&self) -> Self {
         Self {
-            flags:              self.flags.clone(),
             surface:            self.surface.clone(),
             frame_callback_end: self.frame_callback_end,
             stack:              self.stack.clone(),
@@ -505,6 +503,8 @@ impl<S: Shell> Clone for SurfaceState<S> {
 }
 
 impl<S: Shell> SurfaceState<S> {
+    /// Returns the token of the parent surface state of this surface state, if
+    /// any. None if this surface is not a subsurface.
     pub fn parent(&self) -> Option<S::Token> {
         let role_state = self.role_state.as_ref()?;
         let role_state = (&**role_state as &dyn Any).downcast_ref::<roles::SubsurfaceState<S>>()?;
@@ -536,8 +536,9 @@ impl<S: Shell> SurfaceState<S> {
         (this, offset)
     }
 
-    /// The the next surface of `index` in the subtree rooted at this surface.
-    /// Returns the token, and it's offset relative to this surface.
+    /// The the surface on top of the `index` surface in the subtree rooted at
+    /// this surface. Returns the token, and it's offset relative to this
+    /// surface.
     ///
     /// # Example
     ///
@@ -569,6 +570,12 @@ impl<S: Shell> SurfaceState<S> {
 
     /// Find the bottom of the subtree rooted at this surface. Returns the
     /// token, and it's offset relative to this surface.
+    ///
+    /// # Example
+    ///
+    /// Say surface A has stack "B A C D", and surface B has stack "E D F G".
+    /// Then `A.bottom()` will return E. Because B is the bottom
+    /// of A's immediate stack, and the bottom surface of B's stack is E.
     pub fn bottom(mut this: S::Token, shell: &S) -> (S::Token, Point<i32, coords::Surface>) {
         let mut offset = Point::new(0, 0);
         loop {
@@ -587,8 +594,8 @@ impl<S: Shell> SurfaceState<S> {
         (this, offset)
     }
 
-    /// The the previous surface of `index` in the subtree rooted at this
-    /// surface. Returns the token, and it's offset relative to this
+    /// The the surface beneath the `index` surface in the subtree rooted at
+    /// this surface. Returns the token, and it's offset relative to this
     /// surface.
     ///
     /// # Example
@@ -616,21 +623,7 @@ impl<S: Shell> SurfaceState<S> {
         }
     }
 
-    #[inline]
-    pub fn flags(&self) -> SurfaceFlags {
-        self.flags.get()
-    }
-
-    #[inline]
-    pub fn set_flags(&self, flags: SurfaceFlags) {
-        self.flags.set(flags);
-    }
-
-    #[inline]
-    pub fn buffer_scale(&self) -> u32 {
-        self.buffer_scale
-    }
-
+    /// Return the buffer scale
     #[inline]
     pub fn buffer_scale_f32(&self) -> Scale<NotNan<f32>> {
         use num_traits::AsPrimitive;
@@ -638,11 +631,13 @@ impl<S: Shell> SurfaceState<S> {
         Scale::uniform(scale / 120.0)
     }
 
+    /// Set the buffer scale
     #[inline]
     pub fn set_buffer_scale(&mut self, scale: u32) {
         self.buffer_scale = scale;
     }
 
+    /// Get a weak reference to the surface this surface state belongs to.
     #[inline]
     pub fn surface(&self) -> &Weak<Surface<S>> {
         &self.surface
@@ -664,14 +659,17 @@ impl<S: Shell> SurfaceState<S> {
         self.buffer = buffer;
     }
 
+    /// Set the buffer.
     pub fn set_buffer_from_object(&mut self, buffer: &objects::Buffer<S::Buffer>) {
         self.set_buffer(Some(buffer.buffer.attach()));
     }
 
+    /// Get a reference to the buffer.
     pub fn buffer(&self) -> Option<&Rc<S::Buffer>> {
         self.buffer.as_ref().map(|b| &b.inner)
     }
 
+    /// Add a frame callback.
     pub fn add_frame_callback(&mut self, callback: u32) {
         let surface = self
             .surface()
@@ -686,16 +684,25 @@ impl<S: Shell> SurfaceState<S> {
         );
     }
 
+    /// Set role related state.
     pub fn set_role_state<T: RoleState>(&mut self, state: T) {
         self.role_state = Some(Box::new(state));
     }
 
+    /// Get a reference to the role related state.
+    ///
+    /// None if there is no role related state assigned to this surface.
+    /// Some(None) if `T` is not the correct type.
     pub fn role_state<T: RoleState>(&self) -> Option<Option<&T>> {
         self.role_state
             .as_ref()
             .map(|s| (&**s as &dyn Any).downcast_ref::<T>())
     }
 
+    /// Get a unique reference to the role related state.
+    ///
+    /// None if there is no role related state assigned to this surface.
+    /// Some(None) if `T` is not the correct type.
     pub fn role_state_mut<T: RoleState>(&mut self) -> Option<Option<&mut T>> {
         self.role_state
             .as_mut()
@@ -737,52 +744,19 @@ impl<S: Shell> SurfaceState<S> {
 
 pub(crate) type OutputSet = Rc<RefCell<HashSet<WeakPtr<Output>>>>;
 
+/// An event emitted from a surface when the output it is on changes.
 #[derive(Clone, Debug)]
-pub struct OutputEvent(pub(crate) OutputSet);
+pub(crate) struct OutputEvent(pub(crate) OutputSet);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PointerEventKind {
-    Motion {
-        coords: Point<NotNan<f32>, coords::Surface>,
-    },
-    Button {
-        // TODO: remove coords, and require first event on a surface to be Motion
-        button: u32,
-        state:  wl_pointer::enums::ButtonState,
-    },
-    Leave,
-    // TODO: axis
-    // ...
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PointerEvent {
+pub(crate) struct PointerEvent {
     pub time:      u32,
     pub object_id: u32,
-    pub kind:      PointerEventKind,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct KeyboardState {
-    /// All the currently pressed keys, most keyboard doesn't have more than
-    /// 6 key rollover, so 8 should be enough to avoid allocations for most
-    /// cases.
-    pub keys:                TinyVec<[u8; 8]>,
-    pub depressed_modifiers: u32,
-    pub latched_modifiers:   u32,
-    pub locked_modifiers:    u32,
-    /// This is called the "group" in the wayland protocol
-    pub effective_layout:    u32,
+    pub kind:      PointerActivity,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum KeyboardActivity {
-    Key(KeyboardState),
-    Leave,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyboardEvent {
+pub(crate) struct KeyboardEvent {
     pub time:      u32,
     pub object_id: u32,
     pub activity:  KeyboardActivity,
@@ -792,21 +766,22 @@ pub struct KeyboardEvent {
 pub(crate) struct LayoutEvent(pub(crate) Layout);
 /// Maximum number of frame callbacks that can be registered on a surface.
 pub const MAX_FRAME_CALLBACKS: usize = 100;
+
 // TODO: make Surface not shared. Role objects can just contain an object id
 // maybe?
+/// A surface.
 pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
     current:                    Cell<Option<S::Token>>,
-    /// The pending state of the surface, this will be moved to [`Self::current`] when
-    /// commit is called
+    /// The pending state of the surface, this will be moved to
+    /// [`Self::current`] when commit is called
     ///
-    /// FIXME: this implementation is not comformant to the wayland protocol spec.
+    /// FIXME: this implementation is not comformant to the wayland protocol
+    /// spec.
     pending:                    Cell<Option<S::Token>>,
-    /// Set of all states associated with this surface
-    /// XXX: XXX: maybe delete this? instead, track the set of all unfired frame
-    /// callbacks associated with this surface, in any of its surface
-    /// states.
+    /// List of of all the unfired frame callbacks associated with this surface,
+    /// in any of its surface states.
     frame_callbacks:            RefCell<TinyVecDeq<[u32; 4]>>,
     /// The index of the first frame callback stored in `frame_callbacks`. Frame
     /// callbacks attached to a surface is numbered starting from 0, and
@@ -852,8 +827,9 @@ impl<S: Shell> Drop for Surface<S> {
 }
 
 impl<S: Shell> Surface<S> {
+    /// Create a new surface
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         object_id: NewId,
         pointer_events: broadcast::Ring<PointerEvent>,
         keyboard_events: broadcast::Ring<KeyboardEvent>,
@@ -873,15 +849,19 @@ impl<S: Shell> Surface<S> {
         }
     }
 
-    pub fn frame_callbacks(&self) -> &RefCell<TinyVecDeq<[u32; 4]>> {
+    /// Get a reference to the set of all unfired frame callbacks attached to
+    /// the surface.
+    pub(crate) fn frame_callbacks(&self) -> &RefCell<TinyVecDeq<[u32; 4]>> {
         &self.frame_callbacks
     }
 
-    pub fn first_frame_callback_index(&self) -> u32 {
+    /// Index of the first frame callback stored in `frame_callbacks`.
+    pub(crate) fn first_frame_callback_index(&self) -> u32 {
         self.first_frame_callback_index.get()
     }
 
-    pub fn set_first_frame_callback_index(&self, index: u32) {
+    /// Set the index of the first frame callback stored in `frame_callbacks`.
+    pub(crate) fn set_first_frame_callback_index(&self, index: u32) {
         self.first_frame_callback_index.set(index)
     }
 }
@@ -942,7 +922,6 @@ impl<S: Shell> Surface<S> {
         // potentially can be freed.
         let free_candidates_end = scratch_buffer.len();
 
-        let new_state = shell.get(new_current);
         scratch_buffer.push(new_current);
         let mut head = free_candidates_end;
 
@@ -971,7 +950,7 @@ impl<S: Shell> Surface<S> {
                 scratch_buffer.push(e.token);
             }
             for &child_token in &scratch_buffer[child_start..] {
-                let [child_state, state] = shell.get_disjoint_mut([child_token, token]);
+                let child_state = shell.get_mut(child_token);
                 let child_subsurface_state = (&mut **child_state.role_state.as_mut().unwrap()
                     as &mut dyn Any)
                     .downcast_mut::<roles::SubsurfaceState<S>>()
@@ -1052,26 +1031,37 @@ impl<S: Shell> Surface<S> {
         Ok(())
     }
 
+    /// Return the object ID of this surface inside the object store of the
+    /// client owning this surface.
     pub fn object_id(&self) -> u32 {
         self.object_id
     }
 
+    /// Set the current surface state
     pub fn set_current(&self, key: S::Token) {
         self.current.set(Some(key));
     }
 
+    /// Set the pending surface state.
+    ///
+    /// TODO: this is wrong
     pub fn set_pending(&self, key: S::Token) {
         self.pending.set(Some(key));
     }
 
+    /// Get the pending surface state token.
+    ///
+    /// TODO: this is wrong
     pub fn pending_key(&self) -> S::Token {
         self.pending.get().unwrap()
     }
 
+    /// Get the current surface state token.
     pub fn current_key(&self) -> S::Token {
         self.current.get().unwrap()
     }
 
+    /// Get a unique reference to the pending surface state.
     pub fn pending_mut<'a>(&self, shell: &'a mut S) -> &'a mut SurfaceState<S> {
         let current = self.current_key();
         let pending = self.pending_key();
@@ -1101,27 +1091,28 @@ impl<S: Shell> Surface<S> {
         shell.get_mut(self.pending_key())
     }
 
+    /// Get a reference to the pending surface state.
     pub fn pending<'a>(&self, shell: &'a S) -> &'a SurfaceState<S> {
         shell.get(self.pending_key())
     }
 
+    /// Get a reference to the current surface state.
     pub fn current<'a>(&self, shell: &'a S) -> &'a SurfaceState<S> {
         shell.get(self.current_key())
     }
 
+    /// Get a unique reference to the current surface state.
     pub fn current_mut<'a>(&self, shell: &'a mut S) -> &'a mut SurfaceState<S> {
         shell.get_mut(self.current_key())
     }
 
     /// Returns true if the surface has a role attached. This will keep
     /// returning true even after the role has been deactivated.
-    #[must_use]
     pub fn has_role(&self) -> bool {
         self.role.borrow().is_some()
     }
 
     /// Returns true if the surface has a role, and that role is active.
-    #[must_use]
     pub fn role_is_active(&self) -> bool {
         self.role
             .borrow()
@@ -1131,19 +1122,30 @@ impl<S: Shell> Surface<S> {
     }
 
     /// Borrow the role object of the surface.
-    #[must_use]
-    pub fn role<T: Role<S>>(&self) -> Option<Ref<T>> {
+    pub fn role<T: Role<S>>(&self) -> Option<Ref<'_, T>> {
         let role = self.role.borrow();
         Ref::filter_map(role, |r| r.as_ref().and_then(|r| request_ref(&**r))).ok()
     }
 
     /// Mutably borrow the role object of the surface.
-    #[must_use]
-    pub fn role_mut<T: Role<S>>(&self) -> Option<RefMut<T>> {
+    pub fn role_mut<T: Role<S>>(&self) -> Option<RefMut<'_, T>> {
         let role = self.role.borrow_mut();
         RefMut::filter_map(role, |r| r.as_mut().and_then(|r| request_mut(&mut **r))).ok()
     }
 
+    /// Destroy a surface and its associated resources.
+    ///
+    /// This function will deactivate the role associated with the surface, if
+    /// any. (Although, as specified by wl_surface interface v6, the role
+    /// must be destroyed before the surface. We keep the deactivation here
+    /// too to support older clients). And also destruct any associated
+    /// surface states that become orphaned by destroying the surface.
+    ///
+    /// # Arguments
+    ///
+    /// - `shell`: the shell that owns this surface.
+    /// - `scratch_buffer`: a scratch buffer used to store the tokens of the
+    ///   surface states for going through them.
     pub fn destroy(&self, shell: &mut S, scratch_buffer: &mut Vec<S::Token>) {
         // This function needs to do these things:
         //  - free self.current if it's not referenced by any parent surface states.
@@ -1226,6 +1228,7 @@ impl<S: Shell> Surface<S> {
         self.current.set(None);
     }
 
+    /// Deactivate the role assigned to this surface.
     pub fn deactivate_role(&self, shell: &mut S) {
         if let Some(role) = self.role.borrow_mut().as_mut() {
             if role.is_active() {
@@ -1238,10 +1241,12 @@ impl<S: Shell> Surface<S> {
         };
     }
 
+    /// Clear buffer damage, NOT IMPLEMENTED YET
     pub fn clear_damage(&self) {
         todo!()
     }
 
+    /// Assign a role to this surface.
     pub fn set_role<T: Role<S>>(&self, role: T, shell: &mut S) {
         let role_name = role.name();
         {
@@ -1251,24 +1256,30 @@ impl<S: Shell> Surface<S> {
         shell.role_added(self.current_key(), role_name);
     }
 
-    pub fn outputs(&self) -> impl std::ops::Deref<Target = HashSet<WeakPtr<Output>>> + '_ {
+    /// Get the set of outputs this surface is currently on.
+    pub fn outputs(&self) -> Ref<'_, HashSet<WeakPtr<Output>>> {
         self.outputs.borrow()
     }
 
+    /// Mutably borrow the set of outputs this surface is currently on.
     pub fn outputs_mut(&self) -> RefMut<'_, HashSet<WeakPtr<Output>>> {
         self.outputs.borrow_mut()
     }
 
+    /// Send an event notifying that the set of outputs this surface is on has
+    /// changed.
     pub fn notify_output_changed(&self) {
         self.output_change_events
             .send(OutputEvent(self.outputs.clone()));
     }
 
+    /// Send an event notifying that the layout of this surface has changed.
     pub fn notify_layout_changed(&self, layout: Layout) {
         self.layout_change_events.send(LayoutEvent(layout));
     }
 
-    pub fn pointer_event(&self, event: PointerEventKind) {
+    /// Send a pointer event
+    pub fn pointer_event(&self, event: PointerActivity) {
         let event = PointerEvent {
             time:      crate::time::elapsed().as_millis() as u32,
             object_id: self.object_id,
@@ -1277,6 +1288,7 @@ impl<S: Shell> Surface<S> {
         self.pointer_events.broadcast(event);
     }
 
+    /// Send a keyboard event
     pub fn keyboard_event(&self, event: KeyboardActivity) {
         let event = KeyboardEvent {
             time:      crate::time::elapsed().as_millis() as u32,

@@ -1,3 +1,5 @@
+//! Various kind of buffers used in wayland protocols.
+
 use std::{cell::Cell, fmt::Debug, rc::Rc};
 
 use derivative::Derivative;
@@ -8,9 +10,13 @@ use crate::utils::geometry::{coords, Extent};
 /// The base buffer trait.
 pub trait BufferLike: EventSource<BufferEvent> + Debug + 'static {
     // TODO: take rectangles
+    /// Damage the buffer
     fn damage(&self);
+    /// Clear buffer damage
     fn clear_damage(&self);
+    /// Returns whether the buffer is damaged
     fn get_damage(&self) -> bool;
+    /// The buffer dimensions
     fn dimension(&self) -> Extent<u32, coords::Buffer>;
     /// Return the object id for the buffer object.
     /// Used for sending release event to the client.
@@ -99,7 +105,11 @@ impl<B: BufferLike> AttachableBuffer<B> {
     }
 }
 
+/// The server context has a buffer type
+///
+/// This is used to allow the user to define their own buffer type.
 pub trait HasBuffer {
+    /// The buffer type
     type Buffer: BufferLike;
 }
 
@@ -120,6 +130,7 @@ pub struct Buffer<Base> {
 }
 
 impl<Base> Buffer<Base> {
+    /// Create a new buffer
     pub fn new(dimension: Extent<u32, coords::Buffer>, object_id: u32, inner: Base) -> Self {
         Self {
             damaged: Cell::new(false),
@@ -224,11 +235,15 @@ trait BufferBaseFrom {}
 #[derive(Debug)]
 #[enum_dispatch::enum_dispatch(BufferBaseFrom)]
 pub enum BufferBase {
-    Shm(crate::objects::shm::BufferBase),
+    /// A shm buffer
+    Shm(crate::objects::shm::Buffer),
 }
 
+/// Events emitted by a buffer
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BufferEvent {
+    /// The buffer is no longer used by the compositor. See `wl_buffer.release`
+    /// for more information about what this means.
     Released,
 }
 
@@ -236,14 +251,17 @@ pub enum BufferEvent {
 #[derive(Debug)]
 pub struct UserBuffer<B, Data> {
     buffer:   B,
+    /// The user data
     pub data: Data,
 }
 
 impl<B, Data> UserBuffer<B, Data> {
+    /// Get a reference to the buffer
     pub fn buffer(&self) -> &B {
         &self.buffer
     }
 
+    /// Apply a function to the buffer component of a `UserBuffer`
     pub fn map_buffer<U, F: FnOnce(B) -> U>(self, f: F) -> UserBuffer<U, Data> {
         UserBuffer {
             buffer: f(self.buffer),
@@ -253,10 +271,12 @@ impl<B, Data> UserBuffer<B, Data> {
 }
 
 impl<B, Data> UserBuffer<B, Data> {
+    /// Create a new `UserBuffer`
     pub fn new(buffer: B, data: Data) -> Self {
         Self { buffer, data }
     }
 
+    /// Create a new `UserBuffer` with default data
     pub fn with_default_data(buffer: B) -> Self
     where
         Data: Default,

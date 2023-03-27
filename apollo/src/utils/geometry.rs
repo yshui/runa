@@ -1,3 +1,7 @@
+//! Types for geometry calculations.
+//!
+//! This is largely adapted from the `smithay` crate.
+
 use std::{
     fmt,
     ops::{Add, AddAssign, Div, Mul, Sub, SubAssign},
@@ -6,6 +10,7 @@ use std::{
 use num_traits::{AsPrimitive, One, SaturatingAdd, SaturatingMul, SaturatingSub, Zero};
 use ordered_float::NotNan;
 
+/// Tag types for makring the coordinate system of a value.
 pub mod coords {
     /// Screen coordinates. The compositor can have a virutal "screen",
     /// essentially a unified canvas where all the windows are drawn. This
@@ -44,11 +49,14 @@ pub mod coords {
     /// in this module can implement it.
     pub trait CoordinateSpace: Clone + Copy + Default + PartialEq + Eq + std::fmt::Debug {}
 
-    /// Mapping from one coordinate space to another
+    /// Mapping from one coordinate space to another.
     pub trait Map: Sized {
+        /// The output type with the new coordinate space.
         type Output<Kind>
         where
             Kind: CoordinateSpace;
+
+        /// Map from one coordinate space to another by applying a function.
         fn map<Kind: CoordinateSpace>(
             self,
             f: impl FnOnce(Self::Output<Kind>) -> Self::Output<Kind>,
@@ -65,10 +73,14 @@ pub mod coords {
 
 use coords::*;
 
-/// A trait about the sign of a number. We need this because `num_traits` does
-/// not define `abs` or `signum` for unsigned numbers.
+/// A trait about the sign of a number.
+///
+/// We need this because `num_traits` does not define `abs` for
+/// unsigned numbers.
 pub trait Sign {
+    /// Return true if the number is negative
     fn is_negative(&self) -> bool;
+    /// Return the absolute value of the number
     fn abs(&self) -> Self;
 }
 
@@ -215,6 +227,8 @@ impl<N: Copy> Scale<N> {
         }
     }
 
+    /// Apply a function to the scale. This function is passed x and y scales
+    /// independently.
     #[inline]
     pub fn map<M: Copy + 'static>(self, f: impl Fn(N) -> M) -> Scale<M> {
         Scale {
@@ -225,6 +239,7 @@ impl<N: Copy> Scale<N> {
 }
 
 impl<N: Copy> Scale<N> {
+    /// Create a new scale
     #[inline]
     pub fn new(x: N, y: N) -> Self {
         Scale { x, y }
@@ -324,6 +339,7 @@ impl<N, Kind: CoordinateSpace> coords::Map for Point<N, Kind> {
 }
 
 impl<N, Kind: CoordinateSpace> Point<N, Kind> {
+    /// Create a new point
     #[inline]
     pub fn new(x: N, y: N) -> Self {
         Point {
@@ -357,6 +373,8 @@ impl<N: Sign + Copy + fmt::Debug, Kind: CoordinateSpace> Point<N, Kind> {
     }
 }
 impl<N: Copy + SaturatingMul, Kind: CoordinateSpace> Point<N, Kind> {
+    /// Multiply this point by a scale, if the result will overflow,
+    /// saturate to the maximum value.
     #[inline]
     pub fn saturating_mul(self, scale: Scale<N>) -> Point<N, Kind> {
         Point::new(
@@ -421,6 +439,7 @@ impl<N: Approx, Kind: CoordinateSpace> Point<N, Kind> {
 }
 
 impl<N, Kind: CoordinateSpace> Point<N, Kind> {
+    /// Convert the number type of a point.
     #[inline]
     pub fn to<M: Copy + 'static>(self) -> Point<M, Kind>
     where
@@ -534,6 +553,7 @@ impl<N, Kind: CoordinateSpace> Extent<N, Kind> {
     }
 }
 impl<N: Sign, Kind: CoordinateSpace> Extent<N, Kind> {
+    /// Create a new extent from width and height
     #[inline]
     pub fn new(w: N, h: N) -> Self {
         debug_assert!(!w.is_negative());
@@ -772,6 +792,7 @@ impl<N: Zero + Eq, Kind: CoordinateSpace> Rectangle<N, Kind> {
 impl<N: Approx + Sign + Sub<Output = N> + Add<Output = N> + Copy, Kind: CoordinateSpace>
     Rectangle<N, Kind>
 {
+    /// Round the rectangle's position and size to the nearest integer.
     #[inline]
     pub fn round(self) -> Rectangle<N, Kind> {
         Rectangle {
@@ -781,14 +802,14 @@ impl<N: Approx + Sign + Sub<Output = N> + Add<Output = N> + Copy, Kind: Coordina
     }
 
     /// Shrink the rectangle to the biggest integer sized and positioned
-    /// rectangle within the original rectangle
+    /// rectangle within the original rectangle.
     #[inline]
     pub fn shrink(self) -> Rectangle<N, Kind> {
         Rectangle::from_extemities(self.loc.ceil(), (self.loc + self.size).floor())
     }
 
     /// Expand the rectangle to the smallest integer sized and positioned
-    /// rectangle encapsulating the original rectangle
+    /// rectangle encapsulating the original rectangle.
     #[inline]
     pub fn expand(self) -> Rectangle<N, Kind> {
         Rectangle::from_extemities(self.loc.floor(), (self.loc + self.size).ceil())

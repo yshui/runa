@@ -59,7 +59,7 @@ pub trait Bind<Ctx> {
 ///
 /// Typically a polymorphic global type will be a enum of all the global types
 /// used in the compositor. If you have such an enum, the
-/// [`globals`](crate::globals) macro will generate this trait impl for you.
+/// [`globals!`](crate::globals!) macro will generate this trait impl for you.
 ///
 /// Unlike `AnyObject`, this trait doesn't have a `cast_mut` method because
 /// globals are shared so it's not possible to get a unique reference to them.

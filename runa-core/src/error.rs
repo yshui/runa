@@ -43,6 +43,9 @@ pub enum Error {
     /// Unknown error that is fatal
     #[error("An unknown fatal error occurred: {0}")]
     UnknownFatalError(&'static str),
+    /// Client tried to invoke an unimplemented method
+    #[error("{0} is not implemented yet")]
+    NotImplemented(&'static str),
     /// Custom error defined by external object implementations
     #[error("{source}")]
     Custom {
@@ -97,6 +100,7 @@ impl ProtocolError for Error {
             Self::InvalidObject(_) => Some((DISPLAY_ID, InvalidObject as u32)),
             Self::UnknownError(_) => Some((DISPLAY_ID, Implementation as u32)),
             Self::UnknownFatalError(_) => Some((DISPLAY_ID, Implementation as u32)),
+            Self::NotImplemented(_) => Some((DISPLAY_ID, Implementation as u32)),
             Self::Custom {
                 object_id_and_code, ..
             } => *object_id_and_code,
@@ -113,7 +117,8 @@ impl ProtocolError for Error {
             Self::UnknownGlobal(_) |
             Self::UnknownObject(_) |
             Self::InvalidObject(_) |
-            Self::UnknownFatalError(_) => true,
+            Self::UnknownFatalError(_) |
+            Self::NotImplemented(_) => true,
             Self::UnknownError(_) => false,
             Self::Custom {
                 is_fatal: fatal, ..

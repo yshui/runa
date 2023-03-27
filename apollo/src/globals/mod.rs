@@ -189,7 +189,7 @@ impl MonoGlobal for Seat {
 
     #[inline]
     fn new_object() -> Self::Object {
-        crate::objects::input::Seat
+        crate::objects::input::Seat { auto_abort: None }
     }
 }
 
@@ -207,6 +207,53 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
             } = client.as_mut_parts();
             let caps = server_context.capabilities();
             let name = server_context.name().as_bytes().into();
+            struct SeatEventHandler {
+                object_id: u32,
+            }
+            impl<Ctx> EventHandler<Ctx> for SeatEventHandler
+            where
+                Ctx: Client,
+                Ctx::ServerContext: crate::shell::Seat,
+            {
+                type Message = crate::shell::SeatEvent;
+
+                type Future<'ctx> = impl Future<
+                        Output = Result<
+                            EventHandlerAction,
+                            Box<dyn std::error::Error + std::marker::Send + Sync + 'static>,
+                        >,
+                    > + 'ctx;
+
+                fn handle_event<'ctx>(
+                    &'ctx mut self,
+                    _objects: &'ctx mut <Ctx as Client>::ObjectStore,
+                    connection: &'ctx mut <Ctx as Client>::Connection,
+                    server_context: &'ctx <Ctx as Client>::ServerContext,
+                    message: &'ctx mut Self::Message,
+                ) -> Self::Future<'ctx> {
+                    async move {
+                        use crate::shell::{Seat, SeatEvent::*};
+                        match message {
+                            CapabilitiesChanged => {
+                                let cap = server_context.capabilities();
+                                connection
+                                    .send(self.object_id, wl_seat::events::Capabilities {
+                                        capabilities: cap,
+                                    })
+                                    .await?;
+                            },
+                            NameChanged => {
+                                let name = server_context.name().as_bytes().into();
+                                connection
+                                    .send(self.object_id, wl_seat::events::Name { name })
+                                    .await?;
+                            },
+                            _ => {},
+                        }
+                        Ok(EventHandlerAction::Keep)
+                    }
+                }
+            }
             connection
                 .send(object_id, wl_seat::events::Capabilities {
                     capabilities: caps,
@@ -215,6 +262,19 @@ impl<Server: crate::shell::Seat, Ctx: Client<ServerContext = Server>> Bind<Ctx> 
             connection
                 .send(object_id, wl_seat::events::Name { name })
                 .await?;
+
+            // Listen for seat change events.
+            let rx = client.server_context().subscribe();
+            let (rx, abort_handle) = futures_util::stream::abortable(rx);
+            client
+                .event_dispatcher_mut()
+                .add_event_handler(rx, SeatEventHandler { object_id });
+            let this = client
+                .objects_mut()
+                .get_mut::<<Self as MonoGlobal>::Object>(object_id)
+                .unwrap();
+            // Automatically stop the event handler when the seat object is destroyed.
+            this.auto_abort = Some(abort_handle.into());
             Ok(())
         }
     }

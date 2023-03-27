@@ -439,7 +439,7 @@ fn main() -> Result<()> {
         seat_events: Default::default(),
         keymap:      Keymap {
             format: wl_keyboard::enums::KeymapFormat::XkbV1,
-            fd:     Rc::new(keymap_fd),
+            fd:     keymap_fd,
             size:   keymap_size as u32,
         },
     }));

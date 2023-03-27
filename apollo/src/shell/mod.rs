@@ -94,17 +94,29 @@ pub struct RepeatInfo {
     pub delay: i32,
 }
 
-#[derive(Clone, Debug)]
+/// Keymap
+#[derive(Debug)]
 pub struct Keymap {
     pub format: wl_keyboard::enums::KeymapFormat,
-    pub fd:     Rc<std::os::unix::io::OwnedFd>,
+    /// File descriptor of the keymap
+    pub fd:     std::os::unix::io::OwnedFd,
+    /// Size of the keymap in bytes
     pub size:   u32,
 }
 
-#[derive(Clone, Debug)]
+/// Events emitted by a seat
+///
+/// TODO: change to a bitflag struct, and use the aggregate event source.
+#[derive(Clone, Debug, Copy)]
 pub enum SeatEvent {
-    KeymapChanged(Keymap),
-    RepeatInfoChanged(RepeatInfo),
+    /// The keymap has changed
+    KeymapChanged,
+    /// The repeat info has changed
+    RepeatInfoChanged,
+    /// The capabilities of the seat has changed
+    CapabilitiesChanged,
+    /// The name of the seat has changed
+    NameChanged,
 }
 
 pub trait Seat: EventSource<SeatEvent> {

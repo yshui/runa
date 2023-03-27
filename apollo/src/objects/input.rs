@@ -26,7 +26,9 @@ use crate::{
     utils::geometry::{coords, Point},
 };
 #[derive(Default, Debug)]
-pub struct Seat;
+pub struct Seat {
+    pub(crate) auto_abort: Option<crate::utils::AutoAbort>,
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum SeatError {
@@ -331,6 +333,7 @@ struct KeyboardConfigHandler;
 impl<Ctx> EventHandler<Ctx> for KeyboardConfigHandler
 where
     Ctx: Client,
+    Ctx::ServerContext: crate::shell::Seat,
 {
     type Message = crate::shell::SeatEvent;
 
@@ -344,14 +347,15 @@ where
         server_context: &'ctx <Ctx as Client>::ServerContext,
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
-        use crate::shell::SeatEvent::*;
+        use crate::shell::{Seat, SeatEvent::*};
         async move {
             if objects.ids_by_type::<Keyboard>().next().is_none() {
                 // No keyboard objects left, stop listening for seat events
                 return Ok(EventHandlerAction::Stop)
             }
             match message {
-                KeymapChanged(keymap) =>
+                KeymapChanged => {
+                    let keymap = server_context.keymap();
                     for id in objects.ids_by_type::<Keyboard>() {
                         connection
                             .send(id, wl_keyboard::events::Keymap {
@@ -360,8 +364,10 @@ where
                                 size:   keymap.size,
                             })
                             .await?;
-                    },
-                RepeatInfoChanged(repeat_info) => {
+                    }
+                },
+                RepeatInfoChanged => {
+                    let repeat_info = server_context.repeat_info();
                     send_to_all_keyboards::<Ctx, _>(
                         objects,
                         connection,
@@ -372,6 +378,9 @@ where
                     )
                     .await?;
                 },
+                // TODO: stop all existing wl_keyboard objects, maybe not here?
+                CapabilitiesChanged => {},
+                _ => {},
             }
             Ok(EventHandlerAction::Keep)
         }

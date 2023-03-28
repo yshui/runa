@@ -2,7 +2,7 @@
 
 ## Demo
 
-[placeholder](...)
+https://user-images.githubusercontent.com/366851/228325348-7b988f84-9837-4f5b-8fcd-d2085ea7edea.mp4
 
 ## Project status, goals and plans
 

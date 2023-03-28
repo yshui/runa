@@ -1,18 +1,9 @@
-//! Proxy for the compositor global
+//! Types related to the compositor global
 //!
 //! The compositor global is responsible for managing the sets of surfaces a
 //! client has. According to the wayland spec, each surface has a set of
 //! double-buffered states: updates are made to the pending state first, and
 //! applied to current state when `wl_surface.commit` is called.
-//!
-//! Another core interface, wl_subsurface, add some persistent data structure
-//! flavor to the mix. A subsurface can be in synchronized mode, and state
-//! commit will create a new "version" of the surface tree. And visibility of
-//! changes can be propagated from bottom up through commits on the
-//! parent, grand-parent, etc.
-//!
-//! We deal with this requirement with COW (copy-on-write) techniques. Details
-//! are documented in the types' document.
 use std::{future::Future, pin::Pin, rc::Rc};
 
 use derivative::Derivative;

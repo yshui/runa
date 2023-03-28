@@ -1,6 +1,6 @@
 [package]
 name = "runa-macros"
-version = "0.0.1"
+version = "0.0.1-alpha1"
 edition = "2021"
 
 [lib]

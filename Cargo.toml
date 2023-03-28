@@ -43,3 +43,5 @@ proc-macro2 = "1.0.53"
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
+authors = [ "Yuxuan Shui <yshuiv7@gmail.com>" ]
+edition = "2021"

@@ -1,5 +1,6 @@
 [package]
 name = "runa-wayland-scanner-macros"
+description = "Macros for runa-wayland-scanner"
 version = "0.1.0"
 edition = "2021"
 

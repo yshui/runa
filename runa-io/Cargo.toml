@@ -1,6 +1,7 @@
 [package]
 name = "runa-io"
-version = "0.0.1"
+description = "Utilities for communicating with the wayland wire protocol"
+version = "0.0.1-alpha1"
 edition = "2021"
 
 [dependencies]

@@ -1,6 +1,7 @@
 [package]
 name = "crescent"
-version = "0.0.1"
+description = "Refernce wayland compositor for runa"
+version = "0.0.1-alpha1"
 edition = "2021"
 
 [dependencies]

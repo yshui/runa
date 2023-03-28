@@ -537,7 +537,8 @@ pub fn wayland_object(
 /// }
 /// ```
 ///
-/// If the generic parameter is named something else, such as `T`, this will be generated:
+/// If the generic parameter is named something else, such as `T`, this will be
+/// generated:
 ///
 /// ```ignore
 /// impl<Ctx, T> Object<Ctx> for Objects<T> {

@@ -8,9 +8,9 @@ use std::{
 
 use anyhow::Result;
 use apollo::{
+    renderer_capability::RendererCapability,
     shell::{buffers::HasBuffer, HasShell, Keymap, RepeatInfo, SeatEvent},
     utils::geometry::{Extent, Point},
-    renderer_capability::RendererCapability,
 };
 use futures_util::{select, TryStreamExt};
 use runa_core::{

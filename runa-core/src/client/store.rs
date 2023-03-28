@@ -1,4 +1,5 @@
-//! Reference implementation of the [`traits::Store`](super::traits::Store) trait.
+//! Reference implementation of the [`traits::Store`](super::traits::Store)
+//! trait.
 
 use std::any::{Any, TypeId};
 

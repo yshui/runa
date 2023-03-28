@@ -1,8 +1,7 @@
-
-#[doc(inline)]
-pub use macros::generate_protocol;
 #[doc(inline)]
 pub use codegen::generate_protocol;
+#[doc(inline)]
+pub use macros::generate_protocol;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

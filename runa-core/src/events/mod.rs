@@ -31,6 +31,6 @@ pub trait EventSource<Event> {
 // TODO: this is equivalent to `async_broadcast` with `set_overflow(true)` and
 // `set_capacity(1)`. Contemplate if we should just use `async_broadcast`
 // directly.
-pub mod single_state;
 pub mod aggregate;
 pub mod broadcast;
+pub mod single_state;

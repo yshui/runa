@@ -4,9 +4,9 @@ use ahash::AHashMap as HashMap;
 use heck::{ToPascalCase, ToShoutySnekCase};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
+use spec_parser::protocol::{Enum, Interface, Message, Protocol};
 use syn::Lifetime;
 use thiserror::Error;
-use spec_parser::protocol::{Enum, Interface, Message, Protocol};
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Destructor is not a valid argument type")]

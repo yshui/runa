@@ -1,0 +1,133 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+    - next
+  pull_request:
+
+jobs:
+  format:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - name: Cargo cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-rust_stable-${{ hashFiles('**/Cargo.toml') }}
+      - name: Format
+        run: cargo fmt --all -- --check
+  
+  clippy-check:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - name: Get date for registry cache
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Cargo registry cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ steps.date.outputs.date }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+      - name: Get cargo-cache latest version
+        id: cargocacheversion
+        run: echo "version=$(cargo search 'cargo-cache' --limit 1 | head -n 1 | cut -d ' ' -f 3 | cut -d '"' -f 2)" >> $GITHUB_OUTPUT
+      - name: Cargo binaries cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/cargo-cache
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: ${{ runner.os }}-cargo-binaries-${{ steps.cargocacheversion.outputs.version }}
+      - name: Install cargo-cache
+        run: cargo install cargo-cache --version ${{ steps.cargocacheversion.outputs.version }}
+      - name: Clean cargo cache of old items
+        run: cargo cache clean-unref
+      - name: System dependencies
+        run: sudo apt-get update; sudo apt-get install -y libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+  doc:
+    name: Documentation on Github Pages
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Get date for registry cache
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+      - name: Cargo registry cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ steps.date.outputs.date }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: System dependencies
+        run: sudo apt-get update; sudo apt-get install -y libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev
+
+      - name: Build Documentation
+        run: cargo doc --no-deps -p runa-core -p apollo -p runa-io -p runa-io-traits -p runa-wayland-protocols
+
+      - name: Setup index
+        run: echo "<!DOCTYPE html><html><head><meta http-equiv=refresh content=0;url=runa_core/index.html /></head></html>" > ./target/doc/index.html
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: ./target/doc
+
+  # Deploy job
+  deploy:
+    needs: doc
+    if: ${{ github.event_name == 'push' }}
+
+    # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
+    permissions:
+      pages: write      # to deploy to Pages
+      id-token: write   # to verify the deployment originates from an appropriate source
+
+    # Deploy to the github-pages environment
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v1

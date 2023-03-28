@@ -316,7 +316,8 @@ where
     ) -> Self::SetOpaqueRegionFut<'_> {
         async move {
             tracing::error!(object_id, ?region, "set_opaque_region not implemented");
-            Err(error::Error::NotImplemented("wl_surface.set_opaque_region"))
+            //Err(error::Error::NotImplemented("wl_surface.set_opaque_region"))
+            Ok(())
         }
     }
 

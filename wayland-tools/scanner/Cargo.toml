@@ -8,7 +8,7 @@ edition = "2021"
 bitflags.workspace = true
 num_enum = "0.5.7"
 pin-project-lite = "0.2.9"
-runa-wayland-types = { version = "0.1.0", path = "../../runa-wayland-types" }
+runa-wayland-types = { path = "../../runa-wayland-types" }
 runa-io-traits = { path = "../../runa-io-traits" }
 futures-lite.workspace = true
 bytes.workspace = true

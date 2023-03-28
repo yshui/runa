@@ -1,6 +1,6 @@
 [package]
 name = "runa-io"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 
 [dependencies]
@@ -17,7 +17,7 @@ tinyvec = "1.6.0"
 tracing.workspace = true
 bytes.workspace = true
 derivative.workspace = true
-runa-io-traits = { version = "0.1.0", path = "../runa-io-traits" }
+runa-io-traits = { path = "../runa-io-traits" }
 
 [dev-dependencies]
 anyhow = "1.0.65"

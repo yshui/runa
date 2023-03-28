@@ -1,6 +1,6 @@
 [package]
 name = "runa-core"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 
 [dependencies]
@@ -10,7 +10,7 @@ event-listener = "2.5.3"
 rustix = { workspace = true, features = ["fs"] }
 smol = "1.2.5"
 runa-io = { path = "../runa-io" }
-runa-wayland-protocols = { version = "0.1.0", path = "../runa-wayland-protocols" }
+runa-wayland-protocols = { path = "../runa-wayland-protocols" }
 xdg = "2.4.1"
 thiserror.workspace = true
 tracing.workspace = true
@@ -18,13 +18,13 @@ hashbrown.workspace = true
 futures-lite.workspace = true
 futures-util.workspace = true
 dlv-list.workspace = true
-runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }
+runa-wayland-types = { path = "../runa-wayland-types" }
 memmap2 = "0.5.7"
 lazy_static = "1.4.0"
 derivative.workspace = true
 ahash.workspace = true
 static_assertions = "1.1.0"
-runa-macros = { version = "0.1.0", path = "../runa-macros" }
+runa-macros = { path = "../runa-macros" }
 indexmap.workspace = true
 futures-sink = "0.3.26"
 slotmap = "1.0.6"

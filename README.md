@@ -12,8 +12,8 @@ Creating a wayland compositor library from the ground up is a daunting task, and
 
 I tried to document the code base in its current state as best as I can. Have a look at the documentation, or the code base, and get in touch if you are interested:
 
-- runa-core [![docs.rs](https://docs.rs/runa-core/badge.svg)](https://docs.rs/runa-core)
-- apollo [![docs.rs](https://docs.rs/apollo/badge.svg)](https://docs.rs/apollo)
+- [runa-core](https://yshui.github.io/runa/runa_core/index.html)
+- [apollo](https://yshui.github.io/runa/apollo/index.html)
 
 ## Chat room
 

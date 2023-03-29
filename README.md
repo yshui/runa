@@ -54,7 +54,7 @@ I am currently hanging out in the `#runa` channel on libra.chat.
 
 - **Why runa, instead of other wayland libraries like wlroots, or smithay?**
 
-  wlroots has a model that is not very suitable for a Rust binding - people has [tried about failed](https://way-cooler.org/blog/2019/04/29/rewriting-way-cooler-in-c.html) at creating a binding for it. And even if I do manage to create a wlroots binding, it's not going to be ergonomic Rust.
+  wlroots has a model that is not very suitable for a Rust binding - people has [tried and failed](https://way-cooler.org/blog/2019/04/29/rewriting-way-cooler-in-c.html) at creating a binding for it. And even if I do manage to create a wlroots binding, it's not going to be ergonomic Rust.
 
   As for smithay, runa's design philosophy is pretty different. First of all, smithay was created quite a few years back, and Rust has evolved a lot in that time. runa tries to take advantage of new Rust features, most notably `async`, as much as possible. (this does unfortunately mean a nightly Rust compiler is required for now, at least until TAIT is stabilized).
 

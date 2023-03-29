@@ -64,13 +64,18 @@ where
     Ctx::Object: for<'b> crate::objects::Object<Ctx, Request<'b> = (&'b [u8], &'b [RawFd])>,
 {
     async move {
-        use runa_io::traits::WriteMessage;
+        use runa_io::traits::{buf::Message, WriteMessage};
         use runa_wayland_protocols::wayland::wl_display::v1 as wl_display;
         use runa_wayland_types as types;
         use traits::Store;
 
         use crate::{error::ProtocolError, objects::AnyObject};
-        let (object_id, len, buf, fd) = match R::next_message(reader.as_mut()).await {
+        let Message {
+            object_id,
+            len,
+            data,
+            fds,
+        } = match R::next_message(reader.as_mut()).await {
             Ok(v) => v,
             // I/O error, no point sending the error to the client
             Err(_) => return true,
@@ -79,7 +84,7 @@ where
             <<Ctx as traits::Client>::Object as crate::objects::Object<Ctx>>::dispatch(
                 ctx,
                 object_id,
-                (buf, fd),
+                (data, fds),
             )
             .await;
         let (mut fatal, error) = match ret {
@@ -105,7 +110,7 @@ where
         }
         if !fatal {
             if bytes_read != len {
-                let len_opcode = u32::from_ne_bytes(buf[0..4].try_into().unwrap());
+                let len_opcode = u32::from_ne_bytes(data[0..4].try_into().unwrap());
                 let opcode = len_opcode & 0xffff;
                 tracing::error!(
                     "unparsed bytes in buffer, read ({bytes_read}) != received ({len}). \

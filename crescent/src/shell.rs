@@ -36,7 +36,7 @@ pub struct DefaultShell<S: buffers::BufferLike> {
     storage:          SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     /// Window stack, from bottom to top
     stack:            VecList<Window>,
-    pointer_position: Option<Point<NotNan<f32>, coords::Screen>>,
+    pointer_position: Option<ScreenPoint>,
     /// Who did we send the last pointer event to?
     pointer_focus:    Option<Weak<surface::Surface<Self>>>,
     shell_event:      Broadcast<ShellEvent>,
@@ -88,6 +88,8 @@ pub struct DefaultShellData {
     pub is_current:  bool,
     pub stack_index: Option<Index<Window>>,
 }
+type ScreenPoint = Point<NotNan<f32>, coords::Screen>;
+type SurfacePoint = Point<NotNan<f32>, coords::Surface>;
 impl<B: buffers::BufferLike> DefaultShell<B> {
     pub fn stack(&self) -> impl DoubleEndedIterator<Item = &Window> {
         self.stack.iter()
@@ -103,11 +105,8 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
     /// pointer's position in that surface's coordinate system.
     pub fn surface_under_pointer(
         &mut self,
-        position: Point<NotNan<f32>, coords::Screen>,
-    ) -> Option<(
-        Rc<surface::Surface<Self>>,
-        Point<NotNan<f32>, coords::Surface>,
-    )> {
+        position: ScreenPoint,
+    ) -> Option<(Rc<surface::Surface<Self>>, SurfacePoint)> {
         // TODO: handle per output scaling
         let scale = self.scale_f32().map(|f| NotNan::try_from(f).unwrap());
         tracing::trace!(?position, "pointer motion");
@@ -191,7 +190,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         }
     }
 
-    pub fn pointer_motion(&mut self, position: Point<NotNan<f32>, coords::Screen>) {
+    pub fn pointer_motion(&mut self, position: ScreenPoint) {
         self.pointer_position = Some(position);
         let Some((surface, relative_position)) = self.surface_under_pointer(position) else {
             return

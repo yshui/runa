@@ -94,6 +94,14 @@ impl ::std::cmp::PartialEq for Fd {
 impl ::std::cmp::Eq for Fd {}
 
 impl Fd {
+    /// Convert a `Fd` into an `OwnedFd`.
+    ///
+    /// # Safety
+    ///
+    /// The `Fd` must own the contained file descriptor, i.e. this file
+    /// descriptor must not be used elsewhere. This is because `OwnedFd`
+    /// will close the file descriptor when it is dropped, and invalidate
+    /// the file descriptor if it's incorrectly used elsewhere.
     pub unsafe fn assume_owned(&mut self) -> &mut OwnedFd {
         match self {
             Fd::Raw(fd) => {
@@ -108,6 +116,9 @@ impl Fd {
         }
     }
 
+    /// Take ownership of the file descriptor.
+    ///
+    /// This will return `None` if the `Fd` does not own the file descriptor.
     pub fn take(&mut self) -> Option<OwnedFd> {
         match self {
             Fd::Raw(_) => None,
@@ -123,6 +134,11 @@ impl Fd {
         }
     }
 
+    /// Take ownership of the file descriptor.
+    ///
+    /// # Panic
+    ///
+    /// Panics if the `Fd` does not own the file descriptor.
     pub fn unwrap_owned(self) -> OwnedFd {
         match self {
             Fd::Raw(_) => panic!("file descriptor was not owned"),
@@ -130,6 +146,11 @@ impl Fd {
         }
     }
 
+    /// Get a mutable reference to the owned file descriptor.
+    ///
+    /// # Panic
+    ///
+    /// Panics if the `Fd` does not own the file descriptor.
     pub fn unwrap_owned_mut(&mut self) -> &mut OwnedFd {
         match self {
             Fd::Raw(_) => panic!("file descriptor was not owned"),

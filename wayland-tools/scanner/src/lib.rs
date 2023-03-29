@@ -114,30 +114,4 @@ pub mod future {
             }
         }
     }
-
-    // Safety: F can't keep a hold of `inner` after it returns.
-    // Rust's type system is limited so there is no easy way to enforce this via
-    // types.
-    //
-    // Hypothetically we can have:
-    //   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) -> Poll<O> + Unpin
-    // This way F should be valid for T with any lifetime, therefore it won't be
-    // able to store it somewhere with a concrete lifetime. But then O won't be
-    // able to borrow from &'a mut T. We need O to be a higher kind type to do
-    // this. Like:   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) ->
-    // Poll<O<'a>> + Unpin We can emulate this with a trait with GAT, but it has
-    // bad UX:   trait HKT { type O<'a>; }
-    //   OFamily: HKT
-    //   F: for<'a> Fn(Pin<&'a mut T>, &mut Context<'_>) -> Poll<OFamily::O<'a>> +
-    // Unpin We need to define a OFamily for each closure.
-    pub unsafe fn poll_map_fn<'a, F, O, T>(inner: Pin<&'a mut T>, f: F) -> PollMapFn<'a, F, O, T>
-    where
-        F: Fn(Pin<&'a mut T>, &mut ::std::task::Context<'_>) -> Poll<O> + Unpin,
-    {
-        PollMapFn {
-            inner: Some(inner),
-            f,
-            _marker: ::std::marker::PhantomData,
-        }
-    }
 }

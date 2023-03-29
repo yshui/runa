@@ -310,6 +310,14 @@ pub mod buf {
     use std::{future::Future, io::Result, task::ready};
 
     use super::*;
+
+    pub struct Message<'a> {
+        pub object_id: u32,
+        pub len:       usize,
+        pub data:      &'a [u8],
+        pub fds:       &'a [RawFd],
+    }
+
     /// Buffered I/O object for a stream of bytes with file descriptors.
     ///
     /// # Safety
@@ -345,7 +353,7 @@ pub mod buf {
         fn poll_next_message<'a>(
             mut self: Pin<&'a mut Self>,
             cx: &mut Context<'_>,
-        ) -> Poll<Result<(u32, usize, &'a [u8], &'a [RawFd])>> {
+        ) -> Poll<Result<Message<'a>>> {
             // Wait until we have the message header ready at least.
             let (object_id, len) = {
                 ready!(self.as_mut().poll_fill_buf_until(cx, 8))?;
@@ -366,7 +374,12 @@ pub mod buf {
 
             ready!(self.as_mut().poll_fill_buf_until(cx, len))?;
             let this = self.into_ref().get_ref();
-            Poll::Ready(Ok((object_id, len, &this.buffer()[..len], this.fds())))
+            Poll::Ready(Ok(Message {
+                object_id,
+                len,
+                data: &this.buffer()[..len],
+                fds: this.fds(),
+            }))
         }
 
         fn next_message<'a>(self: Pin<&'a mut Self>) -> NextMessageFut<'a, Self>
@@ -378,7 +391,7 @@ pub mod buf {
             where
                 R: AsyncBufReadWithFd,
             {
-                type Output = Result<(u32, usize, &'a [u8], &'a [RawFd])>;
+                type Output = Result<Message<'a>>;
 
                 fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
                     let this = self.get_mut();
@@ -422,5 +435,5 @@ pub mod buf {
     }
 
     pub type NextMessageFut<'a, T: AsyncBufReadWithFd + 'a> =
-        impl Future<Output = Result<(u32, usize, &'a [u8], &'a [RawFd])>> + 'a;
+        impl Future<Output = Result<Message<'a>>> + 'a;
 }

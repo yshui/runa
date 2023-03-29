@@ -3,7 +3,7 @@ name = "runa-orbiter"
 description = "Reference implementation of Wayland protocol interfaces"
 repository = "https://github.com/yshui/runa"
 license = "MIT OR Apache-2.0"
-version = "0.0.1-alpha1"
+version = "0.0.1-alpha2"
 edition = "2021"
 
 [dependencies]
@@ -21,7 +21,7 @@ futures-channel = "0.3.25"
 derivative.workspace = true
 runa-io = { version = "0.0.1-alpha1", path = "../runa-io" }
 memmap2 = "0.5.7"
-spin = { version = "0.9.4", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
+spin = { version = "0.9.7", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
 libc = "0.2.137"
 hashbrown.workspace = true
 num-traits = "0.2.15"

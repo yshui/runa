@@ -2,6 +2,8 @@
 name = "crescent"
 description = "Refernce wayland compositor for runa"
 version = "0.0.1-alpha1"
+license = "MPL-2.0"
+repository = "https://github.com/yshui/runa"
 edition = "2021"
 
 [dependencies]

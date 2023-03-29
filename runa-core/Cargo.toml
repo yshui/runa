@@ -25,7 +25,6 @@ runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }
 memmap2 = "0.5.7"
 lazy_static = "1.4.0"
 derivative.workspace = true
-ahash.workspace = true
 static_assertions = "1.1.0"
 runa-macros = { version = "0.0.1-alpha1", path = "../runa-macros" }
 indexmap.workspace = true

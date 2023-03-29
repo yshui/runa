@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use ahash::AHashMap as HashMap;
+use hashbrown::HashMap;
 use heck::{ToPascalCase, ToShoutySnekCase};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};

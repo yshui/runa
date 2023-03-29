@@ -24,7 +24,6 @@ exclude = [
 [workspace.dependencies]
 tracing = { version = "0.1", features = [ "release_max_level_off" ] }
 hashbrown = "0.13"
-ahash = "0.8"
 anyhow = "1.0.70"
 bitflags = "2.0.2"
 futures-lite = "1.12.0"

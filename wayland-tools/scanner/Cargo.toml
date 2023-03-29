@@ -10,10 +10,10 @@ edition = "2021"
 bitflags.workspace = true
 num_enum = "0.5.7"
 pin-project-lite = "0.2.9"
-runa-wayland-types = { path = "../../runa-wayland-types" }
-runa-io-traits = { path = "../../runa-io-traits" }
+runa-wayland-types = { version = "0.1.0", path = "../../runa-wayland-types" }
+runa-io-traits = { version = "0.0.1-alpha1", path = "../../runa-io-traits" }
 futures-lite.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
-macros = { package = "runa-wayland-scanner-macros", path = "../macros" }
-codegen = { package = "runa-wayland-scanner-codegen", path = "../codegen" }
+macros = { version = "0.1.0", package = "runa-wayland-scanner-macros", path = "../macros" }
+codegen = { version = "0.1.0", package = "runa-wayland-scanner-codegen", path = "../codegen" }

@@ -20,7 +20,7 @@ tinyvec = "1.6.0"
 tracing.workspace = true
 bytes.workspace = true
 derivative.workspace = true
-runa-io-traits = { path = "../runa-io-traits" }
+runa-io-traits = { version = "0.0.1-alpha1", path = "../runa-io-traits" }
 
 [dev-dependencies]
 anyhow = "1.0.65"
@@ -32,5 +32,5 @@ smol = "1.2.5"
 tracing-subscriber = "0.3.15"
 
 # used by tests
-runa-wayland-protocols = { path = "../runa-wayland-protocols" }
-runa-wayland-types = { path = "../runa-wayland-types" }
+runa-wayland-protocols = { version = "0.1.0", path = "../runa-wayland-protocols" }
+runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }

@@ -10,8 +10,8 @@ edition = "2021"
 proc-macro = true
 
 [dependencies]
-parser = { package = "runa-wayland-spec-parser", path = "../parser" }
-codegen = { package = "runa-wayland-scanner-codegen", path = "../codegen" }
+parser = { version = "0.1.0", package = "runa-wayland-spec-parser", path = "../parser" }
+codegen = { version = "0.1.0", package = "runa-wayland-scanner-codegen", path = "../codegen" }
 syn.workspace = true
 proc-macro2.workspace = true
 proc-macro-error = { version = "1.0.4", default-features = false, features = ["syn-error"] }

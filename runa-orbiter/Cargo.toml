@@ -13,13 +13,13 @@ dyn-clone = "1.0.9"
 futures-util.workspace = true
 intrusive-collections = "0.9.4"
 lazy_static = "1.4.0"
-runa-wayland-protocols = { path = "../runa-wayland-protocols" }
-runa-core = { path = "../runa-core" }
-runa-wayland-types = { path = "../runa-wayland-types" }
+runa-wayland-protocols = { version = "0.1.0", path = "../runa-wayland-protocols" }
+runa-core = { version = "0.0.1-alpha1", path = "../runa-core" }
+runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }
 tracing.workspace = true
 futures-channel = "0.3.25"
 derivative.workspace = true
-runa-io = { path = "../runa-io" }
+runa-io = { version = "0.0.1-alpha1", path = "../runa-io" }
 memmap2 = "0.5.7"
 spin = { version = "0.9.4", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
 libc = "0.2.137"

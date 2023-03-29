@@ -18,10 +18,10 @@ syn = { workspace = true, features = ["visit-mut"] }
 [dev-dependencies]
 futures-executor = "0.3"
 futures-lite.workspace = true
-runa-wayland-scanner = { path = "../wayland-tools/scanner" }
+runa-wayland-scanner = { version = "0.1.0", path = "../wayland-tools/scanner" }
 num_enum = "0.5.7"
 futures-task = "0.3.24"
-runa-io = { path = "../runa-io" }
+runa-io = { version = "0.0.1-alpha1", path = "../runa-io" }
 
 [features]
 default = [ "tracing" ]

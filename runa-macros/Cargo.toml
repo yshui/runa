@@ -1,5 +1,6 @@
 [package]
 name = "runa-macros"
+description = "Macros for runa-core"
 version = "0.0.1-alpha1"
 repository = "https://github.com/yshui/runa"
 license = "MIT OR Apache-2.0"

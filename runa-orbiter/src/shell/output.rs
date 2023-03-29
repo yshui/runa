@@ -78,7 +78,7 @@ impl Output {
     /// [`coords::ScreenNormalized`](crate::utils::geometry::coords::ScreenNormalized),
     /// see the documentation there for the justification. If this is not what
     /// is the most suitable for your compositor, you are free implement
-    /// other overlap checks. This is not used internally by `apollo`.
+    /// other overlap checks. This is not used internally by this crate.
     pub fn overlaps(&self, other: &Rectangle<i32, coords::ScreenNormalized>) -> bool {
         self.logical_geometry().overlaps(other)
     }

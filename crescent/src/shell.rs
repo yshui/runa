@@ -3,7 +3,11 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use apollo::{
+use derivative::Derivative;
+use dlv_list::{Index, VecList};
+use ordered_float::NotNan;
+use runa_core::events::{broadcast::Broadcast, EventSource};
+use runa_orbiter::{
     objects::input::{KeyboardActivity, KeyboardState, PointerActivity},
     shell::{
         buffers,
@@ -20,10 +24,6 @@ use apollo::{
         WeakPtr,
     },
 };
-use derivative::Derivative;
-use dlv_list::{Index, VecList};
-use ordered_float::NotNan;
-use runa_core::events::{broadcast::Broadcast, EventSource};
 use runa_wayland_protocols::wayland::wl_pointer::v9 as wl_pointer;
 use slotmap::{DefaultKey, SlotMap};
 use tinyvec::TinyVec;
@@ -41,14 +41,14 @@ pub struct DefaultShell<S: buffers::BufferLike> {
     pointer_focus:    Option<Weak<surface::Surface<Self>>>,
     shell_event:      Broadcast<ShellEvent>,
     position_offset:  Point<i32, coords::Screen>,
-    screen:           apollo::shell::output::Screen,
+    screen:           runa_orbiter::shell::output::Screen,
     #[derivative(Debug = "ignore")]
     keyboard_state:   xkb::State,
     keys:             TinyVec<[u8; 8]>,
 }
 
 impl<B: buffers::BufferLike> DefaultShell<B> {
-    pub fn new(output: &Rc<apollo::shell::output::Output>, keymap: &xkb::Keymap) -> Self {
+    pub fn new(output: &Rc<runa_orbiter::shell::output::Output>, keymap: &xkb::Keymap) -> Self {
         Self {
             storage:          Default::default(),
             stack:            Default::default(),
@@ -56,7 +56,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             position_offset:  Point::new(1000, 1000),
             pointer_focus:    None,
             pointer_position: None,
-            screen:           apollo::shell::output::Screen::from_single_output(output),
+            screen:           runa_orbiter::shell::output::Screen::from_single_output(output),
             keyboard_state:   xkb::State::new(keymap),
             keys:             Default::default(),
         }
@@ -75,9 +75,9 @@ pub struct Window {
 impl Window {
     pub fn normalized_position(
         &self,
-        output: &apollo::shell::output::Output,
+        output: &runa_orbiter::shell::output::Output,
     ) -> Point<i32, coords::ScreenNormalized> {
-        use apollo::utils::geometry::coords::Map as _;
+        use runa_orbiter::utils::geometry::coords::Map as _;
         self.position
             .map(|p| (p.to() / output.scale_f32()).floor().to())
     }
@@ -126,7 +126,9 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             {
                 let state = self.get(top_level.surface_state);
                 let surface = state.surface().upgrade().unwrap();
-                let role = surface.role::<apollo::shell::xdg::TopLevel>().unwrap();
+                let role = surface
+                    .role::<runa_orbiter::shell::xdg::TopLevel>()
+                    .unwrap();
                 if let Some(geometry) = role.geometry() {
                     if !geometry.to().contains(position) {
                         continue
@@ -266,7 +268,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         root: DefaultKey,
         root_position: Point<i32, coords::ScreenNormalized>,
     ) {
-        use apollo::utils::geometry::coords::Map as _;
+        use runa_orbiter::utils::geometry::coords::Map as _;
         // Recalculate surface overlaps
         for (surface_token, offset) in subsurface_iter(root, self) {
             let state = self.get(surface_token);

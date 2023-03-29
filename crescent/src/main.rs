@@ -7,11 +7,6 @@ use std::{
 };
 
 use anyhow::Result;
-use apollo::{
-    renderer_capability::RendererCapability,
-    shell::{buffers::HasBuffer, HasShell, Keymap, RepeatInfo, SeatEvent},
-    utils::geometry::{Extent, Point},
-};
 use futures_util::{select, TryStreamExt};
 use runa_core::{
     client::{
@@ -28,6 +23,12 @@ use runa_io::{
     traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
     Connection,
 };
+use runa_orbiter::{
+    globals, objects,
+    renderer_capability::RendererCapability,
+    shell::{buffers::HasBuffer, HasShell, Keymap, RepeatInfo, SeatEvent},
+    utils::geometry::{Extent, Point},
+};
 use runa_wayland_protocols::wayland::{wl_keyboard::v9 as wl_keyboard, wl_seat::v9 as wl_seat};
 use smol::{block_on, LocalExecutor};
 mod render;
@@ -43,7 +44,7 @@ pub struct CrescentState {
     keymap:      Keymap,
 }
 
-impl apollo::shell::Seat for Crescent {
+impl runa_orbiter::shell::Seat for Crescent {
     fn capabilities(&self) -> wl_seat::enums::Capability {
         use wl_seat::enums::Capability;
         Capability::POINTER | Capability::KEYBOARD
@@ -53,11 +54,11 @@ impl apollo::shell::Seat for Crescent {
         "crescent"
     }
 
-    fn keymap(&self) -> &apollo::shell::Keymap {
+    fn keymap(&self) -> &runa_orbiter::shell::Keymap {
         &self.0.keymap
     }
 
-    fn repeat_info(&self) -> apollo::shell::RepeatInfo {
+    fn repeat_info(&self) -> runa_orbiter::shell::RepeatInfo {
         RepeatInfo {
             rate:  25,
             delay: 600,
@@ -82,12 +83,12 @@ runa_core::globals! {
         // Display must be the first one
         Display(runa_core::globals::Display),
         Registry(runa_core::globals::Registry),
-        Compositor(apollo::globals::Compositor),
-        Output(apollo::globals::Output),
-        Subcompositor(apollo::globals::Subcompositor),
-        Shm(apollo::globals::Shm),
-        WmBase(apollo::globals::xdg_shell::WmBase),
-        Seat(apollo::globals::Seat),
+        Compositor(globals::Compositor),
+        Output(globals::Output),
+        Subcompositor(globals::Subcompositor),
+        Shm(globals::Shm),
+        WmBase(globals::xdg_shell::WmBase),
+        Seat(globals::Seat),
     }
 }
 
@@ -101,30 +102,30 @@ pub enum AnyObject {
     Callback(runa_core::objects::Callback),
 
     // === output ===
-    Output(apollo::objects::Output),
+    Output(objects::Output),
 
     // === compositor objects ===
-    Compositor(apollo::objects::compositor::Compositor),
-    Surface(apollo::objects::compositor::Surface<Shell>),
-    Subcompositor(apollo::objects::compositor::Subcompositor),
-    Subsurface(apollo::objects::compositor::Subsurface<Shell>),
+    Compositor(objects::compositor::Compositor),
+    Surface(objects::compositor::Surface<Shell>),
+    Subcompositor(objects::compositor::Subcompositor),
+    Subsurface(objects::compositor::Subsurface<Shell>),
 
     // === seat ===
-    Seat(apollo::objects::input::Seat),
-    Pointer(apollo::objects::input::Pointer),
-    Keyboard(apollo::objects::input::Keyboard),
+    Seat(objects::input::Seat),
+    Pointer(objects::input::Pointer),
+    Keyboard(objects::input::Keyboard),
 
     // === xdg_shell objects ===
-    WmBase(apollo::objects::xdg_shell::WmBase),
-    XdgSurface(apollo::objects::xdg_shell::Surface<Shell>),
-    XdgTopLevel(apollo::objects::xdg_shell::TopLevel<Shell>),
+    WmBase(objects::xdg_shell::WmBase),
+    XdgSurface(objects::xdg_shell::Surface<Shell>),
+    XdgTopLevel(objects::xdg_shell::TopLevel<Shell>),
 
     // === shm objects ===
-    Shm(apollo::objects::shm::Shm),
-    ShmPool(apollo::objects::shm::ShmPool),
+    Shm(objects::shm::Shm),
+    ShmPool(objects::shm::ShmPool),
 
     // === buffer ===
-    Buffer(apollo::objects::Buffer<render::Buffer>),
+    Buffer(objects::Buffer<render::Buffer>),
 }
 
 impl runa_core::server::traits::Server for Crescent {
@@ -245,8 +246,8 @@ impl HasShell for Crescent {
 }
 
 impl RendererCapability for Crescent {
-    fn formats(&self) -> Vec<apollo::renderer_capability::Format> {
-        use apollo::renderer_capability::Format;
+    fn formats(&self) -> Vec<runa_orbiter::renderer_capability::Format> {
+        use runa_orbiter::renderer_capability::Format;
         vec![Format::Argb8888]
     }
 }
@@ -419,7 +420,7 @@ fn main() -> Result<()> {
         })
     });
     let output_global_id = AnyGlobal::globals().count() as u32 + 1;
-    let output = apollo::shell::output::Output::new(
+    let output = runa_orbiter::shell::output::Output::new(
         Extent::new(0, 0),
         "Crescent",
         "Crescent",
@@ -451,7 +452,7 @@ fn main() -> Result<()> {
                 .0
                 .globals
                 .borrow_mut()
-                .insert(apollo::globals::Output::new(output))
+                .insert(runa_orbiter::globals::Output::new(output))
         ),
         output_global_id
     );

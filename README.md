@@ -20,7 +20,7 @@ Creating a wayland compositor library from the ground up is a daunting task, and
 I tried to document the code base in its current state as best as I can. Have a look at the documentation, or the code base, and get in touch if you are interested:
 
 - [runa-core](https://yshui.github.io/runa/runa_core/index.html): base traits and types for a wayland compositor.
-- [apollo](https://yshui.github.io/runa/apollo/index.html): wayland protocol impls based on `runa-core`.
+- [runa-orbiter](https://yshui.github.io/runa/runa_orbiter/index.html): wayland protocol impls based on `runa-core`.
 
 ## Chat room
 

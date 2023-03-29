@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-  "apollo",
   "runa-wayland-protocols",
   "runa-io",
   "runa-io-traits",
   "runa-macros",
   "runa-wayland-types",
   "runa-core",
+  "runa-orbiter",
   "crescent",
   "input-event-codes",
 

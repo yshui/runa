@@ -32,8 +32,8 @@ use crate::{
 
 /// Implementation of the `wl_compositor` global.
 ///
-/// You must also use `apollo`'s subsurface, and output implementations to use
-/// this.
+/// You must also use `runa-orbiter`'s subsurface, and output implementations to
+/// use this.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Compositor;
 
@@ -160,7 +160,8 @@ where
 
 /// Implementation of the `wl_subcompositor` global.
 ///
-/// You must also use `apollo`'s compositor implementation to use this global.
+/// You must also use `runa-orbiter`'s compositor implementation to use this
+/// global.
 #[derive(Debug, Clone, Copy)]
 pub struct Subcompositor;
 
@@ -186,7 +187,8 @@ impl<Ctx> Bind<Ctx> for Subcompositor {
 
 /// Implementation of the `wl_seat` global.
 ///
-/// You must also use `apollo`'s compositor implementation to use this global.
+/// You must also use `runa-orbiter`'s compositor implementation to use this
+/// global.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Seat;
 
@@ -330,7 +332,8 @@ where
 
 /// Implementation of the `wl_output` global.
 ///
-/// You must also use `apollo`'s compositor implementation to use this global.
+/// You must also use `runa-orbiter`'s compositor implementation to use this
+/// global.
 #[derive(Debug)]
 pub struct Output {
     pub(crate) shell_output: Rc<ShellOutput>,

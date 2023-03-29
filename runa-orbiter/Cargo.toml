@@ -1,5 +1,5 @@
 [package]
-name = "apollo"
+name = "runa-orbiter"
 description = "Reference implementation of Wayland protocol interfaces"
 version = "0.0.1-alpha1"
 edition = "2021"

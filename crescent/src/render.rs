@@ -1,14 +1,14 @@
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
-use apollo::{
+use ordered_float::NotNan;
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use runa_orbiter::{
     shell::{
         buffers::{self, BufferLike as _},
         Shell,
     },
     utils::geometry::{coords, Extent, Point},
 };
-use ordered_float::NotNan;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use runa_wayland_protocols::wayland::wl_shm::v1 as wl_shm;
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt};
@@ -48,7 +48,7 @@ fn shm_format_to_wgpu(format: wl_shm::enums::Format) -> wgpu::TextureFormat {
 }
 
 fn get_buffer_format(buffer: &Buffer) -> wgpu::TextureFormat {
-    use apollo::shell::buffers::BufferBase;
+    use runa_orbiter::shell::buffers::BufferBase;
     match buffer.buffer().base() {
         BufferBase::Shm(base) => shm_format_to_wgpu(base.format()),
     }
@@ -252,7 +252,9 @@ impl Renderer {
     }
 
     fn render(&mut self, output: wgpu::SurfaceTexture) {
-        use apollo::{shell::surface::roles::subsurface_iter, utils::geometry::coords::Map as _};
+        use runa_orbiter::{
+            shell::surface::roles::subsurface_iter, utils::geometry::coords::Map as _,
+        };
         let shell = self.shell.borrow();
         let output_scale = shell.scale_f32().map(|f| NotNan::try_from(f).unwrap());
         self.vertices.clear();
@@ -322,7 +324,7 @@ impl Renderer {
                             {
                                 use std::{fs::File, io::BufWriter};
                                 let dump_path = std::path::Path::new(&format!(
-                                    "apollo-dump-{}-{:p}.png",
+                                    "crescent-dump-{}-{:p}.png",
                                     self.frame_count, buffer
                                 ))
                                 .to_owned();

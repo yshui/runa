@@ -82,7 +82,7 @@ pub enum PointerActivity {
 
 /// Implements the `wl_seat` interface
 ///
-/// You must also use `apollo`'s compositor implementation if you use this
+/// You must also use `runa-orbiter`'s compositor implementation if you use this
 /// object.
 #[derive(Default, Debug)]
 pub struct Seat {

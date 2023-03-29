@@ -26,8 +26,8 @@
 //! The traits in [`objects`](crate::objects) defines the interface of wayland
 //! objects. You can choose to implement wayland objects with them and the
 //! `RequestDispatch` traits generated from the wayland protocol spec (See the
-//! `runa-wayland-protocols` crate). Or you can also use the `apollo` crate
-//! which provides implementations for many of the wayland objects.
+//! `runa-wayland-protocols` crate). Or you can also use the `runa-orbiter`
+//! crate which provides implementations for many of the wayland objects.
 //!
 //! The [`Client`](crate::client::traits::Client) trait defines the interface of
 //! a per-client context. See its documentation for more details. That trait

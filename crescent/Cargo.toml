@@ -12,7 +12,7 @@ runa-io = { path = "../runa-io" }
 runa-core = { path = "../runa-core" }
 futures-util.workspace = true
 tracing.workspace = true
-apollo = { path = "../apollo" }
+runa-orbiter = { path = "../runa-orbiter" }
 runa-wayland-protocols = { path = "../runa-wayland-protocols" }
 raw-window-handle = "0.5.0"
 wgpu = "0.15.1"

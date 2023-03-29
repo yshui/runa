@@ -32,8 +32,8 @@ pub enum ShellEvent {
 /// access. The allocated states are reference via a token, in order to avoid
 /// lifetime and ownership difficulties.
 ///
-/// The shell interface also defines a number of callbacks, which `apollo` will
-/// call in response to various operations done to surfaces.
+/// The shell interface also defines a number of callbacks, which `runa-orbiter`
+/// will call in response to various operations done to surfaces.
 ///
 /// The shell is also an event source, it must emit the event defined in
 /// [`ShellEvent`] for various interfaces implemented here to function properly.

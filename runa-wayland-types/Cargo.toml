@@ -1,6 +1,8 @@
 [package]
 name = "runa-wayland-types"
 description = "Types defined by the Wayland protocol"
+repository = "https://github.com/yshui/runa"
+license = "MIT OR Apache-2.0"
 version = "0.1.0"
 edition = "2021"
 

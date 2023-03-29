@@ -1,6 +1,8 @@
 [package]
 name = "runa-io"
 description = "Utilities for communicating with the wayland wire protocol"
+repository = "https://github.com/yshui/runa"
+license = "MIT OR Apache-2.0"
 version = "0.0.1-alpha1"
 edition = "2021"
 

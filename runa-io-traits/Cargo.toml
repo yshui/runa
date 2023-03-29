@@ -1,6 +1,8 @@
 [package]
 name = "runa-io-traits"
 description = "Traits for communicating using the Wayland wire protocol"
+repository = "https://github.com/yshui/runa"
+license = "MIT OR Apache-2.0"
 version = "0.0.1-alpha1"
 edition = "2021"
 

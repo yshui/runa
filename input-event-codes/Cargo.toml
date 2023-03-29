@@ -1,6 +1,8 @@
 [package]
 name = "input-event-codes"
 description = "Rust bindings for the Linux input-event-codes.h header file"
+repository = "https://github.com/yshui/runa"
+license = "MIT OR Apache-2.0"
 version = "0.1.0"
 edition = "2021"
 

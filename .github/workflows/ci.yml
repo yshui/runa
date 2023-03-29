@@ -101,7 +101,7 @@ jobs:
         run: sudo apt-get update; sudo apt-get install -y libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev
 
       - name: Build Documentation
-        run: cargo doc --no-deps -p runa-core -p apollo -p runa-io -p runa-io-traits -p runa-wayland-protocols
+        run: cargo doc --no-deps -p runa-core -p runa-orbiter -p runa-io -p runa-io-traits -p runa-wayland-protocols
 
       - name: Setup index
         run: echo "<!DOCTYPE html><html><head><meta http-equiv=refresh content=0;url=runa_core/index.html /></head></html>" > ./target/doc/index.html

@@ -212,9 +212,9 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             surface.object_id()
         );
         let button = match button {
-            MouseButton::Left => input_event_codes::BTN_LEFT,
-            MouseButton::Right => input_event_codes::BTN_RIGHT,
-            MouseButton::Middle => input_event_codes::BTN_MIDDLE,
+            MouseButton::Left => input_event_codes_sys::BTN_LEFT,
+            MouseButton::Right => input_event_codes_sys::BTN_RIGHT,
+            MouseButton::Middle => input_event_codes_sys::BTN_MIDDLE,
             MouseButton::Other(_) => return,
         };
         surface.pointer_event(PointerActivity::Button {

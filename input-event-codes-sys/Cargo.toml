@@ -1,5 +1,5 @@
 [package]
-name = "input-event-codes"
+name = "input-event-codes-sys"
 description = "Rust bindings for the Linux input-event-codes.h header file"
 repository = "https://github.com/yshui/runa"
 license = "MIT OR Apache-2.0"

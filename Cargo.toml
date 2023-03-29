@@ -9,7 +9,7 @@ members = [
   "runa-core",
   "runa-orbiter",
   "crescent",
-  "input-event-codes",
+  "input-event-codes-sys",
 
   # tools that deals with wayland protocol specs
   "wayland-tools/parser",

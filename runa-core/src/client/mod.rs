@@ -25,20 +25,12 @@ pub mod event_dispatcher;
 pub mod store;
 pub mod traits;
 
-use std::{future::Future, os::fd::RawFd, pin::Pin};
+use std::{os::fd::RawFd, pin::Pin};
 
 #[doc(inline)]
 pub use event_dispatcher::EventDispatcher;
 #[doc(inline)]
 pub use store::Store;
-
-/// Type of future returned by [`dispatch_to`].
-pub type Dispatch<'a, Ctx, R>
-where
-    Ctx: traits::Client + 'a,
-    Ctx::Object: for<'b> crate::objects::Object<Ctx, Request<'b> = (&'b [u8], &'b [RawFd])>,
-    R: runa_io::traits::buf::AsyncBufReadWithFd + 'a,
-= impl Future<Output = bool> + 'a;
 
 /// Reference implementation of the [`traits::Client::dispatch`] method.
 ///
@@ -57,75 +49,70 @@ where
 /// not, you are supposed to deserialize a wayland message from a
 /// `(&[u8], &[RawFd])` tuple yourself and then dispatch the deserialized
 /// message properly.
-pub fn dispatch_to<'a, Ctx, R>(ctx: &'a mut Ctx, mut reader: Pin<&'a mut R>) -> Dispatch<'a, Ctx, R>
+pub async fn dispatch_to<'a, Ctx, R>(ctx: &'a mut Ctx, mut reader: Pin<&'a mut R>) -> bool
 where
     R: runa_io::traits::buf::AsyncBufReadWithFd,
     Ctx: traits::Client,
     Ctx::Object: for<'b> crate::objects::Object<Ctx, Request<'b> = (&'b [u8], &'b [RawFd])>,
 {
-    async move {
-        use runa_io::traits::{buf::Message, WriteMessage};
-        use runa_wayland_protocols::wayland::wl_display::v1 as wl_display;
-        use runa_wayland_types as types;
-        use traits::Store;
+    use runa_io::traits::{buf::Message, WriteMessage};
+    use runa_wayland_protocols::wayland::wl_display::v1 as wl_display;
+    use runa_wayland_types as types;
+    use traits::Store;
 
-        use crate::{error::ProtocolError, objects::AnyObject};
-        let Message {
-            object_id,
-            len,
-            data,
-            fds,
-        } = match R::next_message(reader.as_mut()).await {
-            Ok(v) => v,
-            // I/O error, no point sending the error to the client
-            Err(_) => return true,
-        };
-        let (ret, bytes_read, fds_read) =
-            <<Ctx as traits::Client>::Object as crate::objects::Object<Ctx>>::dispatch(
-                ctx,
-                object_id,
-                (data, fds),
-            )
-            .await;
-        let (mut fatal, error) = match ret {
-            Ok(_) => (false, None),
-            Err(e) => (
-                e.fatal(),
-                e.wayland_error()
-                    .map(|(object_id, error_code)| (object_id, error_code, e.to_string())),
-            ),
-        };
-        if let Some((object_id, error_code, msg)) = error {
-            // We are going to disconnect the client so we don't care about the
-            // error.
-            fatal |= ctx
-                .connection_mut()
-                .send(crate::objects::DISPLAY_ID, wl_display::events::Error {
-                    object_id: types::Object(object_id),
-                    code:      error_code,
-                    message:   types::Str(msg.as_bytes()),
-                })
-                .await
-                .is_err();
-        }
-        if !fatal {
-            if bytes_read != len {
-                let len_opcode = u32::from_ne_bytes(data[0..4].try_into().unwrap());
-                let opcode = len_opcode & 0xffff;
-                tracing::error!(
-                    "unparsed bytes in buffer, read ({bytes_read}) != received ({len}). \
-                     object_id: {}@{object_id}, opcode: {opcode}",
-                    ctx.objects()
-                        .get::<Ctx::Object>(object_id)
-                        .map(|o| o.interface())
-                        .unwrap_or("unknown")
-                );
-                fatal = true;
-            }
-            reader.consume(bytes_read, fds_read);
-        }
-        fatal
+    use crate::{error::ProtocolError, objects::AnyObject};
+    let Message {
+        object_id,
+        len,
+        data,
+        fds,
+    } = match R::next_message(reader.as_mut()).await {
+        Ok(v) => v,
+        // I/O error, no point sending the error to the client
+        Err(_) => return true,
+    };
+    let (ret, bytes_read, fds_read) = <<Ctx as traits::Client>::Object as crate::objects::Object<
+        Ctx,
+    >>::dispatch(ctx, object_id, (data, fds))
+    .await;
+    let (mut fatal, error) = match ret {
+        Ok(_) => (false, None),
+        Err(e) => (
+            e.fatal(),
+            e.wayland_error()
+                .map(|(object_id, error_code)| (object_id, error_code, e.to_string())),
+        ),
+    };
+    if let Some((object_id, error_code, msg)) = error {
+        // We are going to disconnect the client so we don't care about the
+        // error.
+        fatal |= ctx
+            .connection_mut()
+            .send(crate::objects::DISPLAY_ID, wl_display::events::Error {
+                object_id: types::Object(object_id),
+                code:      error_code,
+                message:   types::Str(msg.as_bytes()),
+            })
+            .await
+            .is_err();
     }
+    if !fatal {
+        if bytes_read != len {
+            let len_opcode = u32::from_ne_bytes(data[0..4].try_into().unwrap());
+            let opcode = len_opcode & 0xffff;
+            tracing::error!(
+                "unparsed bytes in buffer, read ({bytes_read}) != received ({len}). object_id: \
+                 {}@{object_id}, opcode: {opcode}",
+                ctx.objects()
+                    .get::<Ctx::Object>(object_id)
+                    .map(|o| o.interface())
+                    .unwrap_or("unknown")
+            );
+            fatal = true;
+        }
+        reader.consume(bytes_read, fds_read);
+    }
+    fatal
 }
 
 #[doc(hidden)] // not ready for use yet

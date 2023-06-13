@@ -69,9 +69,6 @@ impl<E: Clone> Ring<E> {
     }
 }
 
-/// Type of future returned by [`Broadcast::broadcast_owned`].
-pub type BroadcastOwned<E: Clone + 'static> = impl Future<Output = ()> + 'static;
-
 impl<E: Clone> Broadcast<E> {
     /// Send a new event to all receivers
     pub fn broadcast(&self, msg: E) -> impl Future<Output = ()> + '_ {
@@ -87,7 +84,7 @@ impl<E: Clone> Broadcast<E> {
 
     /// Like [`Self::broadcast`], but the returned future doesn't borrow from
     /// `self`.
-    pub fn broadcast_owned(&self, msg: E) -> BroadcastOwned<E>
+    pub fn broadcast_owned(&self, msg: E) -> impl Future<Output = ()>
     where
         E: 'static,
     {

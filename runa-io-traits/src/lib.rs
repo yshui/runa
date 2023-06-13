@@ -1,4 +1,4 @@
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use std::{
     future::Future,
     io::Result,
@@ -382,35 +382,10 @@ pub mod buf {
             }))
         }
 
-        fn next_message<'a>(self: Pin<&'a mut Self>) -> NextMessageFut<'a, Self>
+        fn next_message<'a>(self: Pin<&'a mut Self>) -> NextMessage<'a, Self>
         where
             Self: Sized,
         {
-            pub struct NextMessage<'a, R>(Option<Pin<&'a mut R>>);
-            impl<'a, R> Future for NextMessage<'a, R>
-            where
-                R: AsyncBufReadWithFd,
-            {
-                type Output = Result<Message<'a>>;
-
-                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                    let this = self.get_mut();
-                    let mut reader = this.0.take().expect("NextMessage polled after completion");
-                    match reader.as_mut().poll_next_message(cx) {
-                        Poll::Pending => {
-                            this.0 = Some(reader);
-                            Poll::Pending
-                        },
-                        Poll::Ready(Ok(_)) => match reader.poll_next_message(cx) {
-                            Poll::Pending => {
-                                panic!("poll_next_message returned Ready, but then Pending again")
-                            },
-                            ready => ready,
-                        },
-                        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                    }
-                }
-            }
             NextMessage(Some(self))
         }
     }
@@ -434,6 +409,29 @@ pub mod buf {
         }
     }
 
-    pub type NextMessageFut<'a, T: AsyncBufReadWithFd + 'a> =
-        impl Future<Output = Result<Message<'a>>> + 'a;
+    pub struct NextMessage<'a, R>(Option<Pin<&'a mut R>>);
+    impl<'a, R> Future for NextMessage<'a, R>
+    where
+        R: AsyncBufReadWithFd,
+    {
+        type Output = Result<Message<'a>>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            let mut reader = this.0.take().expect("NextMessage polled after completion");
+            match reader.as_mut().poll_next_message(cx) {
+                Poll::Pending => {
+                    this.0 = Some(reader);
+                    Poll::Pending
+                },
+                Poll::Ready(Ok(_)) => match reader.poll_next_message(cx) {
+                    Poll::Pending => {
+                        panic!("poll_next_message returned Ready, but then Pending again")
+                    },
+                    ready => ready,
+                },
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            }
+        }
+    }
 }

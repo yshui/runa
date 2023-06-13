@@ -46,9 +46,8 @@ impl<G: 'static> EventSource<GlobalsUpdate<G>> for GlobalStore<G> {
 /// GlobalStore will notify listeners when globals are added or removed. The
 /// notification will be sent to the slot registered as "wl_registry".
 impl<G: 'static> traits::GlobalStore<G> for GlobalStore<G> {
-    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a, G: 'a;
-
     type InsertFut<'a, I> = impl Future<Output = u32> + 'a where Self: 'a, I: 'a + Into<G>;
+    type Iter<'a> = impl Iterator<Item = (u32, &'a Rc<G>)> where Self: 'a, G: 'a;
     type RemoveFut<'a> = impl Future<Output = bool> + 'a where Self: 'a;
 
     fn insert<'a, I: Into<G> + 'a>(&'a mut self, global: I) -> Self::InsertFut<'_, I> {
@@ -82,9 +81,13 @@ impl<G: 'static> traits::GlobalStore<G> for GlobalStore<G> {
         self.into_iter()
     }
 }
-impl<'a, G> IntoIterator for &'a GlobalStore<G> {
-    type IntoIter = crate::IdIter<'a, Rc<G>>;
+impl<'a, G> IntoIterator for &'a GlobalStore<G>
+where
+    G: 'a,
+{
     type Item = (u32, &'a Rc<G>);
+
+    type IntoIter = impl Iterator<Item = (u32, &'a Rc<G>)> + 'a;
 
     fn into_iter(self) -> Self::IntoIter {
         self.globals.iter()

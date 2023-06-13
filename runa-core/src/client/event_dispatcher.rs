@@ -18,39 +18,59 @@ use futures_util::{
 use super::traits;
 use crate::utils::one_shot_signal;
 
-type PairedEventHandlerFut<'a, H, Ctx>
-where
-    H: traits::EventHandler<Ctx>,
-    Ctx: traits::Client,
-= impl Future<Output = Result<(EventHandlerOutput, H), (H::Message, H)>> + 'a;
+/// Helper trait for implementing `paired_event_handler_driver`.
+///
+/// We need to name the type returned by `paired_event_handler_driver` so we can
+/// store it. However the new `impl_trait_in_assoc_type` restricted TAIT to
+/// associated types of traits only, so we have to use this helper trait to get
+/// around that.
+trait EventHandlerExt<Ctx: traits::Client>: traits::EventHandler<Ctx> + Sized {
+    type PairedEventHandlerFut<'a>: Future<Output = Result<(EventHandlerOutput, Self), (Self::Message, Self)>>
+        + 'a;
+    fn paired_event_handler_driver<'ctx>(
+        self,
+        stop_signal: one_shot_signal::Receiver,
+        message: Self::Message,
+        objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        server_context: &'ctx Ctx::ServerContext,
+    ) -> Self::PairedEventHandlerFut<'ctx>;
+}
 
-/// A helper function for storing the event handler's future.
-///
-/// Event handler's generate a future that references the event handler itself,
-/// if we store that directly in [`PairedEventHandler`] we would have a
-/// self-referential struct, so we use this async fn to get around that.
-///
-/// The stop signal is needed so when the future can to be stopped early, for
-/// example when a [`PendingEventFut`] is dropped.
-fn paired_event_handler_driver<'ctx, H, Ctx: traits::Client>(
-    mut handler: H,
-    mut stop_signal: one_shot_signal::Receiver,
-    mut message: H::Message,
-    objects: &'ctx mut Ctx::ObjectStore,
-    connection: &'ctx mut Ctx::Connection,
-    server_context: &'ctx Ctx::ServerContext,
-) -> PairedEventHandlerFut<'ctx, H, Ctx>
+impl<Ctx, T> EventHandlerExt<Ctx> for T
 where
-    H: traits::EventHandler<Ctx>,
+    Ctx: traits::Client,
+    T: traits::EventHandler<Ctx>,
 {
-    async move {
-        use futures_util::{select, FutureExt};
-        select! {
-            () = stop_signal => {
-                Err((message, handler))
-            }
-            ret = handler.handle_event(objects, connection, server_context, &mut message).fuse() => {
-                Ok((ret, handler))
+    type PairedEventHandlerFut<'a> =
+        impl Future<Output = Result<(EventHandlerOutput, Self), (Self::Message, Self)>> + 'a;
+
+    /// A helper function for storing the event handler's future.
+    ///
+    /// Event handler's generate a future that references the event handler
+    /// itself, if we store that directly in [`PairedEventHandler`] we would
+    /// have a self-referential struct, so we use this async fn to get
+    /// around that.
+    ///
+    /// The stop signal is needed so when the future can to be stopped early,
+    /// for example when a [`PendingEventFut`] is dropped.
+    fn paired_event_handler_driver<'ctx>(
+        mut self,
+        mut stop_signal: one_shot_signal::Receiver,
+        mut message: Self::Message,
+        objects: &'ctx mut Ctx::ObjectStore,
+        connection: &'ctx mut Ctx::Connection,
+        server_context: &'ctx Ctx::ServerContext,
+    ) -> Self::PairedEventHandlerFut<'ctx> {
+        async move {
+            use futures_util::{select, FutureExt};
+            select! {
+                () = stop_signal => {
+                    Err((message, self))
+                }
+                ret = self.handle_event(objects, connection, server_context, &mut message).fuse() => {
+                    Ok((ret, self))
+                }
             }
         }
     }
@@ -66,7 +86,7 @@ struct PairedEventHandler<'fut, Ctx: traits::Client, ES: Stream, H: traits::Even
     handler:       Option<H>,
     message:       Option<ES::Item>,
     #[pin]
-    fut:           Option<PairedEventHandlerFut<'fut, H, Ctx>>,
+    fut:           Option<<H as EventHandlerExt<Ctx>>::PairedEventHandlerFut<'fut>>,
     stop_signal:   Option<one_shot_signal::Sender>,
     _ctx:          PhantomData<Ctx>,
 }
@@ -172,8 +192,7 @@ where
         let (tx, stop_signal) = one_shot_signal::new_pair();
         *this.stop_signal = Some(tx);
 
-        let new_fut = paired_event_handler_driver(
-            handler,
+        let new_fut = handler.paired_event_handler_driver(
             stop_signal,
             message,
             objects,

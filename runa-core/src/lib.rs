@@ -37,10 +37,10 @@
 //! creating a new client context each time a new client connects. It also
 //! provides access to the globals.
 
-// We can drop trait_upcasting if necessary. `type_alias_impl_trait` is
+// We can drop trait_upcasting if necessary. `impl_trait_in_assoc_type` is
 // the indispensable feature here.
 #![allow(incomplete_features)]
-#![feature(type_alias_impl_trait, trait_upcasting)]
+#![feature(impl_trait_in_assoc_type, trait_upcasting)]
 #![warn(
     missing_debug_implementations,
     missing_copy_implementations,
@@ -266,7 +266,8 @@ impl<D> std::fmt::Debug for IdAlloc<D> {
 
 impl<D> Serial for IdAlloc<D> {
     type Data = D;
-    type Iter<'a> = <&'a Self as IntoIterator>::IntoIter where Self: 'a;
+
+    type Iter<'a> = impl Iterator<Item=(u32, &'a D)> where Self: 'a;
 
     fn next_serial(&mut self, data: Self::Data) -> u32 {
         loop {
@@ -299,17 +300,12 @@ impl<D> Serial for IdAlloc<D> {
     }
 }
 
-#[doc(hidden)]
-pub type IdIter<'a, D>
-where
-    D: 'a,
-= impl Iterator<Item = (u32, &'a D)> + 'a;
-
 impl<'a, D: 'a> IntoIterator for &'a IdAlloc<D> {
-    type IntoIter = IdIter<'a, D> where Self: 'a;
     type Item = (u32, &'a D);
 
-    fn into_iter(self) -> IdIter<'a, D> {
+    type IntoIter = impl Iterator<Item = (u32, &'a D)>;
+
+    fn into_iter(self) -> Self::IntoIter {
         self.data.iter().map(|(k, v)| (*k, v))
     }
 }

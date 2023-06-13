@@ -20,7 +20,7 @@
 //! globals you choose to use.
 
 #![allow(incomplete_features)]
-#![feature(type_alias_impl_trait, trait_upcasting)]
+#![feature(impl_trait_in_assoc_type, trait_upcasting)]
 #![warn(
     missing_debug_implementations,
     missing_copy_implementations,

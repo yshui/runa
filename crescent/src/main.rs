@@ -1,4 +1,4 @@
-#![feature(type_alias_impl_trait)]
+#![feature(impl_trait_in_assoc_type)]
 use std::{
     cell::RefCell,
     os::{fd::OwnedFd, unix::net::UnixStream},
@@ -270,11 +270,12 @@ impl CrescentClient {
 
 impl Client for CrescentClient {
     type Connection = Connection<runa_io::WriteWithFd>;
-    type DispatchFut<'a, R> = runa_core::client::Dispatch<'a, Self, R> where R: runa_io::traits::buf::AsyncBufReadWithFd + 'a;
     type EventDispatcher = EventDispatcher<Self>;
     type Object = AnyObject;
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
+
+    type DispatchFut<'a, R> = impl std::future::Future<Output = bool> + 'a where R: runa_io::traits::buf::AsyncBufReadWithFd + 'a;
 
     fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
     where

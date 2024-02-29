@@ -86,7 +86,7 @@ use crate::{
 /// ```rust
 /// use std::any::Any;
 ///
-/// use wl_server::objects::{AnyObject, MonoObject};
+/// use runa_core::objects::{AnyObject, MonoObject};
 ///
 /// // Define two monomorphic objects
 /// struct A;
@@ -95,8 +95,8 @@ use crate::{
 ///
 ///     const INTERFACE: &'static str = "A";
 ///
-///     fn new_singleton_state() -> Option<Self::SingletonState> {
-///         Some(0usize)
+///     fn new_singleton_state() -> Self::SingletonState {
+///         0usize
 ///     }
 /// }
 ///
@@ -106,8 +106,8 @@ use crate::{
 ///
 ///     const INTERFACE: &'static str = "B";
 ///
-///     fn new_singleton_state() -> Option<Self::SingletonState> {
-///         Some(())
+///     fn new_singleton_state() -> Self::SingletonState {
+///         ()
 ///     }
 /// }
 ///
@@ -145,18 +145,18 @@ use crate::{
 ///         }
 ///     }
 ///
-///     fn new_singleton_state(&self) -> Option<Box<dyn std::any::Any>> {
+///     fn new_singleton_state(&self) -> Box<dyn std::any::Any> {
 ///         match self {
 ///             MyObject::A(_) =>
-///                 <A as MonoObject>::new_singleton_state().map(|s| Box::new(s) as _),
+///                 Box::new(<A as MonoObject>::new_singleton_state()),
 ///             MyObject::B(_) =>
-///                 <B as MonoObject>::new_singleton_state().map(|s| Box::new(s) as _),
+///                 Box::new(<B as MonoObject>::new_singleton_state()),
 ///         }
 ///     }
 /// }
 /// ```
 ///
-/// Which is equivalent to:
+/// All of the above is equivalent to:
 ///
 /// ```ignore
 /// #[derive(Object)]

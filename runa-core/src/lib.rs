@@ -309,30 +309,102 @@ impl<'a, D: 'a> IntoIterator for &'a IdAlloc<D> {
     }
 }
 
-/// Generate a corresponding Objects enum from a Globals enum.
+/// Generate a needed trait implementations for a Globals enum. a
+/// `Globals` enum is an enum of all the globals your compositor
+/// provides. This is essentially the entry point to your compositor,
+/// and references all the other related parts, such as the objects
+/// enum, the client context, which in turn references the object store,
+/// the connection, the event dispatcher, and so on.
 ///
 /// # Example
 ///
+/// This is an comprehensive example of how to use this and related macros, and traits.
+///
+/// Please refer to the documentation of referenced macros and traits for more details.
+///
 /// ```rust
-/// globals! {
+/// #![feature(impl_trait_in_assoc_type)]
+/// use runa_core::client::traits::{Client, ClientParts};
+/// # use std::pin::Pin;
+/// # use runa_io::traits::ReadMessage;
+/// #[derive(runa_core::objects::Object, Debug)]
+/// #[wayland(context = "ClientContext")]
+/// pub enum Objects {
+///     Display(runa_core::objects::Display),
+///     Registry(runa_core::objects::Registry),
+///     // ... other objects you want
+/// }
+/// #[derive(Debug)]
+/// pub struct ServerContext;
+/// impl runa_core::server::traits::Server for ServerContext {
+///     type ClientContext = ClientContext;
+///     type Global = Globals;
+///     type GlobalStore = runa_core::server::GlobalStore<Globals>;
+///     # type Conn = ();
+///     # type Error = ();
+///     // ... implementation of the Server trait
+///     # fn globals(&self) -> &std::cell::RefCell<Self::GlobalStore> {
+///     #     todo!();
+///     # }
+///     # fn new_connection(&self, _: Self::Conn) -> Result<(), Self::Error> {
+///     #     todo!()
+///     # }
+/// }
+/// #[derive(Debug)]
+/// pub struct ClientContext;
+/// impl Client for ClientContext {
+///    type Object = Objects;
+///    type Connection = runa_io::Connection<runa_io::WriteWithFd>;
+///    type EventDispatcher = runa_core::client::EventDispatcher<Self>;
+///    type ObjectStore = runa_core::client::Store<Self::Object>;
+///    type ServerContext = ServerContext;
+///
+///    // ... implementation of the Client trait
+///    # type DispatchFut<'a, R> = impl std::future::Future<Output = bool> + 'a where R: ReadMessage + 'a;
+///    #
+///    # fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
+///    # where
+///    #     R: ReadMessage,
+///    # {
+///    #     runa_core::client::dispatch_to(self, reader)
+///    # }
+///    #
+///    # fn server_context(&self) -> &Self::ServerContext {
+///    #     todo!()
+///    # }
+///    #
+///    # fn objects(&self) -> &Self::ObjectStore {
+///    #     todo!()
+///    # }
+///    #
+///    # fn as_mut_parts(&mut self) -> ClientParts<'_, Self> {
+///    #     todo!()
+///    # }
+/// }
+/// runa_core::globals! {
 ///    type ClientContext = ClientContext;
-///    #[derive(Debug)]
 ///    pub enum Globals {
-///        Display(wl_server::objects::Display),
-///        Registry(wl_server::objects::Registry),
+///        Display(runa_core::globals::Display),
+///        Registry(runa_core::globals::Registry),
+///        // ... other globals you want
 ///     }
 /// }
 /// ```
 ///
-/// The name `Globals` and `Objects` can be changed.
+/// The name `Globals` can be changed.
 ///
 /// This will generate a `From<Variant> for Globals` for each of the variants of
-/// `Globals`. And for each global, a `From<Global::Object> for Objects` will be
-/// generated.
+/// `Globals`.
 ///
-/// `Objects` will be filled with variants from `Global::Object` for each of the
-/// globals. It can also contain extra variants, for object types that aren't
-/// associated with a particular global.
+/// # Notes
+///
+/// When you use `#[derive(Object)]` to generate a corresponding union
+/// of objects for your compositor, you must include all the objects these
+/// globals bind to. Otherwise, your code will not compile.
+///
+/// If you get inpenetrable error messages from using this (as well as from [`objects::Object`]),
+/// make sure your `ClientContext` does implement [`client::traits::Client`] properly first.
+
 #[macro_export]
 macro_rules! globals {
     (

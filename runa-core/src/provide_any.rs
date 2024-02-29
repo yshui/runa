@@ -162,8 +162,7 @@ impl<'a> Demand<'a> {
     /// Provides a `String` by cloning.
     ///
     /// ```rust
-    /// # #![feature(provide_any)]
-    /// use std::any::{Demand, Provider};
+    /// use runa_core::provide_any::{Demand, Provider};
     /// # struct SomeConcreteType { field: String }
     ///
     /// impl Provider for SomeConcreteType {
@@ -188,8 +187,7 @@ impl<'a> Demand<'a> {
     /// Provides a reference to a field as a `&str`.
     ///
     /// ```rust
-    /// # #![feature(provide_any)]
-    /// use std::any::{Demand, Provider};
+    /// use runa_core::provide_any::{Demand, Provider};
     /// # struct SomeConcreteType { field: String }
     ///
     /// impl Provider for SomeConcreteType {

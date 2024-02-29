@@ -6,9 +6,9 @@
 //! A good example is the object store. If store updates are a stream of
 //! events, we can imagine a sequence of events like:
 //!
-//!     - Insert Object { id: 1, interface: wl_surface }
-//!     - Remove Object { id: 1 }
-//!     - Insert Object { id: 1, interface: wl_buffer }
+//!    - Insert Object { id: 1, interface: wl_surface }
+//!    - Remove Object { id: 1 }
+//!    - Insert Object { id: 1, interface: wl_buffer }
 //!
 //! If listener only started reading the events after the third event, they
 //! will start processing the first insertion event and find out object 1 is

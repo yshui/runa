@@ -24,14 +24,18 @@
         cargo = rust-toolchain;
         rustc = rust-toolchain;
       };
+      runtimeDependencies = (with pkgs; [ libGL vulkan-loader ]) ++
+        (with pkgs.xorg; [ libX11 libXdmcp libXrender libXcursor libXau libxcb libXfixes libXrandr libXext libXi ]);
     in
     with pkgs; {
       packages = rec {
         crescent = rustPlatform.buildRustPackage rec {
+          inherit runtimeDependencies;
           pname = "crescent";
           version = "0.1.0";
           src = ./.;
-          buildInputs = [ libxkbcommon ];
+          buildInputs = [ libxkbcommon gccForLibs.lib ];
+          nativeBuildInputs = [ autoPatchelfHook ];
           postUnpack = ''
             echo $(pwd)
             ls $sourceRoot/runa-wayland-protocols/spec
@@ -54,7 +58,7 @@
         nativeBuildInputs = [ pkg-config cmake rust-toolchain ];
         buildInputs = [ libxkbcommon ];
         shellHook = ''
-          export LD_LIBRARY_PATH="${lib.makeLibraryPath [ libglvnd vulkan-loader ]}:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${lib.makeLibraryPath runtimeDependencies}:$LD_LIBRARY_PATH"
         '';
         LIBCLANG_PATH = lib.makeLibraryPath [ llvmPackages_17.libclang.lib ];
 

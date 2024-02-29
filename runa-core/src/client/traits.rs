@@ -3,7 +3,7 @@
 use std::{any::Any, error::Error, pin::Pin};
 
 use futures_core::{Future, Stream};
-use runa_io::traits::WriteMessage;
+use runa_io::traits::{AsyncBufReadWithFd, ReadMessage, WriteMessage};
 
 use crate::{events, objects};
 
@@ -364,7 +364,7 @@ pub trait Client: Sized + 'static {
     type DispatchFut<'a, R>: Future<Output = bool> + 'a
     where
         Self: 'a,
-        R: runa_io::traits::buf::AsyncBufReadWithFd + 'a;
+        R: ReadMessage + 'a;
 
     /// Return a shared reference to the server context.
     fn server_context(&self) -> &Self::ServerContext;
@@ -401,5 +401,5 @@ pub trait Client: Sized + 'static {
     /// A default implementations is provided at [`super::dispatch_to`].
     fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
     where
-        R: runa_io::traits::buf::AsyncBufReadWithFd;
+        R: ReadMessage;
 }

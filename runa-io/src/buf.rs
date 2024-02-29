@@ -8,9 +8,9 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use runa_io_traits::OwnedFds;
+use runa_io_traits::{OwnedFds, ReadMessage};
 
-use crate::traits::{buf::AsyncBufReadWithFd, AsyncReadWithFd};
+use crate::traits::{AsyncBufReadWithFd, AsyncReadWithFd};
 
 pin_project! {
 /// A buffered reader for reading data with file descriptors.
@@ -151,10 +151,13 @@ unsafe impl<T: AsyncReadWithFd> AsyncBufReadWithFd for BufReaderWithFd<T> {
 
     fn consume(self: Pin<&mut Self>, amt: usize, amt_fd: usize) {
         let this = self.project();
-        *this.pos_data = std::cmp::min(*this.pos_data + amt, *this.filled_data);
+        assert!(amt <= *this.filled_data - *this.pos_data);
+        *this.pos_data += amt;
         this.fd_buf.drain(..amt_fd);
     }
 }
+
+impl<T: AsyncReadWithFd> ReadMessage for BufReaderWithFd<T> {}
 
 impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
     fn poll_read_with_fds<Fds: OwnedFds>(

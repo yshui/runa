@@ -58,8 +58,8 @@ pub trait AsyncWriteWithFd {
     /// # Returns
     ///
     /// Returns the number of bytes written on success. The file descriptors
-    /// will all be sent as long as they don't exceed the maximum number of
-    /// file descriptors that can be sent in a message, in which case an
+    /// will all be sent unless they exceeded the maximum number of file
+    /// descriptors that can be sent within a single message, in which case an
     /// error is returned.
     fn poll_write_with_fds<Fds: OwnedFds>(
         self: Pin<&mut Self>,
@@ -164,6 +164,89 @@ pub trait WriteMessage {
         Self: Unpin,
     {
         Flush { writer: self }
+    }
+}
+
+/// Raw message bytes and file descriptors that haven't been deserialized yet.
+pub struct RawMessage<'a> {
+    pub object_id: u32,
+    pub len:       usize,
+    pub data:      &'a [u8],
+    pub fds:       &'a [RawFd],
+}
+
+/// A trait for objects that can produce messages.
+pub trait ReadMessage: AsyncBufReadWithFd {
+    /// Poll for the next message.
+    ///
+    /// # Notes
+    ///
+    /// The returned message is borrowed from the internal buffer of `AsyncBufReadWithFd`.
+    /// So the internal buffer will not be consumed automatically by this function. You
+    /// should call `AsyncBufReadWithFd::consume` to advance the buffer.
+    fn poll_next_message<'a>(
+        mut self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<RawMessage<'a>>> {
+        // Wait until we have the message header ready at least.
+        let (object_id, len) = {
+            ready!(self.as_mut().poll_fill_buf_until(cx, 8))?;
+            let object_id = self
+                .buffer()
+                .get(..4)
+                .expect("Bug in poll_fill_buf_until implementation");
+            // Safety: get is guaranteed to return a slice of 4 bytes.
+            let object_id = unsafe { u32::from_ne_bytes(*(object_id.as_ptr() as *const [u8; 4])) };
+            let header = self
+                .buffer()
+                .get(4..8)
+                .expect("Bug in poll_fill_buf_until implementation");
+            let header = unsafe { u32::from_ne_bytes(*(header.as_ptr() as *const [u8; 4])) };
+            (object_id, (header >> 16) as usize)
+        };
+
+        ready!(self.as_mut().poll_fill_buf_until(cx, len))?;
+        let this = self.into_ref().get_ref();
+        Poll::Ready(Ok(RawMessage {
+            object_id,
+            len,
+            data: &this.buffer()[..len],
+            fds: this.fds(),
+        }))
+    }
+
+    /// Future wrapper of `Self::poll_next_message`.
+    fn next_message<'a>(self: Pin<&'a mut Self>) -> NextMessage<'a, Self>
+    where
+        Self: Sized,
+    {
+        NextMessage(Some(self))
+    }
+}
+
+pub struct NextMessage<'a, R>(Option<Pin<&'a mut R>>);
+impl<'a, R> Future for NextMessage<'a, R>
+where
+    R: ReadMessage,
+{
+    type Output = Result<RawMessage<'a>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut reader = this.0.take().expect("NextMessage polled after completion");
+        match reader.as_mut().poll_next_message(cx) {
+            Poll::Pending => {
+                this.0 = Some(reader);
+                Poll::Pending
+            },
+            Poll::Ready(Ok(_)) => match reader.poll_next_message(cx) {
+                Poll::Pending => {
+                    panic!("poll_next_message returned Ready, but then Pending again")
+                },
+                ready => ready,
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        }
     }
 }
 
@@ -306,132 +389,54 @@ pub mod de {
     }
 }
 
-pub mod buf {
-    use std::{future::Future, io::Result, task::ready};
+/// Buffered I/O object for a stream of bytes with file descriptors.
+///
+/// # Safety
+///
+/// See [`crate::AsyncReadWithFd`]. Also, implementation cannot hold copies,
+/// or use any of the file descriptors after they are consumed by the
+/// caller.
+pub unsafe trait AsyncBufReadWithFd: AsyncReadWithFd {
+    /// Reads enough data to return a buffer at least the given size.
+    fn poll_fill_buf_until<'a>(
+        self: Pin<&'a mut Self>,
+        cx: &mut Context<'_>,
+        len: usize,
+    ) -> Poll<Result<()>>;
+    /// Pop 1 file descriptor from the buffer, return None if the buffer is
+    /// empty. This takes shared references, mainly because we want to have
+    /// the deserialized value borrow from the BufReader, but while
+    /// deserializing, we also need to pop file descriptors. As a
+    /// compromise, we have to pop file descriptors using a shared
+    /// reference. Implementations would have to use a RefCell, a
+    /// Mutex, or something similar.
+    fn fds(&self) -> &[RawFd];
+    fn buffer(&self) -> &[u8];
+    fn consume(self: Pin<&mut Self>, amt: usize, amt_fd: usize);
 
-    use super::*;
-
-    pub struct Message<'a> {
-        pub object_id: u32,
-        pub len:       usize,
-        pub data:      &'a [u8],
-        pub fds:       &'a [RawFd],
-    }
-
-    /// Buffered I/O object for a stream of bytes with file descriptors.
-    ///
-    /// # Safety
-    ///
-    /// See [`crate::AsyncReadWithFd`]. Also, implementation cannot hold copies,
-    /// or use any of the file descriptors after they are consumed by the
-    /// caller.
-    pub unsafe trait AsyncBufReadWithFd: AsyncReadWithFd {
-        /// Reads enough data to return a buffer at least the given size.
-        fn poll_fill_buf_until<'a>(
-            self: Pin<&'a mut Self>,
-            cx: &mut Context<'_>,
-            len: usize,
-        ) -> Poll<Result<()>>;
-        /// Pop 1 file descriptor from the buffer, return None if the buffer is
-        /// empty. This takes shared references, mainly because we want to have
-        /// the deserialized value borrow from the BufReader, but while
-        /// deserializing, we also need to pop file descriptors. As a
-        /// compromise, we have to pop file descriptors using a shared
-        /// reference. Implementations would have to use a RefCell, a
-        /// Mutex, or something similar.
-        fn fds(&self) -> &[RawFd];
-        fn buffer(&self) -> &[u8];
-        fn consume(self: Pin<&mut Self>, amt: usize, amt_fd: usize);
-
-        fn fill_buf_until(&mut self, len: usize) -> FillBufUtil<'_, Self>
-        where
-            Self: Unpin,
-        {
-            FillBufUtil(Some(self), len)
-        }
-
-        fn poll_next_message<'a>(
-            mut self: Pin<&'a mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<Message<'a>>> {
-            // Wait until we have the message header ready at least.
-            let (object_id, len) = {
-                ready!(self.as_mut().poll_fill_buf_until(cx, 8))?;
-                let object_id = self
-                    .buffer()
-                    .get(..4)
-                    .expect("Bug in poll_fill_buf_until implementation");
-                // Safety: get is guaranteed to return a slice of 4 bytes.
-                let object_id =
-                    unsafe { u32::from_ne_bytes(*(object_id.as_ptr() as *const [u8; 4])) };
-                let header = self
-                    .buffer()
-                    .get(4..8)
-                    .expect("Bug in poll_fill_buf_until implementation");
-                let header = unsafe { u32::from_ne_bytes(*(header.as_ptr() as *const [u8; 4])) };
-                (object_id, (header >> 16) as usize)
-            };
-
-            ready!(self.as_mut().poll_fill_buf_until(cx, len))?;
-            let this = self.into_ref().get_ref();
-            Poll::Ready(Ok(Message {
-                object_id,
-                len,
-                data: &this.buffer()[..len],
-                fds: this.fds(),
-            }))
-        }
-
-        fn next_message<'a>(self: Pin<&'a mut Self>) -> NextMessage<'a, Self>
-        where
-            Self: Sized,
-        {
-            NextMessage(Some(self))
-        }
-    }
-
-    pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
-
-    impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
-        type Output = Result<()>;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = &mut *self;
-            let len = this.1;
-            let inner = this.0.take().expect("FillBufUtil polled after completion");
-            match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
-                Poll::Pending => {
-                    this.0 = Some(inner);
-                    Poll::Pending
-                },
-                ready => ready,
-            }
-        }
-    }
-
-    pub struct NextMessage<'a, R>(Option<Pin<&'a mut R>>);
-    impl<'a, R> Future for NextMessage<'a, R>
+    fn fill_buf_until(&mut self, len: usize) -> FillBufUtil<'_, Self>
     where
-        R: AsyncBufReadWithFd,
+        Self: Unpin,
     {
-        type Output = Result<Message<'a>>;
+        FillBufUtil(Some(self), len)
+    }
+}
 
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let this = self.get_mut();
-            let mut reader = this.0.take().expect("NextMessage polled after completion");
-            match reader.as_mut().poll_next_message(cx) {
-                Poll::Pending => {
-                    this.0 = Some(reader);
-                    Poll::Pending
-                },
-                Poll::Ready(Ok(_)) => match reader.poll_next_message(cx) {
-                    Poll::Pending => {
-                        panic!("poll_next_message returned Ready, but then Pending again")
-                    },
-                    ready => ready,
-                },
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            }
+pub struct FillBufUtil<'a, R: Unpin + ?Sized>(Option<&'a mut R>, usize);
+
+impl<'a, R: AsyncBufReadWithFd + Unpin> ::std::future::Future for FillBufUtil<'a, R> {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let len = this.1;
+        let inner = this.0.take().expect("FillBufUtil polled after completion");
+        match Pin::new(&mut *inner).poll_fill_buf_until(cx, len) {
+            Poll::Pending => {
+                this.0 = Some(inner);
+                Poll::Pending
+            },
+            ready => ready,
         }
     }
 }

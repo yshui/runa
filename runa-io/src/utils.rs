@@ -9,11 +9,10 @@ use std::{
     task::Poll,
 };
 
-use super::traits::{buf::AsyncBufReadWithFd, AsyncReadWithFd, AsyncWriteWithFd, OwnedFds};
-use crate::traits;
+use super::traits::{self, AsyncBufReadWithFd, AsyncReadWithFd, AsyncWriteWithFd, OwnedFds};
 
-/// An in-memory buffer that implements `AsyncWrite` and `AsyncWriteWithFd`. Intended for testing
-/// purposes.
+/// An in-memory buffer that implements `AsyncWrite` and `AsyncWriteWithFd`.
+/// Intended for testing purposes.
 #[derive(Default, Debug)]
 pub struct WritePool {
     inner: Vec<u8>,
@@ -67,14 +66,15 @@ impl WritePool {
         }
     }
 
-    /// Consume the `WritePool` and return the inner buffer and file descriptors.
+    /// Consume the `WritePool` and return the inner buffer and file
+    /// descriptors.
     pub fn into_inner(self) -> (Vec<u8>, Vec<OwnedFd>) {
         (self.inner, self.fds)
     }
 }
 
-/// An in-memory buffer that implements `AsyncRead` and `AsyncReadWithFd`. Intended for testing
-/// purposes.
+/// An in-memory buffer that implements `AsyncRead` and `AsyncReadWithFd`.
+/// Intended for testing purposes.
 #[derive(Debug)]
 pub struct ReadPool {
     inner: Vec<u8>,

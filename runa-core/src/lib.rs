@@ -66,10 +66,9 @@ mod utils;
 pub mod __private {
     // Re-exports used by macros
     pub use runa_io::traits::{
-        buf::AsyncBufReadWithFd,
         de::{Deserialize, Error as DeserError},
         ser::Serialize,
-        WriteMessage,
+        AsyncBufReadWithFd, WriteMessage,
     };
     pub use runa_wayland_protocols::wayland::wl_display;
     pub use runa_wayland_types as types;

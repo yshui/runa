@@ -29,6 +29,7 @@ use std::{os::fd::RawFd, pin::Pin};
 
 #[doc(inline)]
 pub use event_dispatcher::EventDispatcher;
+use runa_io::traits::{AsyncBufReadWithFd, ReadMessage};
 #[doc(inline)]
 pub use store::Store;
 
@@ -51,17 +52,17 @@ pub use store::Store;
 /// message properly.
 pub async fn dispatch_to<'a, Ctx, R>(ctx: &'a mut Ctx, mut reader: Pin<&'a mut R>) -> bool
 where
-    R: runa_io::traits::buf::AsyncBufReadWithFd,
+    R: ReadMessage,
     Ctx: traits::Client,
     Ctx::Object: for<'b> crate::objects::Object<Ctx, Request<'b> = (&'b [u8], &'b [RawFd])>,
 {
-    use runa_io::traits::{buf::Message, WriteMessage};
+    use runa_io::traits::{RawMessage, WriteMessage, ReadMessage};
     use runa_wayland_protocols::wayland::wl_display::v1 as wl_display;
     use runa_wayland_types as types;
     use traits::Store;
 
     use crate::{error::ProtocolError, objects::AnyObject};
-    let Message {
+    let RawMessage {
         object_id,
         len,
         data,

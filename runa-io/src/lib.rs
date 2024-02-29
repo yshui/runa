@@ -58,9 +58,12 @@ pub fn split_unixstream(stream: StdUnixStream) -> Result<(ReadWithFd, WriteWithF
 }
 
 impl traits::AsyncWriteWithFd for WriteWithFd {
-    /// Writes the given buffer and file descriptors to a unix stream. `buf`
-    /// must contain at least one byte of data. This function should not be
-    /// called concurrently from different tasks. Otherwise you risk
+    /// Writes the given buffer and file descriptors to a unix stream.
+    ///
+    /// # Note
+    ///
+    /// `buf` must contain at least one byte of data. This function should not
+    /// be called concurrently from different tasks. Otherwise you risk
     /// interleaving data, as well as causing tasks to wake each other up and
     /// eatting CPU.
     #[inline]

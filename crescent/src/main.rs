@@ -20,7 +20,7 @@ use runa_core::{
 };
 use runa_io::{
     buf::BufReaderWithFd,
-    traits::{buf::AsyncBufReadWithFd, WriteMessage as _},
+    traits::{AsyncBufReadWithFd, ReadMessage, WriteMessage as _},
     Connection,
 };
 use runa_orbiter::{
@@ -275,11 +275,11 @@ impl Client for CrescentClient {
     type ObjectStore = Store<Self::Object>;
     type ServerContext = Crescent;
 
-    type DispatchFut<'a, R> = impl std::future::Future<Output = bool> + 'a where R: runa_io::traits::buf::AsyncBufReadWithFd + 'a;
+    type DispatchFut<'a, R> = impl std::future::Future<Output = bool> + 'a where R: ReadMessage + 'a;
 
     fn dispatch<'a, R>(&'a mut self, reader: Pin<&'a mut R>) -> Self::DispatchFut<'a, R>
     where
-        R: runa_io::traits::buf::AsyncBufReadWithFd,
+        R: ReadMessage,
     {
         runa_core::client::dispatch_to(self, reader)
     }
@@ -416,7 +416,9 @@ fn main() -> Result<()> {
         let event_tx = event_tx;
         el.run(move |event, _, cf| {
             cf.set_wait();
-            let Some(event) = event.to_static() else { return };
+            let Some(event) = event.to_static() else {
+                return
+            };
             smol::block_on(event_tx.send(event)).unwrap();
         })
     });

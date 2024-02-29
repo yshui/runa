@@ -181,9 +181,10 @@ pub trait ReadMessage: AsyncBufReadWithFd {
     ///
     /// # Notes
     ///
-    /// The returned message is borrowed from the internal buffer of `AsyncBufReadWithFd`.
-    /// So the internal buffer will not be consumed automatically by this function. You
-    /// should call `AsyncBufReadWithFd::consume` to advance the buffer.
+    /// The returned message is borrowed from the internal buffer of
+    /// `AsyncBufReadWithFd`. So the internal buffer will not be consumed
+    /// automatically by this function. You should call
+    /// `AsyncBufReadWithFd::consume` to advance the buffer.
     fn poll_next_message<'a>(
         mut self: Pin<&'a mut Self>,
         cx: &mut Context<'_>,

@@ -9,6 +9,8 @@ use std::{
     task::Poll,
 };
 
+use runa_io_traits::ReadMessage;
+
 use super::traits::{self, AsyncBufReadWithFd, AsyncReadWithFd, AsyncWriteWithFd, OwnedFds};
 
 /// An in-memory buffer that implements `AsyncWrite` and `AsyncWriteWithFd`.
@@ -143,6 +145,8 @@ unsafe impl AsyncBufReadWithFd for ReadPool {
         self.fds.drain(..amt_fd);
     }
 }
+
+impl ReadMessage for ReadPool {}
 
 impl AsyncReadWithFd for ReadPool {
     fn poll_read_with_fds<Fds: OwnedFds>(

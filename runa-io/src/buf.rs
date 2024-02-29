@@ -206,32 +206,56 @@ impl<T: AsyncReadWithFd> AsyncReadWithFd for BufReaderWithFd<T> {
 mod test {
     use std::{os::fd::AsRawFd, pin::Pin};
 
-    use anyhow::Result;
     use arbitrary::Arbitrary;
+    use futures_util::io::Write;
     use smol::{future::poll_fn, Task};
     use tracing::debug;
 
     use crate::{
-        traits::{buf::AsyncBufReadWithFd, AsyncWriteWithFd},
+        traits::{AsyncBufReadWithFd, AsyncWriteWithFd},
         BufReaderWithFd,
     };
-    async fn buf_roundtrip_seeded(raw: &[u8], executor: &smol::LocalExecutor<'_>) {
+    struct WriteExactWithFd<'a> {
+        data:   &'a [u8],
+        fds:    &'a mut Vec<std::os::unix::io::OwnedFd>,
+        stream: &'a mut crate::WriteWithFd,
+    }
+    impl<'a> std::future::Future for WriteExactWithFd<'a> {
+        type Output = std::io::Result<()>;
+
+        fn poll(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            let this = self.get_mut();
+            while !this.data.is_empty() {
+                let n = std::task::ready!(Pin::new(&mut *this.stream).poll_write_with_fds(
+                    cx,
+                    &this.data[..],
+                    this.fds
+                ))?;
+                this.data = &this.data[n..];
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    async fn buf_roundtrip_seeded(raw: &[u8]) {
         let mut source = arbitrary::Unstructured::new(raw);
         let (rx, tx) = std::os::unix::net::UnixStream::pair().unwrap();
         let (_, mut tx) = crate::split_unixstream(tx).unwrap();
         let (rx, _) = crate::split_unixstream(rx).unwrap();
         let mut rx = BufReaderWithFd::new(rx);
-        let task: Task<Result<_>> = executor.spawn(async move {
-            debug!("start");
+        let receiver = async move {
+            debug!("receiver start");
 
             let mut bytes = Vec::new();
             let mut fds = Vec::new();
             loop {
                 let buf = if let Err(e) = rx.fill_buf_until(4).await {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                        break
+                        break Ok((bytes, fds))
                     } else {
-                        return Err(e.into())
+                        break Err(e)
                     }
                 } else {
                     rx.buffer()
@@ -239,43 +263,54 @@ mod test {
                 assert!(buf.len() >= 4);
                 let len: [u8; 4] = buf[..4].try_into().unwrap();
                 let len = u32::from_le_bytes(len) as usize;
-                debug!("len: {:?}", len);
+                debug!("received len: {:?}", len);
                 rx.fill_buf_until(len).await?;
+                assert!(rx.buffer().len() >= len);
                 bytes.extend_from_slice(&rx.buffer()[4..len]);
                 fds.extend_from_slice(rx.fds());
-                debug!("fds: {:?}", rx.fds());
+                debug!("received fds: {:?}", rx.fds());
                 let nfds = rx.fds().len();
                 Pin::new(&mut rx).consume(len, nfds);
             }
-            Ok((bytes, fds))
-        });
-        let mut sent_bytes = Vec::new();
-        let mut sent_fds = Vec::new();
-        while let Ok(packet) = <&[u8]>::arbitrary(&mut source) {
-            if packet.is_empty() {
-                break
+        };
+        let sender = async move {
+            let mut sent_bytes = Vec::new();
+            let mut sent_fds = Vec::new();
+            while let Ok(packet) = <&[u8]>::arbitrary(&mut source) {
+                if packet.is_empty() {
+                    break
+                }
+                let has_fd = bool::arbitrary(&mut source).unwrap();
+                let mut fds = if has_fd {
+                    let fd: std::os::unix::io::OwnedFd =
+                        std::fs::File::open("/dev/null").unwrap().into();
+                    sent_fds.push(fd.as_raw_fd());
+                    vec![fd]
+                } else {
+                    Vec::new()
+                };
+                let len = (packet.len() as u32 + 4).to_ne_bytes();
+                (WriteExactWithFd {
+                    data:   &len[..],
+                    fds:    &mut fds,
+                    stream: &mut tx,
+                })
+                .await
+                .unwrap();
+                (WriteExactWithFd {
+                    data:   packet,
+                    fds:    &mut Vec::new(),
+                    stream: &mut tx,
+                })
+                .await
+                .unwrap();
+                debug!("send len: {:?}", packet.len() + 4);
+                sent_bytes.extend_from_slice(packet);
             }
-            let has_fd = bool::arbitrary(&mut source).unwrap();
-            let mut fds = if has_fd {
-                let fd: std::os::unix::io::OwnedFd =
-                    std::fs::File::open("/dev/null").unwrap().into();
-                sent_fds.push(fd.as_raw_fd());
-                vec![fd]
-            } else {
-                Vec::new()
-            };
-            let len = (packet.len() as u32 + 4).to_ne_bytes();
-            poll_fn(|cx| Pin::new(&mut tx).poll_write_with_fds(cx, &len[..], &mut vec![]))
-                .await
-                .unwrap();
-            poll_fn(|cx| Pin::new(&mut tx).poll_write_with_fds(cx, packet, &mut fds))
-                .await
-                .unwrap();
-            debug!("send len: {:?}", packet.len() + 4);
-            sent_bytes.extend_from_slice(packet);
-        }
-        drop(tx);
-        let (bytes, fds) = task.await.unwrap();
+            (sent_bytes, sent_fds)
+        };
+        let (received, (sent_bytes, sent_fds)) = futures_util::join!(receiver, sender);
+        let (bytes, fds) = received.unwrap();
         assert_eq!(bytes, sent_bytes);
         // The actual file descriptor number is not preserved, so we just check the
         // number of file descriptors matches.
@@ -287,9 +322,8 @@ mod test {
         tracing_subscriber::fmt::init();
         let mut rng = rand::rngs::SmallRng::seed_from_u64(0x1238_aefb_d129_3a12);
         let mut raw: Vec<u8> = Vec::with_capacity(1024 * 1024);
-        let executor = smol::LocalExecutor::new();
         raw.resize(1024 * 1024, 0);
         rng.fill(raw.as_mut_slice());
-        futures_executor::block_on(executor.run(buf_roundtrip_seeded(&raw, &executor)));
+        futures_executor::block_on(buf_roundtrip_seeded(&raw));
     }
 }

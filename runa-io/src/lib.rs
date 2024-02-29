@@ -401,6 +401,12 @@ impl<C> Connection<C> {
             buf: BytesMut::with_capacity(capacity),
         }
     }
+
+    /// Consumes the connection and returns the inner connection. Any unflushed
+    /// data and file descriptors are lost.
+    pub fn into_inner(self) -> C {
+        self.conn
+    }
 }
 
 impl<C: traits::AsyncWriteWithFd> traits::WriteMessage for Connection<C> {

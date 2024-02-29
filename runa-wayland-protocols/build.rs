@@ -6,11 +6,11 @@ use runa_wayland_spec_parser as spec;
 fn main() {
     use std::io::Write;
 
-    let protocols = std::path::Path::new("spec");
+    let protocols = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("spec");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     println!("cargo:rerun-if-changed={}", protocols.display());
     let generate_from_dir = |name: &str| {
-        let dest_path = std::path::Path::new(&out_dir).join(&format!("{name}_generated.rs"));
+        let dest_path = std::path::Path::new(&out_dir).join(format!("{name}_generated.rs"));
         let mut outfile = std::fs::File::create(dest_path).unwrap();
         let dir_path = protocols.join("wayland-protocols").join(name);
         for dir in std::fs::read_dir(dir_path).unwrap() {

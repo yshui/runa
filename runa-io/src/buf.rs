@@ -205,19 +205,21 @@ mod test {
 
     use anyhow::Result;
     use arbitrary::Arbitrary;
-    use smol::Task;
+    use smol::{future::poll_fn, Task};
     use tracing::debug;
 
-    use crate::{traits::buf::AsyncBufReadWithFd, BufReaderWithFd};
+    use crate::{
+        traits::{buf::AsyncBufReadWithFd, AsyncWriteWithFd},
+        BufReaderWithFd,
+    };
     async fn buf_roundtrip_seeded(raw: &[u8], executor: &smol::LocalExecutor<'_>) {
         let mut source = arbitrary::Unstructured::new(raw);
         let (rx, tx) = std::os::unix::net::UnixStream::pair().unwrap();
-        let (_, tx) = crate::split_unixstream(tx).unwrap();
+        let (_, mut tx) = crate::split_unixstream(tx).unwrap();
         let (rx, _) = crate::split_unixstream(rx).unwrap();
         let mut rx = BufReaderWithFd::new(rx);
         let task: Task<Result<_>> = executor.spawn(async move {
             debug!("start");
-            use futures_lite::AsyncBufRead;
 
             let mut bytes = Vec::new();
             let mut fds = Vec::new();
@@ -251,25 +253,24 @@ mod test {
                 break
             }
             let has_fd = bool::arbitrary(&mut source).unwrap();
-            let fds = if has_fd {
+            let mut fds = if has_fd {
                 let fd: std::os::unix::io::OwnedFd =
                     std::fs::File::open("/dev/null").unwrap().into();
                 sent_fds.push(fd.as_raw_fd());
-                Some(fd)
+                vec![fd]
             } else {
-                None
+                Vec::new()
             };
             let len = (packet.len() as u32 + 4).to_ne_bytes();
-            tx.reserve(packet.len() + 4, if fds.is_some() { 1 } else { 0 })
+            poll_fn(|cx| Pin::new(&mut tx).poll_write_with_fds(cx, &len[..], &mut vec![]))
                 .await
                 .unwrap();
-            Pin::new(&mut tx).write(&len);
-            Pin::new(&mut tx).write(packet);
+            poll_fn(|cx| Pin::new(&mut tx).poll_write_with_fds(cx, packet, &mut fds))
+                .await
+                .unwrap();
             debug!("send len: {:?}", packet.len() + 4);
             sent_bytes.extend_from_slice(packet);
-            Pin::new(&mut tx).push_fds(&mut fds.into_iter());
         }
-        tx.flush().await.unwrap();
         drop(tx);
         let (bytes, fds) = task.await.unwrap();
         assert_eq!(bytes, sent_bytes);

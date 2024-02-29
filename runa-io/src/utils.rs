@@ -12,6 +12,8 @@ use std::{
 use super::traits::{buf::AsyncBufReadWithFd, AsyncReadWithFd, AsyncWriteWithFd, OwnedFds};
 use crate::traits;
 
+/// An in-memory buffer that implements `AsyncWrite` and `AsyncWriteWithFd`. Intended for testing
+/// purposes.
 #[derive(Default, Debug)]
 pub struct WritePool {
     inner: Vec<u8>,
@@ -57,6 +59,7 @@ impl AsyncWriteWithFd for WritePool {
 }
 
 impl WritePool {
+    /// Create a new `WritePool`.
     pub fn new() -> Self {
         Self {
             inner: Vec::new(),
@@ -64,11 +67,14 @@ impl WritePool {
         }
     }
 
+    /// Consume the `WritePool` and return the inner buffer and file descriptors.
     pub fn into_inner(self) -> (Vec<u8>, Vec<OwnedFd>) {
         (self.inner, self.fds)
     }
 }
 
+/// An in-memory buffer that implements `AsyncRead` and `AsyncReadWithFd`. Intended for testing
+/// purposes.
 #[derive(Debug)]
 pub struct ReadPool {
     inner: Vec<u8>,
@@ -158,6 +164,7 @@ impl AsyncReadWithFd for ReadPool {
 }
 
 impl ReadPool {
+    /// Create a new `ReadPool` with the given data and file descriptors.
     pub fn new(data: Vec<u8>, fds: Vec<RawFd>) -> Self {
         Self { inner: data, fds }
     }

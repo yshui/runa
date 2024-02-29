@@ -1,4 +1,4 @@
-use wl_scanner::generate_protocol;
+use runa_wayland_scanner_codegen::generate_protocol;
 #[test]
 fn generate() {
     let f = std::fs::File::open(
@@ -7,7 +7,7 @@ fn generate() {
             .join("wayland.xml"),
     )
     .unwrap();
-    let proto = wl_spec::parse::parse(f).unwrap();
+    let proto = spec_parser::parse::parse(f).unwrap();
 
     generate_protocol(&proto).unwrap();
 }

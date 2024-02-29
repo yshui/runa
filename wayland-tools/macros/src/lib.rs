@@ -1,5 +1,6 @@
 use proc_macro_error::ResultExt;
 #[proc_macro]
+#[proc_macro_error::proc_macro_error]
 pub fn generate_protocol(tokens: proc_macro::TokenStream) -> proc_macro::TokenStream {
     use std::io::Read;
     let tokens2 = tokens.clone();

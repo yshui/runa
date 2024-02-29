@@ -1,18 +1,27 @@
 use std::{
     ffi::CStr,
-    os::{fd::IntoRawFd, unix::prelude::AsRawFd},
+    os::{
+        fd::{IntoRawFd, OwnedFd},
+        unix::prelude::AsRawFd,
+    },
     pin::Pin,
 };
 
+use bytes::{buf, BufMut};
 use futures_lite::io::AsyncWriteExt;
-use wayland::wl_display::v1::{events, Event};
-use wl_io::utils::{ReadPool, WritePool};
-use wl_macros::generate_protocol;
-use wl_scanner_support::{
-    io::{buf::AsyncBufReadWithFd, de::Deserialize, ser::Serialize},
-    wayland_types::{Fd, NewId, Object, Str},
+use runa_io::{
+    traits::{
+        buf::{AsyncBufReadWithFd, Message},
+        de::Deserialize,
+        ser::Serialize,
+        WriteMessage,
+    },
+    utils::{ReadPool, WritePool},
+    Connection,
 };
-generate_protocol!("protocols/wayland.xml");
+use runa_wayland_types::{Fd, NewId, Object, Str};
+use wayland::wl_display::v1::{events, Event};
+runa_wayland_scanner::generate_protocol!("runa-wayland-protocols/spec/wayland.xml");
 
 #[test]
 fn test_roundtrip() {
@@ -20,27 +29,25 @@ fn test_roundtrip() {
         let orig_item = Event::Error(events::Error {
             object_id: Object(1),
             code:      2,
-            message:   Str(CStr::from_bytes_with_nul(b"test\0").unwrap()),
+            message:   Str(b"test"),
         });
-        let mut tx = WritePool::new();
+        let mut tx = Connection::new(WritePool::new(), 4096);
         // Put an object id
-        tx.write(&[0, 0, 0, 0]).await.unwrap();
-        orig_item.serialize(Pin::new(&mut tx));
-        let (buf, fds) = tx.into_inner();
+        tx.send(1, orig_item).await.unwrap();
+        tx.flush().await.unwrap();
+        let pool = tx.into_inner();
+        let (buf, fds) = pool.into_inner();
         let fds = fds
             .into_iter()
             .map(|fd| fd.into_raw_fd())
             .collect::<Vec<_>>();
 
         let mut rx = ReadPool::new(buf, fds);
-        let (object_id, _len, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
-        assert_eq!(object_id, 0);
-        let mut de = wl_io::de::Deserializer::new(bytes, fds);
-        let item = Event::deserialize(de.borrow_mut()).unwrap();
-        let (bytes_read, fds_read) = de.consumed();
-        // Drop the deserialize first to catch potential UB, i.e. the item doesnt borrow
-        // from the deserializer
-        drop(de);
+        let Message {
+            object_id, data, ..
+        } = Pin::new(&mut rx).next_message().await.unwrap();
+        assert_eq!(object_id, 1);
+        let item = Event::deserialize(data, &[]).unwrap();
 
         eprintln!("{:#?}", item);
         assert_eq!(
@@ -48,11 +55,9 @@ fn test_roundtrip() {
             &Event::Error(events::Error {
                 object_id: Object(1),
                 code:      2,
-                message:   Str(CStr::from_bytes_with_nul(b"test\0").unwrap()),
+                message:   Str(b"test"),
             })
         );
-        drop(item);
-        Pin::new(&mut rx).consume(bytes_read, fds_read);
         assert!(rx.is_eof());
     })
 }
@@ -70,11 +75,10 @@ fn test_roundtrip_with_fd() {
             size: 100,
         });
 
-        let mut tx = WritePool::new();
+        let mut tx = Connection::new(WritePool::new(), 4096);
         // Put an object id
-        Pin::new(&mut tx).write(&[0, 0, 0, 0]).await.unwrap();
-        orig_item.serialize(Pin::new(&mut tx));
-        let (buf, fds) = tx.into_inner();
+        tx.send(1, orig_item).await.unwrap();
+        let (buf, fds) = tx.into_inner().into_inner();
         eprintln!("{:x?}", buf);
 
         let fds = fds
@@ -82,14 +86,15 @@ fn test_roundtrip_with_fd() {
             .map(|fd| fd.into_raw_fd())
             .collect::<Vec<_>>();
         let mut rx = ReadPool::new(buf, fds);
-        let (object_id, _, bytes, fds) = Pin::new(&mut rx).next_message().await.unwrap();
-        assert_eq!(object_id, 0);
-        let mut de = wl_io::de::Deserializer::new(bytes, fds);
-        let item = Request::deserialize(de.borrow_mut()).unwrap();
-        let (bytes_read, fds_read) = de.consumed();
-        drop(de);
+        let Message {
+            object_id,
+            data,
+            fds,
+            ..
+        } = Pin::new(&mut rx).next_message().await.unwrap();
+        assert_eq!(object_id, 1);
+        let item = Request::deserialize(data, fds).unwrap();
         eprintln!("{:#?}", item);
-        Pin::new(&mut rx).consume(bytes_read, fds_read);
 
         // Compare the result skipping the file descriptor
         match item {
@@ -100,7 +105,6 @@ fn test_roundtrip_with_fd() {
             },
         }
 
-        // Making sure dropping the accessor advance the buffer.
         drop(item);
         assert!(rx.is_eof());
     })

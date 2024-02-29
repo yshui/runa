@@ -1112,7 +1112,7 @@ mod tests {
         let transform = Transform::_90;
 
         assert_eq!(
-            Rectangle::from_loc_and_size(Point::new(0, 10), Extent::new(40, 30)),
+            Rectangle::from_loc_and_size(Point::new(20, 30), Extent::new(40, 30)),
             transform.transform_rect_in(rect, &area)
         )
     }
@@ -1164,7 +1164,7 @@ mod tests {
         let transform = Transform::Flipped90;
 
         assert_eq!(
-            Rectangle::from_loc_and_size(Point::new(20, 30), Extent::new(40, 30)),
+            Rectangle::from_loc_and_size(Point::new(20, 10), Extent::new(40, 30)),
             transform.transform_rect_in(rect, &area)
         )
     }
@@ -1190,7 +1190,7 @@ mod tests {
         let transform = Transform::Flipped270;
 
         assert_eq!(
-            Rectangle::from_loc_and_size(Point::new(20, 10), Extent::new(40, 30)),
+            Rectangle::from_loc_and_size(Point::new(30, 30), Extent::new(40, 30)),
             transform.transform_rect_in(rect, &area)
         )
     }

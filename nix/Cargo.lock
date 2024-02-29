@@ -2244,6 +2244,7 @@ dependencies = [
  "futures-executor",
  "futures-lite 1.13.0",
  "futures-test",
+ "futures-util",
  "libc",
  "nix 0.26.4",
  "pin-project-lite",
@@ -2269,6 +2270,7 @@ dependencies = [
 name = "runa-macros"
 version = "0.0.1-alpha1"
 dependencies = [
+ "bytes",
  "darling",
  "futures-executor",
  "futures-lite 1.13.0",
@@ -2279,6 +2281,7 @@ dependencies = [
  "quote",
  "runa-io",
  "runa-wayland-scanner",
+ "runa-wayland-types",
  "syn 1.0.109",
 ]
 

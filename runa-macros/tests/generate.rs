@@ -1,20 +1,17 @@
 use std::{
     ffi::CStr,
     os::{
-        fd::{IntoRawFd, OwnedFd},
+        fd::{self, IntoRawFd, OwnedFd},
         unix::prelude::AsRawFd,
     },
     pin::Pin,
 };
 
 use bytes::{buf, BufMut};
-use futures_lite::io::AsyncWriteExt;
+use futures_lite::{io::AsyncWriteExt, AsyncBufReadExt};
 use runa_io::{
     traits::{
-        buf::{AsyncBufReadWithFd, Message},
-        de::Deserialize,
-        ser::Serialize,
-        WriteMessage,
+        de::Deserialize, ser::Serialize, AsyncBufReadWithFd, RawMessage, ReadMessage, WriteMessage,
     },
     utils::{ReadPool, WritePool},
     Connection,
@@ -43,7 +40,7 @@ fn test_roundtrip() {
             .collect::<Vec<_>>();
 
         let mut rx = ReadPool::new(buf, fds);
-        let Message {
+        let RawMessage {
             object_id, data, ..
         } = Pin::new(&mut rx).next_message().await.unwrap();
         assert_eq!(object_id, 1);
@@ -58,6 +55,9 @@ fn test_roundtrip() {
                 message:   Str(b"test"),
             })
         );
+
+        let (data_len, fds_len) = (rx.buffer().len(), rx.fds().len());
+        AsyncBufReadWithFd::consume(Pin::new(&mut rx), data_len, fds_len);
         assert!(rx.is_eof());
     })
 }
@@ -78,6 +78,7 @@ fn test_roundtrip_with_fd() {
         let mut tx = Connection::new(WritePool::new(), 4096);
         // Put an object id
         tx.send(1, orig_item).await.unwrap();
+        tx.flush().await.unwrap();
         let (buf, fds) = tx.into_inner().into_inner();
         eprintln!("{:x?}", buf);
 
@@ -86,7 +87,7 @@ fn test_roundtrip_with_fd() {
             .map(|fd| fd.into_raw_fd())
             .collect::<Vec<_>>();
         let mut rx = ReadPool::new(buf, fds);
-        let Message {
+        let RawMessage {
             object_id,
             data,
             fds,
@@ -106,6 +107,8 @@ fn test_roundtrip_with_fd() {
         }
 
         drop(item);
+        let (data_len, fds_len) = (rx.buffer().len(), rx.fds().len());
+        AsyncBufReadWithFd::consume(Pin::new(&mut rx), data_len, fds_len);
         assert!(rx.is_eof());
     })
 }

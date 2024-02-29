@@ -21,5 +21,4 @@ hashbrown.workspace = true
 
 [dev-dependencies]
 rust-format = { version = "0.3.4", features = ["token_stream"] }
-runa-wayland-scanner = { path = "../scanner" }
 spec-parser = { package = "runa-wayland-spec-parser", path = "../parser" }

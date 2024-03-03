@@ -43,9 +43,6 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     /// Eq and PartialEq should compare if the keys point to the same surface
     /// state.
     ///
-    /// Tokens to surface states should be reference counted, if a token to
-    /// a surface state exists, the surface state should not be freed.
-    ///
     /// A token must be released, impls of Shell can choose to panic
     /// if it was dropped it without being released.
     type Token: std::fmt::Debug + Copy + PartialEq + Eq + std::hash::Hash;

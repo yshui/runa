@@ -405,14 +405,7 @@ where
                     surface_state.pointer_events.clone(),
                     surface_state.keyboard_events.clone(),
                 ));
-                let current = shell.allocate(surface::SurfaceState::new(surface.clone()));
-                let current_state = shell.get_mut(current);
-                current_state.stack_index = Some(current_state.stack_mut().push_back(
-                    crate::shell::surface::SurfaceStackEntry {
-                        token:    current,
-                        position: Point::new(0, 0),
-                    },
-                ));
+                let current = shell.allocate(surface::SurfaceState::new_for(&surface));
                 surface.set_current(current);
                 surface.set_pending(current);
                 shell.post_commit(None, current);
@@ -618,7 +611,7 @@ where
                 .stack_mut()
                 .get_mut(role.stack_index)
                 .unwrap()
-                .position = Point::new(x, y);
+                .set_position(Point::new(x, y));
             Ok(())
         }
     }

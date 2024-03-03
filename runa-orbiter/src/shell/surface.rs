@@ -94,7 +94,7 @@ pub mod roles {
     /// # Note about cache and pending states
     ///
     /// A surface normally has a pending and a current state. Changes are
-    /// applied to the pending state first, then commited to the current
+    /// stored in the pending state first, then applied to the current
     /// state when `wl_surface.commit` is called.
     ///
     /// Subsurfaces has one more state - the cached state. This state exists if
@@ -128,35 +128,35 @@ pub mod roles {
         /// Note this index should be stable across parent updates, including
         /// appending to the stack, reordering the stack. a guarantee
         /// from VecList.
-        pub(crate) stack_index: Index<super::SurfaceStackEntry<S>>,
+        pub(crate) stack_index: Index<super::SurfaceStackEntry<S::Token>>,
         pub(super) parent:      Weak<super::Surface<S>>,
     }
 
-    #[derive(Derivative)]
-    #[derivative(Debug, Clone(bound = ""), Copy(bound = ""))]
-    pub(super) struct SubsurfaceState<S: Shell> {
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct SubsurfaceState<Token> {
         /// Parent surface *state* of this surface *state*. A surface state is
         /// only considered a parent after it has been committed. This
-        /// is different from the parent surface, which is the
-        /// `Rc<Surface>` that is the parent of this surface. A surface can have
-        /// multiple surface states each have different parent surface
-        /// states. But a surface can have only one parent surface.
+        /// is different from [`Subsurface::parent`], which is the
+        /// `Rc<Surface>` (surface, not surface state) that is the parent of
+        /// this surface. A surface can have multiple surface states
+        /// each have different parent surface states. But a surface can
+        /// have only one parent surface.
         ///
         /// A surface state can have multiple parents because of the sync
         /// mechanism of subsurfaces. i.e. a subsurface can be attached
         /// to a parent, then the parent has its own parent. When
-        /// the parent is committed, its old state will still be referenced by
-        /// the grandparent, and it will have a new committed state.
+        /// the parent commits, its old state will still be referenced by
+        /// the grandparent, and it will have a new cached state.
         /// Both the old state and the new state will be "parents"
         /// of this surface state.
         ///
         /// If that's the case, this field will point to the oldest, still valid
         /// parent. For states visible from a "root" surface (e.g. a
-        /// xdg_toplevel), this convienently forms a path towards the
+        /// xdg_toplevel), this conveniently forms a path towards the
         /// root's current state.
-        pub(super) parent: Option<S::Token>,
+        pub(super) parent: Option<Token>,
     }
-    impl<S: Shell> super::RoleState for SubsurfaceState<S> {}
+    impl<Token: std::fmt::Debug + Clone + 'static> super::RoleState for SubsurfaceState<Token> {}
     impl<S: Shell> Subsurface<S> {
         /// Attach a surface to a parent surface, and add the subsurface role to
         /// id.
@@ -176,10 +176,13 @@ pub mod roles {
                 return false
             }
             let parent_pending = parent.pending_mut(shell);
-            let stack_index = parent_pending.stack.push_front(super::SurfaceStackEntry {
-                token:    surface.current_key(),
-                position: Point::new(0, 0),
-            });
+            let stack_index =
+                parent_pending
+                    .stack
+                    .push_front(super::SurfaceStackEntry::Subsurface {
+                        token:    surface.current_key(),
+                        position: Point::new(0, 0),
+                    });
             let role = Self {
                 sync: true,
                 inherited_sync: true,
@@ -195,10 +198,10 @@ pub mod roles {
             surface.set_role(role, shell);
             surface
                 .current_mut(shell)
-                .set_role_state(SubsurfaceState::<S> { parent: None });
+                .set_role_state(SubsurfaceState::<S::Token> { parent: None });
             surface
                 .pending_mut(shell)
-                .set_role_state(SubsurfaceState::<S> { parent: None });
+                .set_role_state(SubsurfaceState::<S::Token> { parent: None });
             true
         }
 
@@ -222,12 +225,12 @@ pub mod roles {
             if !self.is_active {
                 return
             }
-            // Deactivating the subsurface role is immediate, but we don't know how many
-            // other surface states that are referencing this subsurface state,
-            // as our parent can have any number of "cached" states.  So we
-            // can't remove ourself from them. Instead we mark it inactive, and
-            // skip over inactive states when we iterate over the subsurface
-            // tree.
+            // Deactivating the subsurface role is immediate, but we don't know
+            // how many other surface states there are that are referencing this
+            // subsurface state, as our ancestors can have any number of "cached"
+            // states. And we aren't keeping track of all of them. Instead we
+            // mark it inactive, and skip over inactive states when we iterate
+            // over the subsurface tree.
             self.is_active = false;
 
             // Remove ourself from parent's pending stack, so when the parent
@@ -261,14 +264,20 @@ pub mod roles {
                 .stack
                 .get_mut(self.stack_index)
                 .unwrap();
-            parent_pending_stack_entry.token = surface.current_key();
+            let super::SurfaceStackEntry::Subsurface { token, .. } = parent_pending_stack_entry
+            else {
+                panic!("subsurface stack entry has unexpected type")
+            };
+            // TODO: pending_state should just hold Rc<Surface>, instead of a surface state
+            // token.
+            *token = surface.current_key();
 
             // the current state is now referenced by the parent's pending state,
             // clear the parent field. (parent could have been set because pending state was
             // cloned from a previous current state)
             let current = surface.current_mut(shell);
             let role_state = current
-                .role_state_mut::<SubsurfaceState<S>>()
+                .role_state_mut::<SubsurfaceState<S::Token>>()
                 .expect("subsurface role state missing")
                 .expect("subsurface role state has unexpected type");
             role_state.parent = None;
@@ -289,6 +298,7 @@ pub mod roles {
                 /// Advance the front pointer to the next surface in the
                 /// stack. The next surface might be deactivated.
                 fn $next_maybe_deactivated(&mut self) {
+                    use super::SurfaceState;
                     if self.head[0].0 == self.head[1].0 {
                         self.is_empty = true;
                     }
@@ -300,10 +310,11 @@ pub mod roles {
                     let curr_head = &mut self.head[$id];
 
                     let ret = self.shell.get(curr_head.0);
-                    if let Some((next, offset)) = ret
-                        .stack_index
-                        .and_then(|i| ret.$next_in_stack(i, self.shell))
-                    {
+                    if let Some((next, offset)) = SurfaceState::$next_in_stack(
+                        curr_head.0,
+                        ret.stack_index.into(),
+                        self.shell,
+                    ) {
                         curr_head.1 += offset;
                         curr_head.0 = next;
                     } else {
@@ -316,7 +327,7 @@ pub mod roles {
                         let mut offset = curr_head.1;
                         *curr_head = loop {
                             let role_state = curr
-                                .role_state::<SubsurfaceState<S>>()
+                                .role_state::<SubsurfaceState<S::Token>>()
                                 .expect("subsurface role state missing")
                                 .expect("subsurface role state has unexpected type");
                             let parent_key = role_state.parent.unwrap_or_else(|| {
@@ -330,11 +341,13 @@ pub mod roles {
                             let curr_surface = curr.surface.upgrade().unwrap();
                             let stack_index =
                                 curr_surface.role::<Subsurface<S>>().unwrap().stack_index;
-                            offset -= parent.stack.get(stack_index).unwrap().position;
+                            offset -= parent.stack.get(stack_index).unwrap().position();
 
-                            if let Some((next, next_offset)) =
-                                parent.$next_in_stack(stack_index, self.shell)
-                            {
+                            if let Some((next, next_offset)) = SurfaceState::$next_in_stack(
+                                parent_key,
+                                stack_index.into(),
+                                self.shell,
+                            ) {
                                 offset += next_offset;
                                 break (next, offset)
                             }
@@ -408,25 +421,55 @@ pub mod roles {
 
 /// A entry in a surface's stack
 ///
-/// Each surface has a stack, composed of itself and its subsurfaces.
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""), Clone(bound = ""))]
-pub struct SurfaceStackEntry<S: Shell> {
-    /// The token of the surface in the stack. Note, a surface is in its own
-    /// stack too.
-    pub(crate) token:    S::Token,
-    pub(crate) position: Point<i32, coords::Surface>,
+/// Each surface has a stack, composed of the surface itself and its
+/// subsurfaces.
+#[derive(Debug, Clone)]
+pub(crate) enum SurfaceStackEntry<Token> {
+    /// The surface itself
+    Self_,
+    /// A subsurface
+    Subsurface {
+        token:    Token,
+        position: Point<i32, coords::Surface>,
+    },
 }
 
-impl<S: Shell> SurfaceStackEntry<S> {
-    /// Position of the surface relative to its parent.
-    pub fn position(&self) -> Point<i32, coords::Surface> {
-        self.position
+/// Index into a surface's stack
+#[derive(Derivative)]
+#[derivative(Debug(bound = ""), Clone(bound = ""), Copy(bound = ""))]
+pub struct SurfaceStackIndex<Token>(pub(crate) Index<SurfaceStackEntry<Token>>);
+
+impl<T> From<Index<SurfaceStackEntry<T>>> for SurfaceStackIndex<T> {
+    fn from(index: Index<SurfaceStackEntry<T>>) -> Self {
+        Self(index)
     }
 }
 
-/// To support the current state and the pending state double buffering, the
-/// surface state must be deep cloneable.
+impl<Token> SurfaceStackEntry<Token> {
+    /// Position of a surface in a stack, relative to the surface the stack
+    /// belongs to.
+    pub(crate) fn position(&self) -> Point<i32, coords::Surface> {
+        match self {
+            SurfaceStackEntry::Self_ => Point::new(0, 0),
+            SurfaceStackEntry::Subsurface { position, .. } => *position,
+        }
+    }
+
+    pub(crate) fn set_position(&mut self, position: Point<i32, coords::Surface>) {
+        match self {
+            SurfaceStackEntry::Self_ => panic!("cannot set position of self"),
+            SurfaceStackEntry::Subsurface { position: p, .. } => *p = position,
+        }
+    }
+
+    pub(crate) fn is_self(&self) -> bool {
+        matches!(self, SurfaceStackEntry::Self_)
+    }
+}
+
+/// The surface state
+///
+/// This holds the modifiable states of a surface.
 pub struct SurfaceState<S: Shell> {
     surface:                       Weak<Surface<S>>,
     /// The index just pass the last frame callback attached to this surface.
@@ -436,10 +479,9 @@ pub struct SurfaceState<S: Shell> {
     /// store the index of the last frame callback.
     pub(crate) frame_callback_end: u32,
     /// A stack of child surfaces and self.
-    stack:                         VecList<SurfaceStackEntry<S>>,
+    stack:                         VecList<SurfaceStackEntry<S::Token>>,
     /// The position of this surface state in its own stack.
-    /// None if the stack is just self.
-    pub(crate) stack_index:        Option<Index<SurfaceStackEntry<S>>>,
+    pub(crate) stack_index:        Index<SurfaceStackEntry<S::Token>>,
     buffer:                        Option<AttachedBuffer<S::Buffer>>,
     // HACK! TODO: properly implement pending commit
     buffer_changed:                bool,
@@ -464,26 +506,28 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
 
 impl<S: Shell> SurfaceState<S> {
     /// Create a new surface state
-    pub fn new(surface: Rc<Surface<S>>) -> Self {
+    pub fn new_for(surface: &Rc<Surface<S>>) -> Self {
+        let mut stack = VecList::new();
+        let stack_index = stack.push_back(SurfaceStackEntry::Self_);
         Self {
-            surface:            Rc::downgrade(&surface),
+            surface: Rc::downgrade(surface),
             frame_callback_end: 0,
-            stack:              Default::default(),
-            stack_index:        None,
-            buffer:             None,
-            buffer_changed:     false,
-            buffer_scale:       120,
-            role_state:         None,
+            stack,
+            stack_index,
+            buffer: None,
+            buffer_changed: false,
+            buffer_scale: 120,
+            role_state: None,
         }
     }
 
     /// Returns a reference to the surface stack in this surface state
-    pub fn stack(&self) -> &VecList<SurfaceStackEntry<S>> {
+    pub(crate) fn stack(&self) -> &VecList<SurfaceStackEntry<S::Token>> {
         &self.stack
     }
 
     /// Returns unique reference to the surface stack in this surface state
-    pub fn stack_mut(&mut self) -> &mut VecList<SurfaceStackEntry<S>> {
+    pub(crate) fn stack_mut(&mut self) -> &mut VecList<SurfaceStackEntry<S::Token>> {
         &mut self.stack
     }
 }
@@ -507,7 +551,8 @@ impl<S: Shell> SurfaceState<S> {
     /// any. None if this surface is not a subsurface.
     pub fn parent(&self) -> Option<S::Token> {
         let role_state = self.role_state.as_ref()?;
-        let role_state = (&**role_state as &dyn Any).downcast_ref::<roles::SubsurfaceState<S>>()?;
+        let role_state =
+            (&**role_state as &dyn Any).downcast_ref::<roles::SubsurfaceState<S::Token>>()?;
         role_state.parent
     }
 
@@ -517,55 +562,20 @@ impl<S: Shell> SurfaceState<S> {
         let mut offset = Point::new(0, 0);
         loop {
             let next = shell.get(this);
-            if let Some(first) = next.stack.front() {
-                // `top` is the  next surface in `self`'s stack, but it isn't necessarily the
-                // next surface in the entire subtree stack. Because `top`
-                // itself can have a stack. So we need to
-                // recursively find the top most surface in `top`'s stack.
-                if this != first.token {
-                    this = first.token;
-                    offset += first.position;
-                } else {
-                    // `top` is the top of its own stack, so we don't need to keep descending.
-                    break
-                }
-            } else {
-                break
+            let first = next.stack.front().unwrap();
+            // `top` is the  next surface in `self`'s stack, but it isn't necessarily the
+            // next surface in the entire subtree stack. Because `top`
+            // itself can have a stack. So we need to recursively find the top most surface
+            // in `top`'s stack. Unless `top` points to `Self_` in which case we are done.
+            match first {
+                SurfaceStackEntry::Self_ => break,
+                &SurfaceStackEntry::Subsurface { token, position } => {
+                    this = token;
+                    offset += position;
+                },
             }
         }
         (this, offset)
-    }
-
-    /// The the surface on top of the `index` surface in the subtree rooted at
-    /// this surface. Returns the token, and it's offset relative to this
-    /// surface.
-    ///
-    /// # Example
-    ///
-    /// Say surface A has stack "B A C D", and surface D has stack "E D F G".
-    /// Then `A.next_in_stack(C)` will return E. Because D is the next surface
-    /// of C in A's stack, and the first surface of D's stack is E.
-    pub fn next_in_stack(
-        &self,
-        index: Index<SurfaceStackEntry<S>>,
-        shell: &S,
-    ) -> Option<(S::Token, Point<i32, coords::Surface>)> {
-        let next_index = self.stack.get_next_index(index);
-        if let Some(next_index) = next_index {
-            // Safety: next_index is a valid index returned by
-            // get_next_index/get_previous_index
-            let next_child = unsafe { self.stack.get_unchecked(next_index) };
-            if next_index != self.stack_index.unwrap() {
-                let (top, offset) = Self::top(next_child.token, shell);
-                Some((top, offset + next_child.position))
-            } else {
-                // Next surface in self's stack is self itself, so we don't need to keep
-                // descending.
-                Some((next_child.token, next_child.position))
-            }
-        } else {
-            None
-        }
     }
 
     /// Find the bottom of the subtree rooted at this surface. Returns the
@@ -580,18 +590,49 @@ impl<S: Shell> SurfaceState<S> {
         let mut offset = Point::new(0, 0);
         loop {
             let next = shell.get(this);
-            if let Some(last) = next.stack.back() {
-                if this != last.token {
-                    this = last.token;
-                    offset += last.position;
-                } else {
-                    break
-                }
-            } else {
-                break
+            let last = next.stack.back().unwrap();
+            match last {
+                SurfaceStackEntry::Self_ => break, /* `bottom` is the bottom of its own stack, so *
+                                                    * we don't need to keep descending. */
+                &SurfaceStackEntry::Subsurface { token, position } => {
+                    this = token;
+                    offset += position;
+                },
             }
         }
         (this, offset)
+    }
+
+    /// The the surface on top of the `index` surface in the subtree rooted at
+    /// this surface. Returns the token, and it's offset relative to this
+    /// surface.
+    ///
+    /// # Example
+    ///
+    /// Say surface A has stack "B A C D", and surface D has stack "E D F G".
+    /// Then `A.next_in_stack(C)` will return E. Because D is the next surface
+    /// of C in A's stack, and the top-most surface of D's subtree is E.
+    pub fn next_in_stack(
+        this: S::Token,
+        index: SurfaceStackIndex<S::Token>,
+        shell: &S,
+    ) -> Option<(S::Token, Point<i32, coords::Surface>)> {
+        let this_surface = shell.get(this);
+        let next_index = this_surface.stack.get_next_index(index.0);
+        if let Some(next_index) = next_index {
+            // Safety: next_index is a valid index returned by
+            // get_next_index/get_previous_index
+            let next_child = unsafe { this_surface.stack.get_unchecked(next_index) };
+            match next_child {
+                SurfaceStackEntry::Self_ => Some((this, Point::new(0, 0))),
+                &SurfaceStackEntry::Subsurface { token, position } => {
+                    let (top, offset) = Self::top(token, shell);
+                    Some((top, offset + position))
+                },
+            }
+        } else {
+            None
+        }
     }
 
     /// The the surface beneath the `index` surface in the subtree rooted at
@@ -605,18 +646,20 @@ impl<S: Shell> SurfaceState<S> {
     /// surface of D in A's stack, and the bottom most surface of C's stack
     /// is G.
     pub fn prev_in_stack(
-        &self,
-        index: Index<SurfaceStackEntry<S>>,
+        this: S::Token,
+        index: SurfaceStackIndex<S::Token>,
         shell: &S,
     ) -> Option<(S::Token, Point<i32, coords::Surface>)> {
-        let prev_index = self.stack.get_previous_index(index);
+        let this_surface = shell.get(this);
+        let prev_index = this_surface.stack.get_previous_index(index.0);
         if let Some(prev_index) = prev_index {
-            let prev_child = unsafe { self.stack.get_unchecked(prev_index) };
-            if prev_index != self.stack_index.unwrap() {
-                let (bottom, offset) = Self::bottom(prev_child.token, shell);
-                Some((bottom, offset + prev_child.position))
-            } else {
-                Some((prev_child.token, prev_child.position))
+            let prev_child = unsafe { this_surface.stack.get_unchecked(prev_index) };
+            match prev_child {
+                SurfaceStackEntry::Self_ => Some((this, Point::new(0, 0))),
+                &SurfaceStackEntry::Subsurface { token, position } => {
+                    let (bottom, offset) = Self::bottom(token, shell);
+                    Some((bottom, offset + position))
+                },
             }
         } else {
             None
@@ -709,9 +752,13 @@ impl<S: Shell> SurfaceState<S> {
             .map(|s| (&mut **s as &mut dyn Any).downcast_mut::<T>())
     }
 
-    /// Assuming `token` is going to be released, scan the tree for any
-    /// transient children that can be freed as well, and append them to
-    /// `queue`.
+    /// Assuming surface state `token` is going to be released, scan the tree
+    /// for any transient children that might be able to be freed as well,
+    /// and append them to `queue`.
+    ///
+    /// Items found by this function aren't guaranteed to be freed, if some of
+    /// them are referenced by a version of the surface state, then they
+    /// will be resurrected later, in [`Surface::apply_pending`].
     pub fn scan_for_freeing(token: S::Token, shell: &S, queue: &mut Vec<S::Token>) {
         let this = shell.get(token);
         let mut head = queue.len();
@@ -723,18 +770,22 @@ impl<S: Shell> SurfaceState<S> {
             let token = queue[head];
             let state = shell.get(token);
             for e in state.stack.iter() {
-                if e.token == token {
-                    continue
-                }
-                let child_state = shell.get(e.token);
-                let child_subsurface_state = (&**child_state.role_state.as_ref().unwrap()
-                    as &dyn Any)
-                    .downcast_ref::<roles::SubsurfaceState<S>>()
-                    .unwrap();
-                let parent = child_subsurface_state.parent;
-                if parent.map(|p| p == token).unwrap_or(true) {
-                    // `token` is the oldest parent of child, so we can free the child.
-                    queue.push(e.token);
+                if let &SurfaceStackEntry::Subsurface {
+                    token: child_token, ..
+                } = e
+                {
+                    let child_state = shell.get(child_token);
+                    let child_subsurface_state = (&**child_state.role_state.as_ref().unwrap()
+                        as &dyn Any)
+                        .downcast_ref::<roles::SubsurfaceState<S::Token>>()
+                        .unwrap();
+                    let parent = child_subsurface_state.parent;
+                    if parent.map(|p| p == token).unwrap_or(true) {
+                        // `token` is the oldest parent of child, so we might be able to free this
+                        // child, if a newer version of the surface state
+                        // doesn't reference it.
+                        queue.push(child_token);
+                    }
                 }
             }
             head += 1;
@@ -777,7 +828,7 @@ pub struct Surface<S: super::Shell> {
     /// The pending state of the surface, this will be moved to
     /// [`Self::current`] when commit is called
     ///
-    /// FIXME: this implementation is not comformant to the wayland protocol
+    /// FIXME: this implementation is not conformant to the wayland protocol
     /// spec.
     pending:                    Cell<Option<S::Token>>,
     /// List of of all the unfired frame callbacks associated with this surface,
@@ -899,6 +950,7 @@ impl<S: Shell> Surface<S> {
         // Update the frame callback indices
         {
             let new_state = shell.get_mut(new_current);
+            // TODO(yshui): handle overflow
             new_state.frame_callback_end =
                 self.first_frame_callback_index.get() + self.frame_callbacks.borrow().len() as u32;
         }
@@ -925,7 +977,7 @@ impl<S: Shell> Surface<S> {
         scratch_buffer.push(new_current);
         let mut head = free_candidates_end;
 
-        // Recursively update descendents' parent_info now we have committed.
+        // Recursively update descendants' parent_info now we have committed.
         // A descendent's parent info will be updated if it is None, which means it
         // either hasn't been referenced by a committed surface state yet, or
         // the above freeing process has freed its old parent. In both cases, we
@@ -935,25 +987,27 @@ impl<S: Shell> Surface<S> {
             let state = shell.get(token);
             let child_start = scratch_buffer.len();
             for e in state.stack.iter() {
-                if e.token == token {
-                    continue
+                if let &SurfaceStackEntry::Subsurface {
+                    token: child_token, ..
+                } = e
+                {
+                    let child_state = shell.get(child_token);
+                    let child_subsurface_state = child_state
+                        .role_state::<roles::SubsurfaceState<S::Token>>()
+                        .expect("subsurface role state missing")
+                        .expect("subsurface role state has unexpected type");
+                    if child_subsurface_state.parent.is_some() {
+                        continue
+                    }
+                    tracing::debug!("{:?} is still reachable", child_token);
+                    scratch_buffer.push(child_token);
                 }
-                let child_state = shell.get(e.token);
-                let child_subsurface_state = child_state
-                    .role_state::<roles::SubsurfaceState<S>>()
-                    .expect("subsurface role state missing")
-                    .expect("subsurface role state has unexpected type");
-                if child_subsurface_state.parent.is_some() {
-                    continue
-                }
-                tracing::debug!("{:?} is still reachable", e.token);
-                scratch_buffer.push(e.token);
             }
             for &child_token in &scratch_buffer[child_start..] {
                 let child_state = shell.get_mut(child_token);
                 let child_subsurface_state = (&mut **child_state.role_state.as_mut().unwrap()
                     as &mut dyn Any)
-                    .downcast_mut::<roles::SubsurfaceState<S>>()
+                    .downcast_mut::<roles::SubsurfaceState<S::Token>>()
                     .unwrap();
                 child_subsurface_state.parent = Some(new_current);
             }
@@ -976,7 +1030,7 @@ impl<S: Shell> Surface<S> {
     /// TODO: FIXME: this implementation of commit is inaccurate. Per wayland
     /// spec, the pending state is not a shadow state, where changes are
     /// applied to. Instead it's a collection of pending changes, that are
-    /// applied to the current state when commited. The difference is
+    /// applied to the current state when committed. The difference is
     /// subtle. For example, if buffer transform changes between two
     /// damage_buffer requests, both requests should use the new transform;
     /// instead of the first using the old transform and the second using
@@ -1072,20 +1126,9 @@ impl<S: Shell> Surface<S> {
                 "Creating a new pending state for surface {}",
                 self.object_id
             );
-            let current_key = self.current_key();
             let new_pending_key = shell.allocate(self.current(shell).clone());
             let new_pending_state = shell.get_mut(new_pending_key);
-
-            // the current_state's stack has an entry that points to current_state itself,
-            // and new_pending_state is a copy of that. so we need to update that to point
-            // to the new_pending_state itself.
-            new_pending_state
-                .stack
-                .iter_mut()
-                .find(|e| e.token == current_key)
-                .unwrap()
-                .token = new_pending_key;
-            new_pending_state.buffer_changed = false;
+            new_pending_state.buffer_changed = false; // HACK: force a buffer update even if the user hasn't done it yet
             self.set_pending(new_pending_key);
         }
         shell.get_mut(self.pending_key())
@@ -1195,12 +1238,15 @@ impl<S: Shell> Surface<S> {
             // orphan all our children
             let current_key = self.current_key();
             for child in stack {
-                if child.token == current_key {
-                    continue
-                }
-                let child = shell.get_mut(child.token);
+                let SurfaceStackEntry::Subsurface {
+                    token: child_token, ..
+                } = child
+                else {
+                    continue;
+                };
+                let child = shell.get_mut(child_token);
                 let role_state = child
-                    .role_state_mut::<roles::SubsurfaceState<S>>()
+                    .role_state_mut::<roles::SubsurfaceState<S::Token>>()
                     .expect("subsurface role state missing")
                     .expect("subsurface role state has unexpected type");
                 if role_state.parent == Some(current_key) {

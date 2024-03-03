@@ -964,8 +964,8 @@ impl<S: Shell> Surface<S> {
             let child_state = shell.get_mut(child_token);
             if let Some(role_state) = child_state.role_state.as_mut() {
                 let child_subsurface_state = (&mut **role_state as &mut dyn Any)
-                    .downcast_mut::<roles::SubsurfaceState<S>>()
-                    .unwrap();
+                    .downcast_mut::<roles::SubsurfaceState<S::Token>>()
+                    .expect("subsurface role state has unexpected type");
                 child_subsurface_state.parent = None;
             }
         }

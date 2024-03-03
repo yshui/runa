@@ -7,3 +7,5 @@ vgcore.*
 dhat.out.*
 perf.data
 perf.data.old
+/.direnv
+rustc-ice-*

@@ -461,10 +461,14 @@ fn main() -> Result<()> {
         output_global_id
     );
     let shell2 = server.0.shell.clone();
+    tracing::debug!("Starting renderer");
+    let renderer = smol::block_on(render::Renderer::new(
+        window.clone(),
+        window.inner_size(),
+        shell2,
+    ));
     tracing::debug!("Size: {:?}", window.inner_size());
     let _render = server.0.executor.spawn(async move {
-        tracing::debug!("Starting renderer");
-        let renderer = render::Renderer::new(window.clone(), window.inner_size(), shell2).await;
         tracing::debug!("Starting render loop");
         renderer.render_loop(event_rx).await;
     });

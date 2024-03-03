@@ -4,6 +4,7 @@ use std::{
     os::{fd::OwnedFd, unix::net::UnixStream},
     pin::Pin,
     rc::Rc,
+    sync::Arc,
 };
 
 use anyhow::Result;
@@ -406,19 +407,19 @@ fn main() -> Result<()> {
         use winit::platform::x11::EventLoopBuilderExtX11;
         let el = winit::event_loop::EventLoopBuilder::new()
             .with_any_thread(true)
-            .build();
-        let window = winit::window::WindowBuilder::new()
-            .with_title("Crescent")
-            .with_maximized(true)
-            .build(&el)
+            .build()
             .unwrap();
+        let window = Arc::new(
+            winit::window::WindowBuilder::new()
+                .with_title("Crescent")
+                .with_maximized(true)
+                .build(&el)
+                .unwrap(),
+        );
         tx.send(window).unwrap();
         let event_tx = event_tx;
-        el.run(move |event, _, cf| {
-            cf.set_wait();
-            let Some(event) = event.to_static() else {
-                return
-            };
+        el.run(move |event, el| {
+            el.set_control_flow(winit::event_loop::ControlFlow::Wait);
             smol::block_on(event_tx.send(event)).unwrap();
         })
     });
@@ -462,13 +463,16 @@ fn main() -> Result<()> {
     let shell2 = server.0.shell.clone();
     tracing::debug!("Size: {:?}", window.inner_size());
     let _render = server.0.executor.spawn(async move {
-        let renderer = render::Renderer::new(&window, window.inner_size(), shell2).await;
+        tracing::debug!("Starting renderer");
+        let renderer = render::Renderer::new(window.clone(), window.inner_size(), shell2).await;
+        tracing::debug!("Starting render loop");
         renderer.render_loop(event_rx).await;
     });
 
     let (listener, _guard) = runa_core::wayland_listener_auto()?;
     let server2 = server.clone();
     let cm_task = server.0.executor.spawn(async move {
+        tracing::debug!("Starting connection manager");
         let listener = smol::Async::new(listener)?;
         let incoming = Box::pin(
             listener

@@ -139,7 +139,9 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 // TODO: handle buffer transform
                 let relative_position = position - offset.to::<NotNan<f32>>();
                 let surface_state = self.get(surface_token);
-                let Some(buffer) = surface_state.buffer() else { continue };
+                let Some(buffer) = surface_state.buffer() else {
+                    continue
+                };
                 let dimension = buffer
                     .dimension()
                     .to()
@@ -215,7 +217,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             MouseButton::Left => input_event_codes_sys::BTN_LEFT,
             MouseButton::Right => input_event_codes_sys::BTN_RIGHT,
             MouseButton::Middle => input_event_codes_sys::BTN_MIDDLE,
-            MouseButton::Other(_) => return,
+            MouseButton::Other(_) | MouseButton::Back | MouseButton::Forward => return,
         };
         surface.pointer_event(PointerActivity::Button {
             button,

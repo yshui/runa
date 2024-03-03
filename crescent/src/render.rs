@@ -1,7 +1,9 @@
 use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
 
 use ordered_float::NotNan;
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+use raw_window_handle::{
+    HasDisplayHandle, HasRawDisplayHandle, HasRawWindowHandle, HasWindowHandle,
+};
 use runa_orbiter::{
     shell::{
         buffers::{self, BufferLike as _},
@@ -11,7 +13,7 @@ use runa_orbiter::{
 };
 use runa_wayland_protocols::wayland::wl_shm::v1 as wl_shm;
 use smol::channel::Receiver;
-use wgpu::{include_wgsl, util::DeviceExt};
+use wgpu::{include_wgsl, util::DeviceExt, WasmNotSend};
 use winit::{dpi::PhysicalSize, event::Event};
 
 use crate::shell::DefaultShell;
@@ -22,8 +24,9 @@ pub struct BufferData {
 }
 pub type Buffer = buffers::UserBuffer<buffers::Buffer<buffers::BufferBase>, BufferData>;
 pub struct Renderer {
+    adapter:        wgpu::Adapter,
     device:         wgpu::Device,
-    surface:        Option<wgpu::Surface>,
+    surface:        Option<wgpu::Surface<'static>>,
     queue:          wgpu::Queue,
     size:           PhysicalSize<u32>,
     pipeline:       wgpu::RenderPipeline,
@@ -67,6 +70,21 @@ struct Uniforms {
     dimension: [f32; 2],
 }
 
+fn physical_key_to_scancode(key: winit::keyboard::PhysicalKey) -> Option<u32> {
+    use winit::keyboard::{
+        NativeKeyCode::{self, Android, MacOS, Windows, Xkb},
+        PhysicalKey::{Code, Unidentified},
+    };
+    match key {
+        Code(code) => Some(code as u32),
+        Unidentified(NativeKeyCode::Unidentified) => None,
+        Unidentified(Android(code)) => Some(code),
+        Unidentified(MacOS(code)) => Some(code as u32),
+        Unidentified(Windows(code)) => Some(code as u32),
+        Unidentified(Xkb(code)) => Some(code),
+    }
+}
+
 impl Renderer {
     fn create_uniforms(
         device: &wgpu::Device,
@@ -91,16 +109,20 @@ impl Renderer {
         })
     }
 
-    pub async fn new<H: HasRawDisplayHandle + HasRawWindowHandle>(
-        handle: &H,
+    pub async fn new<H: HasDisplayHandle + HasWindowHandle + WasmNotSend + Sync + 'static>(
+        handle: H,
         size: PhysicalSize<u32>,
         shell: Rc<RefCell<DefaultShell<Buffer>>>,
     ) -> Renderer {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends:             wgpu::Backends::PRIMARY,
             dx12_shader_compiler: wgpu::Dx12Compiler::Fxc,
+            flags:                wgpu::InstanceFlags::DEBUG | wgpu::InstanceFlags::VALIDATION,
+            gles_minor_version:   wgpu::Gles3MinorVersion::Automatic,
         });
-        let surface = unsafe { instance.create_surface(handle) }.unwrap();
+        tracing::debug!("instance created");
+        let surface = instance.create_surface(handle).unwrap();
+        tracing::debug!("surface created");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference:       wgpu::PowerPreference::HighPerformance,
@@ -109,18 +131,20 @@ impl Renderer {
             })
             .await
             .unwrap();
+        tracing::debug!("adapter created");
         let format = surface.get_capabilities(&adapter).formats[0];
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::CLEAR_TEXTURE,
-                    limits: adapter.limits(),
+                    required_features: wgpu::Features::CLEAR_TEXTURE,
+                    required_limits: adapter.limits(),
                     ..Default::default()
                 },
                 None,
             )
             .await
             .unwrap();
+        tracing::debug!("device and queue created");
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   None,
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -218,14 +242,14 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
+        let default_config = surface
+            .get_default_config(&adapter, size.width, size.height)
+            .expect("adapter doesn't support surface");
         surface.configure(&device, &wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width,
-            height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
+            ..default_config
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("Index Buffer"),
@@ -248,6 +272,7 @@ impl Renderer {
             index_buffer,
             format,
             frame_count: 0,
+            adapter,
         }
     }
 
@@ -269,7 +294,9 @@ impl Renderer {
             for (subsurface, offset) in subsurface_iter(window.surface_state, &*shell) {
                 let relative_scale = output_scale / window_scale;
                 let state = shell.get(subsurface);
-                let Some(buffer) = state.buffer() else { continue };
+                let Some(buffer) = state.buffer() else {
+                    continue
+                };
                 let raw_dimensions = buffer.dimension();
                 // Scale the buffer size to output scale
                 let dimensions = raw_dimensions.map::<coords::Screen>(|dim| {
@@ -349,13 +376,9 @@ impl Renderer {
                                 wgpu::ImageDataLayout {
                                     offset:         0,
                                     // TODO: reject 0 stride
-                                    bytes_per_row:  Some(
-                                        NonZeroU32::new(shm_buffer.stride() as u32).unwrap(),
-                                    ),
+                                    bytes_per_row:  Some(shm_buffer.stride() as u32),
                                     // TODO: reject 0 height
-                                    rows_per_image: Some(
-                                        NonZeroU32::new(raw_dimensions.h).unwrap(),
-                                    ),
+                                    rows_per_image: Some(raw_dimensions.h),
                                 },
                                 wgpu::Extent3d {
                                     width:                 raw_dimensions.w,
@@ -432,10 +455,12 @@ impl Renderer {
                         resolve_target: None,
                         ops:            wgpu::Operations {
                             load:  wgpu::LoadOp::Load,
-                            store: true,
+                            store: wgpu::StoreOp::Store,
                         },
                     })],
                     depth_stencil_attachment: None,
+                    timestamp_writes:         None,
+                    occlusion_query_set:      None,
                 });
                 pass.set_pipeline(&self.pipeline);
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -453,13 +478,15 @@ impl Renderer {
         self.frame_count += 1;
     }
 
-    pub async fn render_loop(mut self, event_rx: Receiver<Event<'static, ()>>) -> ! {
+    pub async fn render_loop(mut self, event_rx: Receiver<Event<()>>) -> ! {
         tracing::debug!("Start render loop");
         let mut pending_size: Option<PhysicalSize<u32>> = None;
         let (remote_tx, rx) = smol::channel::bounded(1);
         let (tx, remote_rx) = smol::channel::bounded(1);
         std::thread::spawn(move || loop {
-            let Ok(surface): Result<wgpu::Surface, _> = smol::block_on(remote_rx.recv()) else { break };
+            let Ok(surface): Result<wgpu::Surface, _> = smol::block_on(remote_rx.recv()) else {
+                break
+            };
             let output = surface.get_current_texture().unwrap();
             tracing::trace!("Got surface texture");
             smol::block_on(remote_tx.send((surface, output))).unwrap();
@@ -475,14 +502,12 @@ impl Renderer {
                             DefaultShell::update_size(&self.shell, Extent::new(new_size.width, new_size.height)).await;
                             drop(output);
                             // size changed, reconfigure surface
+                            let default_config = surface.get_default_config(&self.adapter, new_size.width, new_size.height).expect("adapter doesn't support surface");
                             surface.configure(&self.device, &wgpu::SurfaceConfiguration {
-                                usage:        wgpu::TextureUsages::RENDER_ATTACHMENT,
                                 format:       self.format,
-                                width:        new_size.width,
-                                height:       new_size.height,
                                 present_mode: wgpu::PresentMode::Fifo,
                                 alpha_mode:   wgpu::CompositeAlphaMode::Auto,
-                                view_formats: vec![],
+                                ..default_config
                             });
                             tx.try_send(surface).unwrap();
                             self.uniform = Self::create_uniforms(&self.device, &self.uniform_layout, new_size);
@@ -522,9 +547,9 @@ impl Renderer {
                                     let pressed = matches!(state, winit::event::ElementState::Pressed);
                                     self.shell.borrow_mut().pointer_button(button, pressed);
                                 }
-                                WindowEvent::KeyboardInput { input, .. } => {
-                                    let pressed = matches!(input.state, winit::event::ElementState::Pressed);
-                                    self.shell.borrow_mut().key(input.scancode as u8, pressed);
+                                WindowEvent::KeyboardInput { event, .. } => {
+                                    let pressed = matches!(event.state, winit::event::ElementState::Pressed);
+                                    self.shell.borrow_mut().key(physical_key_to_scancode(event.physical_key).unwrap() as u8, pressed);
                                 }
                                 _ => {
                                     tracing::trace!("Unhandled window event: {:?}", event);

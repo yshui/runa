@@ -110,6 +110,7 @@ pub enum AnyObject {
     Surface(objects::compositor::Surface<Shell>),
     Subcompositor(objects::compositor::Subcompositor),
     Subsurface(objects::compositor::Subsurface<Shell>),
+    Region(objects::compositor::Region),
 
     // === seat ===
     Seat(objects::input::Seat),

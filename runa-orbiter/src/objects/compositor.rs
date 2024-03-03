@@ -18,7 +18,7 @@ use runa_core::{
 };
 use runa_io::traits::WriteMessage;
 use runa_wayland_protocols::wayland::{
-    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output,
+    wl_compositor::v6 as wl_compositor, wl_output::v4 as wl_output, wl_region::v1 as wl_region,
     wl_subcompositor::v1 as wl_subcompositor, wl_subsurface::v1 as wl_subsurface,
     wl_surface::v6 as wl_surface,
 };
@@ -175,10 +175,7 @@ where
 
     fn frame(ctx: &mut Ctx, object_id: u32, callback: wayland_types::NewId) -> Self::FrameFut<'_> {
         async move {
-            let ClientParts {
-                objects,
-                ..
-            } = ctx.as_mut_parts();
+            let ClientParts { objects, .. } = ctx.as_mut_parts();
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects
                 .try_insert_with(callback.0, || {
@@ -288,7 +285,7 @@ where
     ) -> Self::SetInputRegionFut<'_> {
         async move {
             tracing::error!(object_id, ?region, "set_input_region not implemented");
-            Err(error::Error::NotImplemented("wl_surface.set_input_region"))
+            Ok(())
         }
     }
 
@@ -299,7 +296,6 @@ where
     ) -> Self::SetOpaqueRegionFut<'_> {
         async move {
             tracing::error!(object_id, ?region, "set_opaque_region not implemented");
-            //Err(error::Error::NotImplemented("wl_surface.set_opaque_region"))
             Ok(())
         }
     }
@@ -369,7 +365,7 @@ pub struct Compositor;
 impl<Ctx: Client, Sh: Shell> wl_compositor::RequestDispatch<Ctx> for Compositor
 where
     Ctx::ServerContext: HasShell<Shell = Sh>,
-    Ctx::Object: From<Surface<Sh>>,
+    Ctx::Object: From<Surface<Sh>> + From<Region>,
 {
     type Error = error::Error;
 
@@ -421,13 +417,73 @@ where
     }
 
     fn create_region(
-        _ctx: &mut Ctx,
+        ctx: &mut Ctx,
         object_id: u32,
         id: wayland_types::NewId,
     ) -> Self::CreateRegionFut<'_> {
         async move {
-            tracing::error!(object_id, ?id, "create_region not implemented");
-            Err(error::Error::NotImplemented("wl_compositor.create_region"))
+            tracing::error!(object_id, ?id, "create_region semi-stub");
+            let ClientParts {
+                server_context,
+                objects,
+                event_dispatcher,
+                ..
+            } = ctx.as_mut_parts();
+
+            objects
+                .insert(id.0, Region)
+                .map(|_| ())
+                .map_err(|_| error::Error::IdExists(id.0))
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Region;
+
+#[wayland_object]
+impl<Ctx: Client> wl_region::RequestDispatch<Ctx> for Region
+where
+    Ctx::Object: From<Region>,
+{
+    type Error = error::Error;
+
+    type AddFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+    type DestroyFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+    type SubtractFut<'a> = impl Future<Output = Result<(), Self::Error>> + 'a;
+
+    fn destroy(ctx: &mut Ctx, object_id: u32) -> Self::DestroyFut<'_> {
+        async move {
+            ctx.objects_mut().remove(object_id).unwrap();
+            Ok(())
+        }
+    }
+
+    fn subtract(
+        _ctx: &mut Ctx,
+        object_id: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Self::SubtractFut<'_> {
+        async move {
+            tracing::error!(object_id, x, y, width, height, "subtract not implemented");
+            Ok(())
+        }
+    }
+
+    fn add(
+        _ctx: &mut Ctx,
+        object_id: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Self::AddFut<'_> {
+        async move {
+            tracing::error!(object_id, x, y, width, height, "add not implemented");
+            Ok(())
         }
     }
 }
@@ -480,8 +536,8 @@ where
             // automatically in that case.
 
             let Some(output_state) = objects.get_state::<crate::objects::Output>() else {
-                // This client has no bound output object, so just update the current outputs, and we
-                // will be done.
+                // This client has no bound output object, so just update the current outputs,
+                // and we will be done.
                 let surface_state = objects.get_state_mut::<Surface<S>>().unwrap();
                 std::mem::swap(current_outputs, &mut surface_state.new_outputs);
                 return Ok(EventHandlerAction::Keep);
@@ -546,14 +602,14 @@ where
     fn set_sync(_ctx: &mut Ctx, object_id: u32) -> Self::SetSyncFut<'_> {
         async move {
             tracing::error!(object_id, "set_sync not implemented");
-            Err(error::Error::NotImplemented("wl_subsurface.set_sync"))
+            Ok(())
         }
     }
 
     fn set_desync(_ctx: &mut Ctx, object_id: u32) -> Self::SetDesyncFut<'_> {
         async move {
             tracing::error!(object_id, "set_desync not implemented");
-            Err(error::Error::NotImplemented("wl_subsurface.set_desync"))
+            Ok(())
         }
     }
 

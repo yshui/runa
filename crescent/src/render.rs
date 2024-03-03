@@ -1,8 +1,8 @@
-use std::{cell::RefCell, num::NonZeroU32, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use ordered_float::NotNan;
 use raw_window_handle::{
-    HasDisplayHandle, HasRawDisplayHandle, HasRawWindowHandle, HasWindowHandle,
+    HasDisplayHandle, HasWindowHandle,
 };
 use runa_orbiter::{
     shell::{

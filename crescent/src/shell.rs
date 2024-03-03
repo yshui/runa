@@ -292,7 +292,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 // coordinates are Y-up.
                 let rectangle =
                     Rectangle::from_loc_and_size(offset.map(|o| o + root_position), geometry);
-                let output = self.screen.outputs.get(0).unwrap();
+                let output = self.screen.outputs.first().unwrap();
                 tracing::debug!(
                     ?geometry,
                     ?rectangle,
@@ -340,7 +340,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
 
     /// Change the size of the only output in this shell.
     pub async fn update_size(this: &RefCell<Self>, size: Extent<u32, coords::Screen>) {
-        let output = this.borrow().screen.outputs.get(0).unwrap().clone();
+        let output = this.borrow().screen.outputs.first().unwrap().clone();
         if size != output.size() {
             tracing::debug!("Updating output size to {:?}", size);
             output.set_size(size);
@@ -358,7 +358,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
     }
 
     pub fn scale_f32(&self) -> Scale<f32> {
-        self.screen.outputs.get(0).unwrap().scale_f32()
+        self.screen.outputs.first().unwrap().scale_f32()
     }
 }
 
@@ -404,7 +404,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         assert!(data.is_current);
 
         if role == "xdg_toplevel" {
-            let output = self.screen.outputs.get(0).unwrap();
+            let output = self.screen.outputs.first().unwrap();
             let position = self.position_offset;
             let window = Window {
                 surface_state: key,
@@ -446,7 +446,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         }
 
         let (_, data) = &mut self.storage.get_mut(new).unwrap();
-        let output = self.screen.outputs.get(0).unwrap();
+        let output = self.screen.outputs.first().unwrap();
         assert!(
             !data.is_current,
             "a current state was committed to current again? {new:?}"

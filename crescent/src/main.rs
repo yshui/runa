@@ -21,7 +21,7 @@ use runa_core::{
 };
 use runa_io::{
     buf::BufReaderWithFd,
-    traits::{AsyncBufReadWithFd, ReadMessage, WriteMessage as _},
+    traits::{ReadMessage, WriteMessage as _},
     Connection,
 };
 use runa_orbiter::{

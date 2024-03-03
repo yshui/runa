@@ -3,7 +3,7 @@
 use std::{any::Any, error::Error, pin::Pin};
 
 use futures_core::{Future, Stream};
-use runa_io::traits::{AsyncBufReadWithFd, ReadMessage, WriteMessage};
+use runa_io::traits::{ReadMessage, WriteMessage};
 
 use crate::{events, objects};
 

@@ -40,7 +40,7 @@ impl<Object: objects::AnyObject> Store<Object> {
         match self.by_type.entry(type_id) {
             hash_map::Entry::Occupied(mut v) => {
                 let (_, ids) = v.get_mut();
-                let removed = ids.remove(&id);
+                let removed = ids.swap_remove(&id);
                 assert!(removed);
                 if ids.is_empty() {
                     v.remove();
@@ -113,7 +113,7 @@ impl UpdatesAggregate {
                 match (o.get(), &item) {
                     (Inserted { .. }, Removed { .. }) => {
                         // Inserted + Removed = ()
-                        o.remove();
+                        o.swap_remove();
                     },
                     (
                         Removed {

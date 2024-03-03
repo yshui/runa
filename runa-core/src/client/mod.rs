@@ -29,7 +29,7 @@ use std::{os::fd::RawFd, pin::Pin};
 
 #[doc(inline)]
 pub use event_dispatcher::EventDispatcher;
-use runa_io::traits::{AsyncBufReadWithFd, ReadMessage};
+use runa_io::traits::ReadMessage;
 #[doc(inline)]
 pub use store::Store;
 
@@ -56,7 +56,7 @@ where
     Ctx: traits::Client,
     Ctx::Object: for<'b> crate::objects::Object<Ctx, Request<'b> = (&'b [u8], &'b [RawFd])>,
 {
-    use runa_io::traits::{RawMessage, WriteMessage, ReadMessage};
+    use runa_io::traits::{RawMessage, WriteMessage};
     use runa_wayland_protocols::wayland::wl_display::v1 as wl_display;
     use runa_wayland_types as types;
     use traits::Store;

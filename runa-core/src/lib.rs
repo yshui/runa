@@ -169,7 +169,7 @@ pub fn wayland_listener(
     let path = xdg_dirs.place_runtime_file(display)?;
     let lock_path = xdg_dirs.place_runtime_file(format!("{display}.lock"))?;
     let lock = rustix::fs::openat(
-        rustix::fs::cwd(),
+        rustix::fs::CWD,
         lock_path,
         rustix::fs::OFlags::CREATE,
         rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,

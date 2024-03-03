@@ -58,7 +58,7 @@
         nativeBuildInputs = [ pkg-config cmake rust-toolchain ];
         buildInputs = [ libxkbcommon ];
         shellHook = ''
-          export LD_LIBRARY_PATH="${lib.makeLibraryPath runtimeDependencies}:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="${lib.makeLibraryPath (runtimeDependencies ++ [ wayland ])}:$LD_LIBRARY_PATH"
         '';
         LIBCLANG_PATH = lib.makeLibraryPath [ llvmPackages_17.libclang.lib ];
 

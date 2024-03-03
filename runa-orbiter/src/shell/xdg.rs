@@ -73,7 +73,7 @@ impl Surface {
         _object_id: u32,
     ) -> Result<(), &'static str> {
         tracing::debug!("Committing xdg_surface");
-        if surface.pending(shell).buffer().is_some() && self.last_ack.is_none() {
+        if surface.pending().buffer().is_some() && self.last_ack.is_none() {
             return Err("Cannot attach buffer before the initial configure sequence is completed")
         }
         if self.pending_serial.is_empty() && self.last_ack.is_none() {

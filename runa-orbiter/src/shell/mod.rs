@@ -48,7 +48,7 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     type Token: std::fmt::Debug + Copy + PartialEq + Eq + std::hash::Hash;
 
     /// A buffer type. We allow a user supplied buffer type instead of `dyn
-    /// Buffer` to avoid virutal call overhead, and allow for a more
+    /// Buffer` to avoid virtual call overhead, and allow for a more
     /// flexible Buffer trait.
     type Buffer: buffers::BufferLike;
 

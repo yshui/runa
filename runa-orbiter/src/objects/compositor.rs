@@ -177,15 +177,12 @@ where
         async move {
             let ClientParts {
                 objects,
-                server_context,
                 ..
             } = ctx.as_mut_parts();
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects
                 .try_insert_with(callback.0, || {
-                    let mut shell = server_context.shell().borrow_mut();
-                    let state = surface.pending_mut(&mut shell);
-                    state.add_frame_callback(callback.0);
+                    surface.add_frame_callback(callback.0);
                     runa_core::objects::Callback::default().into()
                 })
                 .is_some();
@@ -215,8 +212,7 @@ where
             let buffer = ctx.objects().get::<crate::objects::Buffer<
                 <Ctx::ServerContext as HasBuffer>::Buffer,
             >>(buffer.0)?;
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = this.inner.pending_mut(&mut shell);
+            let mut state = this.inner.pending_mut();
             state.set_buffer_from_object(buffer);
             Ok(())
         }
@@ -234,8 +230,7 @@ where
             // TODO: make use of the provided damage rectangle, instead of damage the whole
             // buffer
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = this.inner.pending_mut(&mut shell);
+            let state = this.inner.pending();
             state.damage_buffer();
             Ok(())
         }
@@ -253,8 +248,7 @@ where
             // TODO: make use of the provided damage rectangle, instead of damage the whole
             // buffer
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let state = this.inner.pending_mut(&mut shell);
+            let state = this.inner.pending();
             state.damage_buffer();
             Ok(())
         }
@@ -281,9 +275,7 @@ where
     fn set_buffer_scale(ctx: &mut Ctx, object_id: u32, scale: i32) -> Self::SetBufferScaleFut<'_> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut shell = ctx.server_context().shell().borrow_mut();
-            let pending_mut = this.inner.pending_mut(&mut shell);
-
+            let mut pending_mut = this.inner.pending_mut();
             pending_mut.set_buffer_scale(scale as u32 * 120);
             Ok(())
         }
@@ -400,15 +392,13 @@ where
             let create_surface_object = |surface_state: &mut SurfaceState<Sh::Token>| {
                 let shell = server_context.shell();
                 let mut shell = shell.borrow_mut();
-                let surface = Rc::new(surface::Surface::new(
+                let surface = surface::Surface::new(
                     id,
+                    &mut *shell,
                     surface_state.pointer_events.clone(),
                     surface_state.keyboard_events.clone(),
-                ));
-                let current = shell.allocate(surface::SurfaceState::new_for(&surface));
-                surface.set_current(current);
-                surface.set_pending(current);
-                shell.post_commit(None, current);
+                );
+                shell.post_commit(None, surface.current_key());
 
                 tracing::debug!("id {} is surface {:p}", id.0, surface);
                 let rx = <_ as EventSource<OutputEvent>>::subscribe(&*surface);
@@ -602,12 +592,12 @@ where
     fn set_position(ctx: &mut Ctx, object_id: u32, x: i32, y: i32) -> Self::SetPositionFut<'_> {
         async move {
             let surface = ctx.objects().get::<Self>(object_id).unwrap().0.clone();
-            let mut shell = ctx.server_context().shell().borrow_mut();
             let role = surface
                 .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
-            let parent = role.parent().upgrade().unwrap().pending_mut(&mut shell);
-            parent
+            let parent = role.parent().upgrade().unwrap();
+            let mut parent_stack_pending = parent.pending_mut();
+            parent_stack_pending
                 .stack_mut()
                 .get_mut(role.stack_index)
                 .unwrap()

@@ -487,7 +487,6 @@ pub struct PendingSurfaceState<S: Shell> {
     buffer:             Option<AttachedBuffer<S::Buffer>>,
     buffer_scale:       Option<u32>,
     stack:              VecList<SurfaceStackEntry<S::Token>>,
-    stack_index:        Index<SurfaceStackEntry<S::Token>>,
     role_state:         Option<Box<dyn RoleState>>,
     frame_callback_end: u32,
 }
@@ -499,7 +498,6 @@ impl<S: Shell> Debug for PendingSurfaceState<S> {
             .field("buffer", &self.buffer.as_ref().map(|b| b.inner.object_id()))
             .field("buffer_scale", &self.buffer_scale)
             .field("stack", &self.stack)
-            .field("stack_index", &self.stack_index)
             .field("role_state", &self.role_state)
             .field("frame_callback_end", &self.frame_callback_end)
             .finish()
@@ -550,6 +548,12 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
     }
 }
 
+impl<S: Shell> Default for SurfaceState<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S: Shell> SurfaceState<S> {
     /// Create a new surface state
     fn new() -> Self {
@@ -580,7 +584,7 @@ impl<S: Shell> SurfaceState<S> {
             surface: self.surface.clone(),
             frame_callback_end: changes.frame_callback_end,
             stack: changes.stack.clone(),
-            stack_index: changes.stack_index,
+            stack_index: self.stack_index,
             buffer: changes.buffer.take(),
             buffer_scale: changes.buffer_scale.unwrap_or(self.buffer_scale),
             role_state,
@@ -914,17 +918,15 @@ impl<S: Shell> Surface<S> {
         pointer_events: broadcast::Ring<PointerEvent>,
         keyboard_events: broadcast::Ring<KeyboardEvent>,
     ) -> Rc<Self> {
-        let state_key = shell.allocate(SurfaceState::new());
-        let mut stack = VecList::new();
-        let stack_index = stack.push_back(SurfaceStackEntry::Self_);
+        let surface_state = SurfaceState::new();
         let pending_state = RefCell::new(PendingSurfaceState {
-            stack,
-            stack_index,
+            stack: surface_state.stack.clone(),
             buffer: None,
             role_state: None,
             buffer_scale: None,
             frame_callback_end: 0,
         });
+        let state_key = shell.allocate(surface_state);
         let surface = Rc::new(Self {
             current: Cell::new(Some(state_key)),
             pending_state,

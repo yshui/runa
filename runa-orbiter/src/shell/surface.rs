@@ -156,6 +156,9 @@ pub mod roles {
         /// xdg_toplevel), this conveniently forms a path towards the
         /// root's current state.
         pub(super) parent: Option<Token>,
+
+        /// See [`Subsurface::stack_index`]
+        pub(super) stack_index: Index<super::SurfaceStackEntry<Token>>,
     }
     impl<Token: std::fmt::Debug + Clone + 'static> super::RoleState for SubsurfaceState<Token> {}
     impl<S: Shell> Subsurface<S> {
@@ -199,7 +202,10 @@ pub mod roles {
             surface.set_role(role, shell);
             surface
                 .pending_mut()
-                .set_role_state(SubsurfaceState::<S::Token> { parent: None });
+                .set_role_state(SubsurfaceState::<S::Token> {
+                    parent: None,
+                    stack_index,
+                });
             true
         }
 
@@ -334,9 +340,7 @@ pub mod roles {
                                 )
                             });
                             let parent = self.shell.get(parent_key);
-                            let curr_surface = curr.surface.upgrade().unwrap();
-                            let stack_index =
-                                curr_surface.role::<Subsurface<S>>().unwrap().stack_index;
+                            let stack_index = role_state.stack_index;
                             offset -= parent.stack.get(stack_index).unwrap().position();
 
                             if let Some((next, next_offset)) = SurfaceState::$next_in_stack(
@@ -357,9 +361,13 @@ pub mod roles {
                         use super::Role;
                         self.$next_maybe_deactivated();
                         let ret = self.shell.get(self.head[0].0);
-                        let ret_surface = ret.surface.upgrade().unwrap();
-                        let role = ret_surface.role::<Subsurface<S>>();
-                        if role.map(|r| r.is_active()).unwrap_or(true) {
+                        let role_active = ret.surface.upgrade().map_or(
+                            false, // If the surface is destroyed, its role must be inactive
+                            // If the surface doesn't have subsurface role, it must be a top
+                            // level surface
+                            |s| s.role::<Subsurface<S>>().map_or(true, |r| r.is_active()),
+                        );
+                        if role_active {
                             break
                         }
                     }
@@ -917,10 +925,10 @@ impl<S: Shell> Surface<S> {
     ) -> Rc<Self> {
         let surface_state = SurfaceState::new();
         let pending_state = RefCell::new(PendingSurfaceState {
-            stack: surface_state.stack.clone(),
-            buffer: None,
-            role_state: None,
-            buffer_scale: None,
+            stack:              surface_state.stack.clone(),
+            buffer:             None,
+            role_state:         None,
+            buffer_scale:       None,
             frame_callback_end: 0,
         });
         let state_key = shell.allocate(surface_state);

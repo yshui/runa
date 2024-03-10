@@ -991,6 +991,10 @@ impl<S: Shell> Surface<S> {
     fn apply_pending(&self, shell: &mut S, scratch_buffer: &mut Vec<S::Token>) {
         let mut pending = self.pending_mut();
         let current = self.current_key();
+        tracing::debug!(
+            "applying pending state {current:?} state: {:?} pending: {pending:?}",
+            shell.get(current)
+        );
         scratch_buffer.clear();
 
         // Find potentially free-able surface states and set their parents to
@@ -1214,6 +1218,10 @@ impl<S: Shell> Surface<S> {
         self.deactivate_role(shell);
 
         if self.current(shell).parent().is_none() {
+            tracing::debug!(
+                "Surface {:p} is not referenced by any parent, freeing",
+                self
+            );
             self.apply_pending(shell, scratch_buffer);
             for &token in scratch_buffer.iter() {
                 let state = shell.get(token);
@@ -1267,6 +1275,11 @@ impl<S: Shell> Surface<S> {
 
     /// Deactivate the role assigned to this surface.
     pub fn deactivate_role(&self, shell: &mut S) {
+        tracing::debug!(
+            "Deactivating role of surface {:p}, role_state: {:?}",
+            self,
+            self.current(shell).role_state
+        );
         if let Some(role) = self.role.borrow_mut().as_mut() {
             if role.is_active() {
                 role.deactivate(shell);

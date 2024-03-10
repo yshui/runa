@@ -97,6 +97,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
     /// Notify the listeners that surfaces in this shell has been rendered.
     /// Should be called by your renderer implementation.
     pub fn notify_render(&self) -> impl std::future::Future<Output = ()> {
+        tracing::trace!("Notifying render");
         self.shell_event.broadcast_owned(ShellEvent::Render)
     }
 

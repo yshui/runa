@@ -55,7 +55,7 @@
         default = crescent;
       };
       devShells.default = mkShell {
-        nativeBuildInputs = [ pkg-config cmake rust-toolchain ];
+        nativeBuildInputs = [ pkg-config cmake rust-toolchain mold cargo-bloat ];
         buildInputs = [ libxkbcommon ];
         shellHook = ''
           export LD_LIBRARY_PATH="${lib.makeLibraryPath (runtimeDependencies ++ [ wayland ])}:$LD_LIBRARY_PATH"

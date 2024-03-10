@@ -147,10 +147,8 @@ use crate::{
 ///
 ///     fn new_singleton_state(&self) -> Box<dyn std::any::Any> {
 ///         match self {
-///             MyObject::A(_) =>
-///                 Box::new(<A as MonoObject>::new_singleton_state()),
-///             MyObject::B(_) =>
-///                 Box::new(<B as MonoObject>::new_singleton_state()),
+///             MyObject::A(_) => Box::new(<A as MonoObject>::new_singleton_state()),
+///             MyObject::B(_) => Box::new(<B as MonoObject>::new_singleton_state()),
 ///         }
 ///     }
 /// }

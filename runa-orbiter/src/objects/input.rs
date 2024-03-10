@@ -139,8 +139,8 @@ macro_rules! def_new_surface_handler {
                 message: &'ctx mut Self::Message,
             ) -> Self::Future<'ctx> {
                 let Some(receiver_state) = objects.get_state::<$receiver>() else {
-                                        return futures_util::future::ok(EventHandlerAction::Stop)
-                                    };
+                    return futures_util::future::ok(EventHandlerAction::Stop)
+                };
                 match message.kind {
                     StoreUpdateKind::Inserted {
                         interface: wl_surface::NAME,
@@ -163,7 +163,8 @@ macro_rules! def_new_surface_handler {
                             // This is the first surface object inserted, setup event
                             // listeners
                             tracing::debug!(
-                                "First surface created, setting up event listeners for {}", stringify!($event)
+                                "First surface created, setting up event listeners for {}",
+                                stringify!($event)
                             );
                             let rx = <_ as EventSource<$event>>::subscribe(surface_state);
                             receiver_state.handle.replace(Some(rx));
@@ -720,8 +721,10 @@ where
                 }
                 self.focus = None;
                 let PointerActivity::Motion { coords, .. } = message.kind else {
-                    tracing::error!("Bug in the compositor: first pointer event on a \
-                                     surface is not a motion event, ignored. (event is {message:?})");
+                    tracing::error!(
+                        "Bug in the compositor: first pointer event on a surface is not a motion \
+                         event, ignored. (event is {message:?})"
+                    );
                     return Ok(EventHandlerAction::Keep);
                 };
                 self.focus = Some((message.object_id, coords));

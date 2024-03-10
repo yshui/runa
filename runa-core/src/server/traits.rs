@@ -3,6 +3,7 @@
 use std::{cell::RefCell, future::Future, rc::Rc};
 
 use derive_where::derive_where;
+
 use crate::{
     client::traits::Client,
     events::EventSource,

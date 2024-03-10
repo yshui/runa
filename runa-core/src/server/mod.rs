@@ -3,6 +3,7 @@
 use std::{future::Future, rc::Rc};
 
 use derive_where::derive_where;
+
 use crate::{
     events::{self, EventSource},
     Serial,

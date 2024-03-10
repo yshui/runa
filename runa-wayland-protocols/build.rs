@@ -6,7 +6,8 @@ use runa_wayland_spec_parser as spec;
 fn main() {
     use std::io::Write;
 
-    let protocols = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("spec");
+    let protocols =
+        std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("spec");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     println!("cargo:rerun-if-changed={}", protocols.display());
     let generate_from_dir = |name: &str| {

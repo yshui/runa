@@ -358,10 +358,7 @@ where
             }
 
             let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
-            this.inner.destroy(
-                &mut shell,
-                &mut state.scratch_buffer,
-            );
+            this.inner.destroy(&mut shell, &mut state.scratch_buffer);
 
             objects.remove(object_id).unwrap();
             Ok(())

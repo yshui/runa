@@ -344,12 +344,10 @@ pub fn wayland_object(
         has_lifetime,
     } = item;
 
-    let Some(last_seg_args) = trait_
-        .segments
-        .last()
-        .map(|s| &s.arguments) else
-    {
-        return syn::Error::new_spanned(&trait_, "Trait path must not be empty").to_compile_error().into();
+    let Some(last_seg_args) = trait_.segments.last().map(|s| &s.arguments) else {
+        return syn::Error::new_spanned(&trait_, "Trait path must not be empty")
+            .to_compile_error()
+            .into();
     };
     let ctx = match last_seg_args {
         syn::PathArguments::Parenthesized(_) | syn::PathArguments::None =>
@@ -598,18 +596,21 @@ pub fn interface_message_dispatch_for_enum(
         || syn::parse_str("::runa_core").unwrap(),
         |s| syn::parse_str(&s.value()).unwrap(),
     );
-    let Some(first_var) = body.iter().next() else { return syn::Error::new_spanned(
-        &orig_item,
-        "Enum must have at least one variant",
-    ).to_compile_error().into()};
-    let syn::Fields::Unnamed(first_var) = &first_var.fields else { return syn::Error::new_spanned(
-        first_var,
-        "Enum must have one variant"
-    ).to_compile_error().into() };
-    let Some(first_var) = first_var.unnamed.first() else { return syn::Error::new_spanned(
-        first_var,
-        "Enum variant must have at least one field",
-    ).to_compile_error().into()};
+    let Some(first_var) = body.iter().next() else {
+        return syn::Error::new_spanned(&orig_item, "Enum must have at least one variant")
+            .to_compile_error()
+            .into()
+    };
+    let syn::Fields::Unnamed(first_var) = &first_var.fields else {
+        return syn::Error::new_spanned(first_var, "Enum must have one variant")
+            .to_compile_error()
+            .into()
+    };
+    let Some(first_var) = first_var.unnamed.first() else {
+        return syn::Error::new_spanned(first_var, "Enum variant must have at least one field")
+            .to_compile_error()
+            .into()
+    };
     let var2 = body.iter().map(|v| {
         if v.discriminant.is_some() {
             quote! {
@@ -636,7 +637,9 @@ pub fn interface_message_dispatch_for_enum(
         }
     });
     let froms = body.iter().map(|v| {
-        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
+        let syn::Fields::Unnamed(fields) = &v.fields else {
+            panic!()
+        };
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
@@ -648,21 +651,27 @@ pub fn interface_message_dispatch_for_enum(
         }
     });
     let casts = body.iter().map(|v| {
-        let syn::Fields::Unnamed(_) = &v.fields else { panic!() };
+        let syn::Fields::Unnamed(_) = &v.fields else {
+            panic!()
+        };
         let v = &v.ident;
         quote! {
             #ident::#v(f) => (f as &dyn ::std::any::Any).downcast_ref()
         }
     });
     let cast_muts = body.iter().map(|v| {
-        let syn::Fields::Unnamed(_) = &v.fields else { panic!() };
+        let syn::Fields::Unnamed(_) = &v.fields else {
+            panic!()
+        };
         let v = &v.ident;
         quote! {
             #ident::#v(f) => (f as &mut dyn ::std::any::Any).downcast_mut()
         }
     });
     let interfaces = body.iter().map(|v| {
-        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
+        let syn::Fields::Unnamed(fields) = &v.fields else {
+            panic!()
+        };
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {
@@ -726,7 +735,9 @@ pub fn interface_message_dispatch_for_enum(
         }
     });
     let type_ids = body.iter().map(|v| {
-        let syn::Fields::Unnamed(fields) = &v.fields else { panic!() };
+        let syn::Fields::Unnamed(fields) = &v.fields else {
+            panic!()
+        };
         let ty_ = &fields.unnamed.first().unwrap().ty;
         let v = &v.ident;
         quote! {

@@ -799,8 +799,8 @@ impl<S: Shell> SurfaceState<S> {
             .map(|s| (&**s as &dyn Any).downcast_ref::<T>())
     }
 
-    /// Get a mut reference to the set of all unfired frame callbacks attached to
-    /// the surface.
+    /// Get a mut reference to the set of all unfired frame callbacks attached
+    /// to the surface.
     pub(crate) fn frame_callbacks_mut(&mut self) -> &mut TinyVecDeq<[u32; 4]> {
         &mut self.frame_callbacks
     }

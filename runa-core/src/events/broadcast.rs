@@ -2,8 +2,8 @@
 
 use std::{future::Future, pin::Pin};
 
-use derive_where::derive_where;
 use async_broadcast::TrySendError;
+use derive_where::derive_where;
 /// An event source implementation based on the [`async_broadcast`]
 /// channels.
 ///

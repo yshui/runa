@@ -216,11 +216,14 @@ where
             // Already stopped
             let should_retain = *this.should_retain;
             assert!(self.handler.is_some());
-            return (self.coerce_lifetime(), if should_retain {
-                traits::EventHandlerAction::Keep
-            } else {
-                traits::EventHandlerAction::Stop
-            });
+            return (
+                self.coerce_lifetime(),
+                if should_retain {
+                    traits::EventHandlerAction::Keep
+                } else {
+                    traits::EventHandlerAction::Stop
+                },
+            );
         };
         stop_signal.send();
 

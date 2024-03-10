@@ -130,7 +130,9 @@ where
             };
 
             use hashbrown::hash_map::Entry;
-            let Entry::Occupied(mut all_outputs_entry) = state.all_outputs.entry(object.output.clone()) else {
+            let Entry::Occupied(mut all_outputs_entry) =
+                state.all_outputs.entry(object.output.clone())
+            else {
                 panic!("Output object not found in all_outputs");
             };
 

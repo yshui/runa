@@ -318,9 +318,11 @@ impl<'a, D: 'a> IntoIterator for &'a IdAlloc<D> {
 ///
 /// # Example
 ///
-/// This is an comprehensive example of how to use this and related macros, and traits.
+/// This is an comprehensive example of how to use this and related macros, and
+/// traits.
 ///
-/// Please refer to the documentation of referenced macros and traits for more details.
+/// Please refer to the documentation of referenced macros and traits for more
+/// details.
 ///
 /// ```rust
 /// #![feature(impl_trait_in_assoc_type)]
@@ -402,8 +404,9 @@ impl<'a, D: 'a> IntoIterator for &'a IdAlloc<D> {
 /// of objects for your compositor, you must include all the objects these
 /// globals bind to. Otherwise, your code will not compile.
 ///
-/// If you get inpenetrable error messages from using this (as well as from [`objects::Object`]),
-/// make sure your `ClientContext` does implement [`client::traits::Client`] properly first.
+/// If you get inpenetrable error messages from using this (as well as from
+/// [`objects::Object`]), make sure your `ClientContext` does implement
+/// [`client::traits::Client`] properly first.
 
 #[macro_export]
 macro_rules! globals {

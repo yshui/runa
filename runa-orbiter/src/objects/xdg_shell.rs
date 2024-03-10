@@ -367,7 +367,9 @@ where
 #[derive_where(Debug)]
 pub struct TopLevel<S: Shell>(
     pub(crate) Rc<crate::shell::surface::Surface<S>>,
-    crate::utils::AutoAbort,
+    // Intentionally not used, it's here so when the TopLevel object is dropped, the event stream
+    // will be terminated automatically.
+    #[allow(dead_code)] crate::utils::AutoAbort,
 );
 
 #[wayland_object]

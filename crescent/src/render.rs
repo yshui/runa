@@ -68,21 +68,6 @@ struct Uniforms {
     dimension: [f32; 2],
 }
 
-fn physical_key_to_scancode(key: winit::keyboard::PhysicalKey) -> Option<u32> {
-    use winit::keyboard::{
-        NativeKeyCode::{self, Android, MacOS, Windows, Xkb},
-        PhysicalKey::{Code, Unidentified},
-    };
-    match key {
-        Code(code) => Some(code as u32),
-        Unidentified(NativeKeyCode::Unidentified) => None,
-        Unidentified(Android(code)) => Some(code),
-        Unidentified(MacOS(code)) => Some(code as u32),
-        Unidentified(Windows(code)) => Some(code as u32),
-        Unidentified(Xkb(code)) => Some(code),
-    }
-}
-
 impl Renderer {
     fn create_uniforms(
         device: &wgpu::Device,

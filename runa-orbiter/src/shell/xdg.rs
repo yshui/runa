@@ -2,7 +2,6 @@
 
 use std::{collections::VecDeque, num::NonZeroU32};
 
-use derive_where::derive_where;
 use runa_core::provide_any::Demand;
 use runa_wayland_protocols::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,

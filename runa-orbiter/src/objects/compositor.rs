@@ -433,9 +433,7 @@ where
         async move {
             tracing::error!(object_id, ?id, "create_region semi-stub");
             let ClientParts {
-                server_context,
                 objects,
-                event_dispatcher,
                 ..
             } = ctx.as_mut_parts();
 

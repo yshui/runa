@@ -13,7 +13,8 @@ use derive_where::derive_where;
 #[derive_where(Clone)]
 pub struct Broadcast<E>(
     async_broadcast::Sender<E>,
-    async_broadcast::InactiveReceiver<E>,
+    // Intentionally not used, just here to keep the receiver alive
+    #[allow(dead_code)] async_broadcast::InactiveReceiver<E>,
 );
 
 /// An event source implementation based on the [`async_broadcast`]
@@ -28,7 +29,8 @@ pub struct Broadcast<E>(
 #[derive_where(Clone)]
 pub struct Ring<E>(
     async_broadcast::Sender<E>,
-    async_broadcast::InactiveReceiver<E>,
+    // Intentionally not used, just here to keep the receiver alive
+    #[allow(dead_code)] async_broadcast::InactiveReceiver<E>,
 );
 
 impl<E> Default for Broadcast<E> {

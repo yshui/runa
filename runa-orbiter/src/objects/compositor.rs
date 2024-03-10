@@ -115,8 +115,8 @@ fn deallocate_surface<S: Shell, ServerCtx: HasShell<Shell = S>>(
     let mut shell = server_context.shell().borrow_mut();
     this.inner.destroy(&mut shell, &mut state.scratch_buffer);
 
-    // Disconnected, no point sending anything for those callbacks
-    this.inner.frame_callbacks().borrow_mut().clear();
+    // Disconnected, no point doing anything for the surface's frame callbacks,
+    // they will be removed automatically anyway.
 }
 
 #[derive(Debug)]
@@ -178,7 +178,10 @@ where
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects
                 .try_insert_with(callback.0, || {
-                    surface.add_frame_callback(callback.0);
+                    surface
+                        .pending_mut()
+                        .frame_callback_mut()
+                        .push_back(callback.0);
                     runa_core::objects::Callback::default().into()
                 })
                 .is_some();
@@ -330,7 +333,8 @@ where
                 objects,
                 ..
             } = ctx.as_mut_parts();
-            let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
+            let this = objects.get_mut::<Self>(object_id).unwrap();
+            let mut shell = server_context.shell().borrow_mut();
 
             if this.inner.role_is_active() {
                 return Err(error::Error::custom(SurfaceError {
@@ -339,16 +343,25 @@ where
                 }))
             }
 
-            this.inner.destroy(
-                &mut server_context.shell().borrow_mut(),
-                &mut state.scratch_buffer,
-            );
+            // Remove all frame callbacks objects
+            let mut pending_frame_callbacks =
+                std::mem::take(this.inner.pending_mut().frame_callback_mut());
 
-            let mut frame_callbacks =
-                std::mem::take(&mut *this.inner.frame_callbacks().borrow_mut());
-            for frame_callback in frame_callbacks.drain(..) {
+            for frame_callback in this
+                .inner
+                .current_mut(&mut *shell)
+                .frame_callbacks_mut()
+                .drain(..)
+                .chain(pending_frame_callbacks.drain(..))
+            {
                 objects.remove(frame_callback).unwrap();
             }
+
+            let (this, state) = objects.get_with_state_mut::<Self>(object_id).unwrap();
+            this.inner.destroy(
+                &mut shell,
+                &mut state.scratch_buffer,
+            );
 
             objects.remove(object_id).unwrap();
             Ok(())

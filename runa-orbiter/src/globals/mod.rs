@@ -70,8 +70,11 @@ where
             if !state.render_event_handler_started {
                 tracing::debug!("Starting render event handler");
                 let rx = server_context.shell().borrow().subscribe();
-                event_dispatcher.add_event_handler(rx, RenderEventHandler {
+                event_dispatcher.add_event_handler(rx, RenderEventHandler::<
+                    <<Ctx::ServerContext as HasShell>::Shell as Shell>::Token,
+                > {
                     callbacks_to_fire: Vec::new(),
+                    surfaces:          Vec::new(),
                 });
                 state.render_event_handler_started = true;
             };
@@ -80,13 +83,19 @@ where
     }
 }
 
-struct RenderEventHandler {
+struct RenderEventHandler<Token> {
+    /// Temporary storage for frame callbacks to fire.
     callbacks_to_fire: Vec<u32>,
+    /// Temporary storage for surfaces in surface tree.
+    surfaces:          Vec<Token>,
 }
 
-impl<S: Shell, Ctx: Client> EventHandler<Ctx> for RenderEventHandler
+impl<Token, S, Ctx> EventHandler<Ctx> for RenderEventHandler<Token>
 where
     Ctx::ServerContext: HasShell<Shell = S>,
+    Token: Copy + std::fmt::Debug + 'static,
+    S: Shell<Token = Token>,
+    Ctx: Client,
 {
     type Message = ShellEvent;
 
@@ -108,7 +117,7 @@ where
         let time = crate::time::elapsed().as_millis() as u32;
         {
             // First collect all callbacks we need to fire
-            let shell = server_context.shell().borrow();
+            let mut shell = server_context.shell().borrow_mut();
             // Send frame callback for all current surface states.
             for (_, surface) in objects.by_type::<crate::objects::compositor::Surface<S>>() {
                 // Skip subsurfaces. Only iterate surface trees from the root surface, so we
@@ -120,34 +129,24 @@ where
                 if role.is_some() {
                     continue
                 }
-                for (key, _) in crate::shell::surface::roles::subsurface_iter(
-                    surface.inner.current_key(),
-                    &*shell,
-                ) {
-                    let state = shell.get(key);
-                    let surface = state.surface().upgrade().unwrap();
-                    let first_frame_callback_index = surface.first_frame_callback_index();
-                    if state.frame_callback_end == first_frame_callback_index {
-                        continue
-                    }
-
-                    tracing::debug!("Firing frame callback for surface {}", surface.object_id());
-                    tracing::debug!(
-                        "frame_callback_end: {}, surface.first_frame_callback_index: {}",
-                        state.frame_callback_end,
-                        first_frame_callback_index
-                    );
-                    self.callbacks_to_fire.extend(
-                        surface.frame_callbacks().borrow_mut().drain(
-                            ..(state.frame_callback_end - first_frame_callback_index) as usize,
-                        ),
-                    );
-                    surface.set_first_frame_callback_index(state.frame_callback_end);
+                self.surfaces.extend(
+                    crate::shell::surface::roles::subsurface_iter(
+                        surface.inner.current_key(),
+                        &*shell,
+                    )
+                    .map(|(key, _)| key),
+                );
+                for key in self.surfaces.drain(..) {
+                    let state = shell.get_mut(key);
+                    tracing::trace!("Firing frame callback for surface state {:?}", key);
+                    self.callbacks_to_fire
+                        .extend(state.frame_callbacks_mut().drain(..));
                 }
             }
         }
         async move {
             for callback in self.callbacks_to_fire.drain(..) {
+                tracing::trace!("Firing frame callback {}", callback);
                 runa_core::objects::Callback::fire(callback, time, objects, &mut *connection)
                     .await?;
             }

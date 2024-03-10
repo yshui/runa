@@ -477,30 +477,27 @@ impl<Token> SurfaceStackEntry<Token> {
 ///
 /// This holds the modifiable states of a surface.
 pub struct SurfaceState<S: Shell> {
-    surface:                       Weak<Surface<S>>,
-    /// The index just pass the last frame callback attached to this surface.
-    /// For the definition of frame callback index, see
-    /// [`Surface::first_frame_callback_index`]. Each surface state always owns
-    /// a prefix of the surfaces frame callbacks, so it's sufficient to
-    /// store the index of the last frame callback.
-    pub(crate) frame_callback_end: u32,
+    /// Weak reference to the surface owning this state
+    surface:                    Weak<Surface<S>>,
+    /// List of of all the unfired frame callbacks
+    pub(crate) frame_callbacks: TinyVecDeq<[u32; 4]>,
     /// A stack of child surfaces and self.
-    stack:                         VecList<SurfaceStackEntry<S::Token>>,
+    stack:                      VecList<SurfaceStackEntry<S::Token>>,
     /// The position of this surface state in its own stack.
-    pub(crate) stack_index:        Index<SurfaceStackEntry<S::Token>>,
-    buffer:                        Option<AttachedBuffer<S::Buffer>>,
+    pub(crate) stack_index:     Index<SurfaceStackEntry<S::Token>>,
+    buffer:                     Option<AttachedBuffer<S::Buffer>>,
     /// Scale of the buffer, a fraction with a denominator of 120
-    buffer_scale:                  u32,
-    role_state:                    Option<Box<dyn RoleState>>,
+    buffer_scale:               u32,
+    role_state:                 Option<Box<dyn RoleState>>,
 }
 
 /// Pending changes to a surface state
 pub struct PendingSurfaceState<S: Shell> {
-    buffer:             Option<AttachedBuffer<S::Buffer>>,
-    buffer_scale:       Option<u32>,
-    stack:              VecList<SurfaceStackEntry<S::Token>>,
-    role_state:         Option<Box<dyn RoleState>>,
-    frame_callback_end: u32,
+    frame_callbacks: TinyVecDeq<[u32; 4]>,
+    buffer:          Option<AttachedBuffer<S::Buffer>>,
+    buffer_scale:    Option<u32>,
+    stack:           VecList<SurfaceStackEntry<S::Token>>,
+    role_state:      Option<Box<dyn RoleState>>,
 }
 
 impl<S: Shell> Debug for PendingSurfaceState<S> {
@@ -511,7 +508,7 @@ impl<S: Shell> Debug for PendingSurfaceState<S> {
             .field("buffer_scale", &self.buffer_scale)
             .field("stack", &self.stack)
             .field("role_state", &self.role_state)
-            .field("frame_callback_end", &self.frame_callback_end)
+            .field("frame_callbacks", &self.frame_callbacks)
             .finish()
     }
 }
@@ -541,8 +538,13 @@ impl<S: Shell> PendingSurfaceState<S> {
     }
 
     /// Set the buffer.
-    pub fn set_buffer_from_object(&mut self, buffer: &objects::Buffer<S::Buffer>) {
+    pub(crate) fn set_buffer_from_object(&mut self, buffer: &objects::Buffer<S::Buffer>) {
         self.buffer = Some(buffer.buffer.attach());
+    }
+
+    /// Add a frame callback.
+    pub(crate) fn frame_callback_mut(&mut self) -> &mut TinyVecDeq<[u32; 4]> {
+        &mut self.frame_callbacks
     }
 }
 
@@ -551,7 +553,7 @@ impl<S: Shell> std::fmt::Debug for SurfaceState<S> {
         use crate::shell::buffers::BufferLike;
         f.debug_struct("SurfaceState")
             .field("surface", &self.surface.upgrade().map(|s| s.object_id()))
-            .field("frame_callback_end", &self.frame_callback_end)
+            .field("frame_callbacks", &self.frame_callbacks)
             .field("stack", &self.stack)
             .field("buffer", &self.buffer.as_ref().map(|b| b.inner.object_id()))
             .field("buffer_scale", &self.buffer_scale_f32())
@@ -604,9 +606,11 @@ impl<S: Shell> SurfaceState<S> {
             .role_state
             .take()
             .or_else(|| self.role_state.as_ref().map(|r| dyn_clone::clone_box(&**r)));
+        let mut frame_callbacks = self.frame_callbacks.clone();
+        frame_callbacks.extend(changes.frame_callbacks.drain(..));
         Self {
+            frame_callbacks,
             surface: self.surface.clone(),
-            frame_callback_end: changes.frame_callback_end,
             stack: changes.stack.clone(),
             stack_index: self.stack_index,
             buffer: changes.buffer.take(),
@@ -795,6 +799,12 @@ impl<S: Shell> SurfaceState<S> {
             .map(|s| (&**s as &dyn Any).downcast_ref::<T>())
     }
 
+    /// Get a mut reference to the set of all unfired frame callbacks attached to
+    /// the surface.
+    pub(crate) fn frame_callbacks_mut(&mut self) -> &mut TinyVecDeq<[u32; 4]> {
+        &mut self.frame_callbacks
+    }
+
     /// Get a unique reference to the role related state.
     ///
     /// None if there is no role related state assigned to this surface.
@@ -877,26 +887,17 @@ pub const MAX_FRAME_CALLBACKS: usize = 100;
 pub struct Surface<S: super::Shell> {
     /// The current state of the surface. Once a state is committed to current,
     /// it should not be modified.
-    current:                    Cell<Option<S::Token>>,
+    current:              Cell<Option<S::Token>>,
     /// The pending state of the surface, this will be applied to
     /// [`Self::current`] when commit is called
-    pending_state:              RefCell<PendingSurfaceState<S>>,
-    /// List of of all the unfired frame callbacks associated with this surface,
-    /// in any of its surface states.
-    frame_callbacks:            RefCell<TinyVecDeq<[u32; 4]>>,
-    /// The index of the first frame callback stored in `frame_callbacks`. Frame
-    /// callbacks attached to a surface is numbered starting from 0, and
-    /// loops over when it reaches `u32::MAX`. Callbacks are removed from
-    /// `frame_callbacks` when they are fired, and the index is incremented
-    /// accordingly.
-    first_frame_callback_index: Cell<u32>,
-    role:                       RefCell<Option<Box<dyn Role<S>>>>,
-    outputs:                    OutputSet,
-    output_change_events:       single_state::Sender<OutputEvent>,
-    pointer_events:             broadcast::Ring<PointerEvent>,
-    keyboard_events:            broadcast::Ring<KeyboardEvent>,
-    layout_change_events:       single_state::Sender<LayoutEvent>,
-    object_id:                  u32,
+    pending_state:        RefCell<PendingSurfaceState<S>>,
+    role:                 RefCell<Option<Box<dyn Role<S>>>>,
+    outputs:              OutputSet,
+    output_change_events: single_state::Sender<OutputEvent>,
+    pointer_events:       broadcast::Ring<PointerEvent>,
+    keyboard_events:      broadcast::Ring<KeyboardEvent>,
+    layout_change_events: single_state::Sender<LayoutEvent>,
+    object_id:            u32,
 }
 
 impl<S: Shell> std::fmt::Debug for Surface<S> {
@@ -904,11 +905,6 @@ impl<S: Shell> std::fmt::Debug for Surface<S> {
         f.debug_struct("Surface")
             .field("current", &self.current)
             .field("pending", &self.pending_state)
-            .field("frame_callbacks", &self.frame_callbacks)
-            .field(
-                "first_frame_callback_index",
-                &self.first_frame_callback_index,
-            )
             .field("object_id", &self.object_id)
             .finish()
     }
@@ -919,10 +915,6 @@ impl<S: Shell> Drop for Surface<S> {
         assert!(
             self.current == Default::default(),
             "Surface must be destroyed with Surface::destroy"
-        );
-        assert!(
-            self.frame_callbacks.borrow().is_empty(),
-            "Surface must be have no frame callbacks when dropped."
         );
     }
 }
@@ -938,11 +930,11 @@ impl<S: Shell> Surface<S> {
     ) -> Rc<Self> {
         let surface_state = SurfaceState::new();
         let pending_state = RefCell::new(PendingSurfaceState {
-            stack:              surface_state.stack.clone(),
-            buffer:             None,
-            role_state:         None,
-            buffer_scale:       None,
-            frame_callback_end: 0,
+            stack:           surface_state.stack.clone(),
+            buffer:          None,
+            role_state:      None,
+            buffer_scale:    None,
+            frame_callbacks: Default::default(),
         });
         let state_key = shell.allocate(surface_state);
         let surface = Rc::new(Self {
@@ -955,39 +947,14 @@ impl<S: Shell> Surface<S> {
             pointer_events,
             keyboard_events,
             object_id: object_id.0,
-            frame_callbacks: Default::default(),
-            first_frame_callback_index: 0.into(),
         });
         shell.get_mut(state_key).surface = Rc::downgrade(&surface);
         surface
-    }
-
-    /// Get a reference to the set of all unfired frame callbacks attached to
-    /// the surface.
-    pub(crate) fn frame_callbacks(&self) -> &RefCell<TinyVecDeq<[u32; 4]>> {
-        &self.frame_callbacks
-    }
-
-    /// Index of the first frame callback stored in `frame_callbacks`.
-    pub(crate) fn first_frame_callback_index(&self) -> u32 {
-        self.first_frame_callback_index.get()
-    }
-
-    /// Set the index of the first frame callback stored in `frame_callbacks`.
-    pub(crate) fn set_first_frame_callback_index(&self, index: u32) {
-        self.first_frame_callback_index.set(index)
     }
 }
 
 // TODO: maybe we can unshare Surface, not wrapping it in Rc<>
 impl<S: Shell> Surface<S> {
-    /// Add a frame callback.
-    pub fn add_frame_callback(&self, callback: u32) {
-        // TODO(yshui) handle overflow
-        self.frame_callbacks.borrow_mut().push_back(callback);
-        self.pending_state.borrow_mut().frame_callback_end += 1;
-    }
-
     /// Get the parent surface if this surface has a subsurface role.
     pub fn parent(&self) -> Option<Rc<Self>> {
         let role = self.role::<roles::Subsurface<S>>();

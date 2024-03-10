@@ -32,7 +32,9 @@ use xkbcommon::xkb;
 
 #[derive_where(Debug)]
 pub struct DefaultShell<S: buffers::BufferLike> {
-    storage:          SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
+    /// Provider of surface state storage. We store surface states for
+    /// [`runa_orbiter::shell`], as well as some additional data.
+    storage:          SlotMap<DefaultKey, DefaultShellSurfaceState<S>>,
     /// Window stack, from bottom to top
     stack:            VecList<Window>,
     pointer_position: Option<ScreenPoint>,
@@ -82,11 +84,25 @@ impl Window {
     }
 }
 
-#[derive(Default, Debug)]
-pub struct DefaultShellData {
+#[derive(Debug)]
+pub struct DefaultShellSurfaceState<B: buffers::BufferLike> {
+    pub base:        surface::SurfaceState<DefaultShell<B>>,
+    /// Whether this state is the current state of its corresponding surface.
     pub is_current:  bool,
+    /// The index of this state in the window stack, if it's in the stack.
     pub stack_index: Option<Index<Window>>,
 }
+
+impl<B: buffers::BufferLike> DefaultShellSurfaceState<B> {
+    pub fn new(base: surface::SurfaceState<DefaultShell<B>>) -> Self {
+        Self {
+            base,
+            is_current: false,
+            stack_index: None,
+        }
+    }
+}
+
 type ScreenPoint = Point<NotNan<f32>, coords::Screen>;
 type SurfacePoint = Point<NotNan<f32>, coords::Surface>;
 impl<B: buffers::BufferLike> DefaultShell<B> {
@@ -368,7 +384,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
 
     #[tracing::instrument(skip_all)]
     fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token {
-        self.storage.insert((state, DefaultShellData::default()))
+        self.storage.insert(DefaultShellSurfaceState::new(state))
     }
 
     fn destroy(&mut self, key: Self::Token) {
@@ -381,7 +397,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         // cause it to return an invalid token.
         self.storage
             .get(key)
-            .map(|v| &v.0)
+            .map(|v| &v.base)
             .unwrap_or_else(|| panic!("Invalid token: {:?}", key))
     }
 
@@ -396,11 +412,11 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         self.storage
             .get_disjoint_mut(keys)
             .unwrap()
-            .map(|v| &mut v.0)
+            .map(|v| &mut v.base)
     }
 
     fn role_added(&mut self, key: Self::Token, role: &'static str) {
-        let (_, data) = self.storage.get_mut(key).unwrap();
+        let data = self.storage.get_mut(key).unwrap();
         assert!(data.is_current);
 
         if role == "xdg_toplevel" {
@@ -424,7 +440,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
     }
 
     fn role_deactivated(&mut self, key: Self::Token, role: &'static str) {
-        let (_, data) = self.storage.get_mut(key).unwrap();
+        let data = self.storage.get_mut(key).unwrap();
         assert!(data.is_current);
         tracing::debug!("Deactivated role {:?} for {:?}", role, key);
 
@@ -445,7 +461,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
             return
         }
 
-        let (_, data) = &mut self.storage.get_mut(new).unwrap();
+        let data = &mut self.storage.get_mut(new).unwrap();
         let output = self.screen.outputs.first().unwrap();
         assert!(
             !data.is_current,
@@ -453,7 +469,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         );
         data.is_current = true;
         if let Some(old) = old {
-            let (_, old_data) = &mut self.storage.get_mut(old).unwrap();
+            let old_data = &mut self.storage.get_mut(old).unwrap();
             assert!(old_data.is_current);
             old_data.is_current = false;
             // old_data might still be used, but if old_data.stack_index is Some(), then
@@ -467,7 +483,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
                 let window = self.stack.get_mut(index).unwrap();
                 window.surface_state = new;
 
-                self.storage.get_mut(new).unwrap().1.stack_index = Some(index);
+                self.storage.get_mut(new).unwrap().stack_index = Some(index);
                 if let Some(pointer_position) = self.pointer_position {
                     // Re-calculate what's under the pointer and send it a enter event
                     self.pointer_motion(pointer_position);

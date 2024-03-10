@@ -198,9 +198,6 @@ pub mod roles {
             );
             surface.set_role(role, shell);
             surface
-                .current_mut(shell)
-                .set_role_state(SubsurfaceState::<S::Token> { parent: None });
-            surface
                 .pending_mut()
                 .set_role_state(SubsurfaceState::<S::Token> { parent: None });
             true

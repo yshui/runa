@@ -1,9 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use ordered_float::NotNan;
-use raw_window_handle::{
-    HasDisplayHandle, HasWindowHandle,
-};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use runa_orbiter::{
     shell::{
         buffers::{self, BufferLike as _},
@@ -14,7 +12,7 @@ use runa_orbiter::{
 use runa_wayland_protocols::wayland::wl_shm::v1 as wl_shm;
 use smol::channel::Receiver;
 use wgpu::{include_wgsl, util::DeviceExt, WasmNotSend};
-use winit::{dpi::PhysicalSize, event::Event};
+use winit::{dpi::PhysicalSize, event::Event, platform::scancode::PhysicalKeyExtScancode};
 
 use crate::shell::DefaultShell;
 
@@ -549,7 +547,7 @@ impl Renderer {
                                 }
                                 WindowEvent::KeyboardInput { event, .. } => {
                                     let pressed = matches!(event.state, winit::event::ElementState::Pressed);
-                                    self.shell.borrow_mut().key(physical_key_to_scancode(event.physical_key).unwrap() as u8, pressed);
+                                    self.shell.borrow_mut().key(event.physical_key.to_scancode().unwrap() as u8, pressed);
                                 }
                                 _ => {
                                     tracing::trace!("Unhandled window event: {:?}", event);

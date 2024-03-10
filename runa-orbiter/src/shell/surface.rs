@@ -78,7 +78,10 @@ impl<S: Shell> Provider for dyn Role<S> {
 
 /// Some roles defined in the wayland protocol
 pub mod roles {
-    use std::rc::{Rc, Weak};
+    use std::{
+        cell::Cell,
+        rc::{Rc, Weak},
+    };
 
     use derive_where::derive_where;
     use dlv_list::Index;
@@ -124,7 +127,7 @@ pub mod roles {
     pub struct Subsurface<S: Shell> {
         sync:                   bool,
         inherited_sync:         bool,
-        pub(super) is_active:   bool,
+        pub(super) is_active:   Rc<Cell<bool>>,
         /// Index of this surface in parent's `stack` list.
         /// Note this index should be stable across parent updates, including
         /// appending to the stack, reordering the stack. a guarantee
@@ -133,7 +136,7 @@ pub mod roles {
         pub(super) parent:      Weak<super::Surface<S>>,
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone)]
     pub(super) struct SubsurfaceState<Token> {
         /// Parent surface *state* of this surface *state*. A surface state is
         /// only considered a parent after it has been committed. This
@@ -159,6 +162,9 @@ pub mod roles {
 
         /// See [`Subsurface::stack_index`]
         pub(super) stack_index: Index<super::SurfaceStackEntry<Token>>,
+
+        /// Whether the corresponding role is active.
+        pub(super) is_active: Rc<Cell<bool>>,
     }
     impl<Token: std::fmt::Debug + Clone + 'static> super::RoleState for SubsurfaceState<Token> {}
     impl<S: Shell> Subsurface<S> {
@@ -187,10 +193,11 @@ pub mod roles {
                         token:    surface.current_key(),
                         position: Point::new(0, 0),
                     });
+            let is_active = Rc::new(Cell::new(true));
             let role = Self {
                 sync: true,
                 inherited_sync: true,
-                is_active: true,
+                is_active: is_active.clone(),
                 stack_index,
                 parent: Rc::downgrade(&parent),
             };
@@ -205,6 +212,7 @@ pub mod roles {
                 .set_role_state(SubsurfaceState::<S::Token> {
                     parent: None,
                     stack_index,
+                    is_active,
                 });
             true
         }
@@ -221,12 +229,12 @@ pub mod roles {
         }
 
         fn is_active(&self) -> bool {
-            self.is_active
+            self.is_active.get()
         }
 
         fn deactivate(&mut self, _shell: &mut S) {
-            tracing::debug!("deactivate subsurface role {}", self.is_active);
-            if !self.is_active {
+            tracing::debug!("deactivate subsurface role {}", self.is_active.get());
+            if !self.is_active.get() {
                 return
             }
             // Deactivating the subsurface role is immediate, but we don't know
@@ -235,7 +243,7 @@ pub mod roles {
             // states. And we aren't keeping track of all of them. Instead we
             // mark it inactive, and skip over inactive states when we iterate
             // over the subsurface tree.
-            self.is_active = false;
+            self.is_active.set(false);
 
             // Remove ourself from parent's pending stack, so when the parent
             // eventually commits, it will drop us.
@@ -358,15 +366,14 @@ pub mod roles {
 
                 fn $next(&mut self) {
                     while !self.is_empty {
-                        use super::Role;
                         self.$next_maybe_deactivated();
                         let ret = self.shell.get(self.head[0].0);
-                        let role_active = ret.surface.upgrade().map_or(
-                            false, // If the surface is destroyed, its role must be inactive
-                            // If the surface doesn't have subsurface role, it must be a top
-                            // level surface
-                            |s| s.role::<Subsurface<S>>().map_or(true, |r| r.is_active()),
-                        );
+                        let role_active = ret
+                            .role_state::<SubsurfaceState<S::Token>>()
+                            // If the role state is not SubsurfaceState, or if the role state
+                            // doesn't exist, then the surface is top-level.
+                            .flatten()
+                            .map_or(true, |role_state| role_state.is_active.get());
                         if role_active {
                             break
                         }
@@ -1272,7 +1279,7 @@ impl<S: Shell> Surface<S> {
                 // don't want to happen.
                 let child_surface = child.surface().upgrade().unwrap();
                 let mut child_role = child_surface.role_mut::<roles::Subsurface<S>>().unwrap();
-                child_role.is_active = false;
+                child_role.is_active.set(false);
                 child_role.parent = Weak::new();
             }
             shell.destroy(current_key);

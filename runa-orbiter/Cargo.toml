@@ -18,7 +18,6 @@ runa-core = { version = "0.0.1-alpha1", path = "../runa-core" }
 runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }
 tracing.workspace = true
 futures-channel = "0.3.25"
-derivative.workspace = true
 runa-io = { version = "0.0.1-alpha1", path = "../runa-io" }
 memmap2 = "0.5.7"
 spin = { version = "0.9.7", default-features = false, features = ["mutex", "ticket_mutex", "use_ticket_mutex"] }
@@ -32,3 +31,4 @@ enum_dispatch = "0.3.11"
 thiserror.workspace = true
 ordered-float.workspace = true
 tinyvec = { workspace = true, features = ["alloc"] }
+derive-where.workspace = true

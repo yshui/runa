@@ -153,10 +153,10 @@ pub(crate) mod stream {
         task::{Context, Poll, Waker},
     };
 
-    use derivative::Derivative;
+    use derive_where::derive_where;
     use futures_core::{FusedStream, Stream};
-    #[derive(Derivative, Debug)]
-    #[derivative(Default(bound = ""))]
+    #[derive(Debug)]
+    #[derive_where(Default)]
     struct ReplaceInner<S> {
         stream: Option<S>,
         waker:  Option<Waker>,

@@ -3,7 +3,6 @@
 
 use std::any::{Any, TypeId};
 
-use derivative::Derivative;
 use futures_core::Stream;
 use hashbrown::{hash_map, HashMap};
 use indexmap::{IndexMap, IndexSet};
@@ -17,18 +16,27 @@ use crate::{events, objects};
 ///
 /// You must call [`Store::clear_for_disconnect`] before the object store is
 /// dropped. Otherwise, the object store will panic.
-#[derive(Debug, Derivative)]
-#[derivative(Default(bound = ""))]
+#[derive(Debug)]
 pub struct Store<Object> {
     map:          HashMap<u32, Object>,
     by_type:      HashMap<TypeId, (Box<dyn Any>, IndexSet<u32>)>,
     /// Next ID to use for server side object allocation
-    #[derivative(Default(value = "CLIENT_MAX_ID + 1"))]
     next_id:      u32,
     /// Number of server side IDs left
-    #[derivative(Default(value = "u32::MAX - CLIENT_MAX_ID"))]
     ids_left:     u32,
     event_source: events::aggregate::Sender<UpdatesAggregate>,
+}
+
+impl<Object> Default for Store<Object> {
+    fn default() -> Self {
+        Self {
+            map:          Default::default(),
+            by_type:      Default::default(),
+            next_id:      CLIENT_MAX_ID + 1,
+            ids_left:     u32::MAX - CLIENT_MAX_ID,
+            event_source: Default::default(),
+        }
+    }
 }
 
 impl<Object: objects::AnyObject> Store<Object> {

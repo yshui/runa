@@ -19,7 +19,6 @@ smol = "1.2.5"
 tinyvec = "1.6.0"
 tracing.workspace = true
 bytes.workspace = true
-derivative.workspace = true
 runa-io-traits = { version = "0.0.1-alpha1", path = "../runa-io-traits" }
 
 [dev-dependencies]

@@ -2,8 +2,7 @@
 
 use std::{cell::RefCell, future::Future, rc::Rc};
 
-use derivative::Derivative;
-
+use derive_where::derive_where;
 use crate::{
     client::traits::Client,
     events::EventSource,
@@ -43,8 +42,7 @@ pub trait Server: Sized {
 /// assume ID reuse doesn't happen within a comfortably long time frame,
 /// which should be long enough for event listeners to handle their
 /// events.
-#[derive(Derivative)]
-#[derivative(Clone(bound = ""))]
+#[derive_where(Clone)]
 pub enum GlobalsUpdate<G> {
     /// A global was added.
     Added(u32, Rc<G>),

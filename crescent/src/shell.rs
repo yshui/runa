@@ -3,7 +3,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use dlv_list::{Index, VecList};
 use ordered_float::NotNan;
 use runa_core::events::{broadcast::Broadcast, EventSource};
@@ -30,8 +30,7 @@ use tinyvec::TinyVec;
 use winit::event::MouseButton;
 use xkbcommon::xkb;
 
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct DefaultShell<S: buffers::BufferLike> {
     storage:          SlotMap<DefaultKey, (surface::SurfaceState<Self>, DefaultShellData)>,
     /// Window stack, from bottom to top
@@ -42,7 +41,7 @@ pub struct DefaultShell<S: buffers::BufferLike> {
     shell_event:      Broadcast<ShellEvent>,
     position_offset:  Point<i32, coords::Screen>,
     screen:           runa_orbiter::shell::output::Screen,
-    #[derivative(Debug = "ignore")]
+    #[derive_where(skip)]
     keyboard_state:   xkb::State,
     keys:             TinyVec<[u8; 8]>,
 }

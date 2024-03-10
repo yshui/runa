@@ -6,7 +6,7 @@
 //! applied to current state when `wl_surface.commit` is called.
 use std::{future::Future, pin::Pin, rc::Rc};
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use hashbrown::HashSet;
 use runa_core::{
     client::traits::{
@@ -102,8 +102,7 @@ mod states {
 use states::*;
 
 /// Implementation of the `wl_surface` interface.
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct Surface<Shell: shell::Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<Shell>>,
 }
@@ -581,8 +580,7 @@ where
 }
 
 /// Implementation of the `wl_subsurface` interface
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct Subsurface<S: Shell>(Rc<crate::shell::surface::Surface<S>>);
 
 #[wayland_object]

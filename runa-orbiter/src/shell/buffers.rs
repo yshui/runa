@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, fmt::Debug, rc::Rc};
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use runa_core::events::{single_state, EventSource};
 
 use crate::utils::geometry::{coords, Extent};
@@ -74,8 +74,8 @@ impl<B: BufferLike> Drop for AttachedBuffer<B> {
 /// A wrapper of buffer to automatically keep track of how many surface
 /// states a buffer is attached to, and automatically release the buffer when
 /// the count reaches 0.
-#[derive(Derivative, Debug)]
-#[derivative(Clone(bound = ""))]
+#[derive(Debug)]
+#[derive_where(Clone)]
 pub(crate) struct AttachableBuffer<B> {
     pub(crate) inner: Rc<B>,
     attach_count:     Rc<Cell<u64>>,

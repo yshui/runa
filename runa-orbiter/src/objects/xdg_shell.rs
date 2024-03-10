@@ -2,7 +2,7 @@
 
 use std::{future::Future, num::NonZeroU32, pin::Pin, rc::Rc};
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use runa_core::{
     client::traits::{
         Client, ClientParts, EventDispatcher, EventHandler, EventHandlerAction, Store,
@@ -176,8 +176,7 @@ where
 }
 
 /// Implementation of the `xdg_surface` interface.
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct Surface<S: Shell> {
     pub(crate) inner: Rc<crate::shell::surface::Surface<S>>,
 }
@@ -365,8 +364,7 @@ where
 }
 
 /// Implements the `xdg_toplevel` interface.
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct TopLevel<S: Shell>(
     pub(crate) Rc<crate::shell::surface::Surface<S>>,
     crate::utils::AutoAbort,

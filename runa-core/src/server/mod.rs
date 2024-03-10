@@ -2,8 +2,7 @@
 
 use std::{future::Future, rc::Rc};
 
-use derivative::Derivative;
-
+use derive_where::derive_where;
 use crate::{
     events::{self, EventSource},
     Serial,
@@ -14,8 +13,7 @@ pub mod traits;
 use traits::GlobalsUpdate;
 
 /// Reference implementation of the [`GlobalStore`](traits::GlobalStore) trait.
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive_where(Debug)]
 pub struct GlobalStore<G> {
     globals:      crate::IdAlloc<Rc<G>>,
     update_event: events::broadcast::Broadcast<GlobalsUpdate<G>>,

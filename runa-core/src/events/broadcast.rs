@@ -2,15 +2,15 @@
 
 use std::{future::Future, pin::Pin};
 
+use derive_where::derive_where;
 use async_broadcast::TrySendError;
-use derivative::Derivative;
 /// An event source implementation based on the [`async_broadcast`]
 /// channels.
 ///
 /// This event source is mpmc, so it can be cloned, enabling multiple sender
 /// to send at the same time
-#[derive(Debug, Derivative)]
-#[derivative(Clone(bound = ""))]
+#[derive(Debug)]
+#[derive_where(Clone)]
 pub struct Broadcast<E>(
     async_broadcast::Sender<E>,
     async_broadcast::InactiveReceiver<E>,
@@ -24,8 +24,8 @@ pub struct Broadcast<E>(
 ///
 /// This event source is mpmc, so it can be cloned, enabling multiple sender
 /// to send at the same time
-#[derive(Debug, Derivative)]
-#[derivative(Clone(bound = ""))]
+#[derive(Debug)]
+#[derive_where(Clone)]
 pub struct Ring<E>(
     async_broadcast::Sender<E>,
     async_broadcast::InactiveReceiver<E>,

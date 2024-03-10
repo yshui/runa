@@ -24,7 +24,6 @@ dlv-list.workspace = true
 runa-wayland-types = { version = "0.1.0", path = "../runa-wayland-types" }
 memmap2 = "0.5.7"
 lazy_static = "1.4.0"
-derivative.workspace = true
 static_assertions = "1.1.0"
 runa-macros = { version = "0.0.1-alpha1", path = "../runa-macros" }
 indexmap.workspace = true
@@ -36,6 +35,7 @@ futures-core = "0.3.26"
 async-lock = "2.6.0"
 pin-project = "1.0.12"
 bytes.workspace = true
+derive-where.workspace = true
 
 [features]
 default = []

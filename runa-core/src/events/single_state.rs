@@ -12,11 +12,11 @@ use std::{
     },
 };
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use futures_core::Stream;
 
-#[derive(Debug, Derivative)]
-#[derivative(Default(bound = ""))]
+#[derive(Debug)]
+#[derive_where(Default)]
 struct Inner<E> {
     event_handle: event_listener::Event,
     state:        RefCell<Option<E>>,
@@ -26,8 +26,8 @@ struct Inner<E> {
 /// An event source whose receivers will receive an event when a state
 /// is changed. It's possible for multiple changes to be
 /// aggregated into a single event.
-#[derive(Debug, Derivative)]
-#[derivative(Default(bound = ""))]
+#[derive(Debug)]
+#[derive_where(Default)]
 pub struct Sender<E> {
     inner: Rc<Inner<E>>,
 }

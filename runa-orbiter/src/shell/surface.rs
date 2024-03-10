@@ -11,7 +11,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use derivative::Derivative;
+use derive_where::derive_where;
 use dlv_list::{Index, VecList};
 use dyn_clone::DynClone;
 use hashbrown::HashSet;
@@ -80,7 +80,7 @@ impl<S: Shell> Provider for dyn Role<S> {
 pub mod roles {
     use std::rc::{Rc, Weak};
 
-    use derivative::Derivative;
+    use derive_where::derive_where;
     use dlv_list::Index;
     use runa_core::provide_any;
     use runa_wayland_protocols::wayland::wl_subsurface;
@@ -119,8 +119,8 @@ pub mod roles {
     /// going through the pending or the cached state. We can detect this by
     /// checking if the role object is active, while going through the tree
     /// of surfaces.
-    #[derive(Derivative)]
-    #[derivative(Debug, Clone(bound = ""))]
+    #[derive(Debug)]
+    #[derive_where(Clone)]
     pub struct Subsurface<S: Shell> {
         sync:                   bool,
         inherited_sync:         bool,
@@ -434,8 +434,7 @@ pub(crate) enum SurfaceStackEntry<Token> {
 }
 
 /// Index into a surface's stack
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""), Clone(bound = ""), Copy(bound = ""))]
+#[derive_where(Debug, Clone, Copy)]
 pub struct SurfaceStackIndex<Token>(pub(crate) Index<SurfaceStackEntry<Token>>);
 
 impl<T> From<Index<SurfaceStackEntry<T>>> for SurfaceStackIndex<T> {
@@ -969,7 +968,7 @@ impl<S: Shell> Surface<S> {
         self.pending_state.borrow_mut().frame_callback_end += 1;
     }
 
-    /// Get the parent surface of this surface has a subsurface role.
+    /// Get the parent surface if this surface has a subsurface role.
     pub fn parent(&self) -> Option<Rc<Self>> {
         let role = self.role::<roles::Subsurface<S>>();
         role.map(|r| r.parent.upgrade().unwrap())

@@ -2,8 +2,8 @@
 
 use std::{collections::VecDeque, num::NonZeroU32};
 
-use derivative::Derivative;
 use runa_core::provide_any::Demand;
+use derive_where::derive_where;
 use runa_wayland_protocols::stable::xdg_shell::{
     xdg_surface::v5 as xdg_surface, xdg_toplevel::v5 as xdg_toplevel,
 };
@@ -120,8 +120,7 @@ pub(crate) struct TopLevelState {
 }
 
 /// The xdg_toplevel role
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derive(Debug)]
 pub struct TopLevel {
     pub(crate) base:      Surface,
     is_active:            bool,

@@ -1278,15 +1278,15 @@ impl<S: Shell> Surface<S> {
                     role_state.parent = None;
                 }
 
-                // We need to deactivate the subsurface role of the child, but we don't want to
-                // call roles::Subsurface::deactivate() because it wants to modify
-                // the parent's (this surface's) pending state, which will cause a
-                // new pending state to be duplicated and assigned to us, which we
-                // don't want to happen.
-                let child_surface = child.surface().upgrade().unwrap();
-                let mut child_role = child_surface.role_mut::<roles::Subsurface<S>>().unwrap();
-                child_role.is_active.set(false);
-                child_role.parent = Weak::new();
+                // We need to deactivate the subsurface role of the child, but we
+                // don't have access to child's `Surface` (which could already be
+                // released by the way).
+                //
+                // It should be enough to just set the role `is_active` to false.
+                // Ideally we also want to set `Subsurface::parent` to an invalid
+                // weak reference, but this `Surface` should be released soon after
+                // this function returns.
+                role_state.is_active.set(false);
             }
             shell.destroy(current_key);
         }

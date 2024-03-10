@@ -401,10 +401,6 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
             .unwrap_or_else(|| panic!("Invalid token: {:?}", key))
     }
 
-    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {
-        self.storage.get_mut(key).map(|v| &mut v.0).unwrap()
-    }
-
     fn get_disjoint_mut<const N: usize>(
         &mut self,
         keys: [Self::Token; N],

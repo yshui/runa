@@ -64,7 +64,9 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self>;
 
     /// Get a mutable reference to a SurfaceState.
-    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self>;
+    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {
+        self.get_disjoint_mut([key])[0]
+    }
 
     /// Get mutable references to multiple SurfaceStates.
     ///

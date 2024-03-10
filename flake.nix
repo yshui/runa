@@ -25,7 +25,7 @@
         rustc = rust-toolchain;
       };
       runtimeDependencies = (with pkgs; [ libGL vulkan-loader ]) ++
-        (with pkgs.xorg; [ libX11 libXdmcp libXrender libXcursor libXau libxcb libXfixes libXrandr libXext libXi ]);
+        (with pkgs.xorg; [ libX11 libXdmcp libXrender libXcursor libXau libxcb libXfixes libXrandr libXext libXi pkgs.libxkbcommon ]);
     in
     with pkgs; {
       packages = rec {

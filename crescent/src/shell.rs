@@ -125,7 +125,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
             // right now we use window geometry as a hack
             {
                 let state = self.get(top_level.surface_state);
-                let surface = state.surface().upgrade().unwrap();
+                let surface = state.surface().unwrap();
                 let role = surface
                     .role::<runa_orbiter::shell::xdg::TopLevel>()
                     .unwrap();
@@ -147,7 +147,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                     .to()
                     .map(|dim| dim / surface_state.buffer_scale_f32());
                 if dimension.contains(relative_position) {
-                    found = Some((self.get(surface_token).surface().clone(), relative_position));
+                    found = Some((self.get(surface_token).weak_surface(), relative_position));
                     break 'find
                 }
             }
@@ -233,7 +233,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         if pressed {
             if self.keys.contains(&key) {
                 tracing::trace!(
-                    "Received pressed event for key {}, which was already pressed ignoring. This \
+                    "Received pressed event for key {}, which was already pressed, ignoring. This \
                      is normal because of X11 key repeats.",
                     key
                 );
@@ -274,7 +274,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
         // Recalculate surface overlaps
         for (surface_token, offset) in subsurface_iter(root, self) {
             let state = self.get(surface_token);
-            let surface = state.surface().upgrade().unwrap();
+            let surface = state.surface().unwrap();
             tracing::debug!(
                 "Scanning surface {surface_token:?} for output updates, surface id: {}",
                 surface.object_id()
@@ -326,14 +326,14 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                         outputs.insert(Rc::downgrade(output).into());
                     }
                     tracing::debug!("New outputs: {outputs:?}");
-                    state.surface().upgrade().unwrap().notify_output_changed();
+                    state.surface().unwrap().notify_output_changed();
                 }
             } else if !surface.outputs().is_empty() {
                 tracing::debug!(
                     "Clearing outputs for surface {surface:?} because it has no buffer"
                 );
                 surface.outputs_mut().clear();
-                state.surface().upgrade().unwrap().notify_output_changed();
+                state.surface().unwrap().notify_output_changed();
             }
         }
     }

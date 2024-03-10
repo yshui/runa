@@ -572,14 +572,26 @@ impl<S: Shell> SurfaceState<S> {
         let mut stack = VecList::new();
         let stack_index = stack.push_back(SurfaceStackEntry::Self_);
         Self {
-            surface: Weak::new(),
-            frame_callback_end: 0,
+            frame_callbacks: Default::default(),
             stack,
             stack_index,
             buffer: None,
             buffer_scale: 120,
             role_state: None,
+            surface: Weak::new(),
         }
+    }
+
+    /// Get a weak reference to the surface owning this state
+    #[inline]
+    pub fn weak_surface(&self) -> Weak<Surface<S>> {
+        self.surface.clone()
+    }
+
+    /// Get a reference to the surface owning this state
+    #[inline]
+    pub fn surface(&self) -> Option<Rc<Surface<S>>> {
+        self.surface.upgrade()
     }
 
     /// Create a new copy of this surface state, with `changes` applied.
@@ -751,12 +763,6 @@ impl<S: Shell> SurfaceState<S> {
     #[inline]
     pub fn set_buffer_scale(&mut self, scale: u32) {
         self.buffer_scale = scale;
-    }
-
-    /// Get a weak reference to the surface this surface state belongs to.
-    #[inline]
-    pub fn surface(&self) -> &Weak<Surface<S>> {
-        &self.surface
     }
 
     // TODO: take rectangles

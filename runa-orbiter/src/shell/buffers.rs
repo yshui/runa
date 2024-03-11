@@ -229,6 +229,7 @@ impl<Base: Debug + 'static> BufferLike for Buffer<Base> {
 
 /// An empty private trait just to make enum_dispatch generate the `From` impls.
 #[enum_dispatch::enum_dispatch]
+#[allow(dead_code)]
 trait BufferBaseFrom {}
 
 /// An enum of all buffer base types defined in this crate.

@@ -8,28 +8,10 @@ use runa_wayland_protocols::stable::xdg_shell::{
 };
 use runa_wayland_types::NewId;
 
-use super::Shell;
-use crate::utils::geometry::{coords, Extent, Point, Rectangle};
-
-/// Surface layout
-///
-/// A surface layout is where the surface is positioned on the screen, and its
-/// screen space size.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Layout {
-    /// The position of the surface on the screen.
-    pub position: Option<Point<i32, coords::Screen>>,
-    /// The size of the surface on the screen.
-    pub extent:   Option<Extent<u32, coords::Screen>>,
-}
-
-/// Extension of [`super::Shell`] to provide xdg shell specific informations.
-pub trait XdgShell: Shell {
-    /// Ask the shell to calculate the layout of the given surface.
-    fn layout(&self, _key: Self::Token) -> Layout {
-        Layout::default()
-    }
-}
+use crate::{
+    shell::Shell,
+    utils::geometry::{coords, Extent, Rectangle},
+};
 
 /// The xdg_surface "role"
 ///
@@ -65,10 +47,10 @@ impl Surface {
         }
     }
 
-    fn commit<S: XdgShell>(
+    fn commit<S: crate::shell::xdg::XdgShell>(
         &mut self,
         shell: &mut S,
-        surface: &super::surface::Surface<S>,
+        surface: &crate::shell::surface::Surface<S>,
         _object_id: u32,
     ) -> Result<(), &'static str> {
         tracing::debug!("Committing xdg_surface");
@@ -87,7 +69,7 @@ impl Surface {
     }
 }
 
-impl<S: Shell> super::surface::Role<S> for Surface {
+impl<S: Shell> super::Role<S> for Surface {
     fn name(&self) -> &'static str {
         xdg_surface::NAME
     }
@@ -149,7 +131,7 @@ impl TopLevel {
     }
 }
 
-impl<S: XdgShell> super::surface::Role<S> for TopLevel {
+impl<S: crate::shell::xdg::XdgShell> super::Role<S> for TopLevel {
     fn name(&self) -> &'static str {
         xdg_toplevel::NAME
     }
@@ -180,7 +162,7 @@ impl<S: XdgShell> super::surface::Role<S> for TopLevel {
     fn pre_commit(
         &mut self,
         shell: &mut S,
-        surface: &super::surface::Surface<S>,
+        surface: &crate::shell::surface::Surface<S>,
     ) -> Result<(), &'static str> {
         tracing::debug!("Committing xdg_toplevel");
         let object_id = self.object_id;

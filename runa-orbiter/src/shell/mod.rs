@@ -8,7 +8,6 @@
 pub mod buffers;
 pub mod output;
 pub mod surface;
-pub mod xdg;
 use std::cell::RefCell;
 
 use runa_core::events::EventSource;
@@ -53,7 +52,7 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     type Buffer: buffers::BufferLike;
 
     /// Allocate a SurfaceState and returns a handle to it.
-    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token;
+    fn allocate(&mut self, state: surface::State<Self>) -> Self::Token;
 
     /// Release a token.
     fn destroy(&mut self, key: Self::Token);
@@ -61,10 +60,10 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     /// Get a reference to a SurfaceState by key.
     ///
     /// Returns None if the key is invalid.
-    fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self>;
+    fn get(&self, key: Self::Token) -> &surface::State<Self>;
 
     /// Get a mutable reference to a SurfaceState.
-    fn get_mut(&mut self, key: Self::Token) -> &mut surface::SurfaceState<Self> {
+    fn get_mut(&mut self, key: Self::Token) -> &mut surface::State<Self> {
         self.get_disjoint_mut([key])[0]
     }
 
@@ -77,7 +76,7 @@ pub trait Shell: Sized + EventSource<ShellEvent> + 'static {
     fn get_disjoint_mut<const N: usize>(
         &mut self,
         keys: [Self::Token; N],
-    ) -> [&mut surface::SurfaceState<Self>; N];
+    ) -> [&mut surface::State<Self>; N];
 
     /// Callback which is called when a role is added to a surface corresponds
     /// to the given surface state. A role can be attached using a committed
@@ -191,4 +190,32 @@ pub trait Seat: EventSource<SeatEvent> {
 
     /// Get the name of the seat.
     fn name(&self) -> &str;
+}
+
+pub mod xdg {
+    //! Extensions to [`super::Shell`] to provide xdg shell specific
+    //! functionalities.
+
+    use crate::utils::geometry::{coords, Extent, Point};
+
+    /// Surface layout
+    ///
+    /// A surface layout is where the surface is positioned on the screen, and
+    /// its screen space size.
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct Layout {
+        /// The position of the surface on the screen.
+        pub position: Option<Point<i32, coords::Screen>>,
+        /// The size of the surface on the screen.
+        pub extent:   Option<Extent<u32, coords::Screen>>,
+    }
+
+    /// Extension of [`super::Shell`] to provide xdg shell specific
+    /// information.
+    pub trait XdgShell: super::Shell {
+        /// Ask the shell to calculate the layout of the given surface.
+        fn layout(&self, _key: Self::Token) -> Layout {
+            Layout::default()
+        }
+    }
 }

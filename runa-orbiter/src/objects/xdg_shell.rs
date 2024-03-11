@@ -19,7 +19,10 @@ use runa_wayland_protocols::stable::xdg_shell::{
 use runa_wayland_types::{NewId, Object as WaylandObject, Str};
 
 use crate::{
-    shell::{surface::LayoutEvent, xdg, HasShell, Shell},
+    shell::{
+        surface::{roles::xdg as xdg_roles, LayoutEvent},
+        HasShell, Shell,
+    },
     utils::geometry::{Extent, Point, Rectangle},
 };
 
@@ -28,7 +31,7 @@ use crate::{
 pub struct WmBase;
 
 #[wayland_object]
-impl<S: xdg::XdgShell, Ctx: Client> xdg_wm_base::RequestDispatch<Ctx> for WmBase
+impl<S: crate::shell::xdg::XdgShell, Ctx: Client> xdg_wm_base::RequestDispatch<Ctx> for WmBase
 where
     Ctx::ServerContext: HasShell<Shell = S>,
     Ctx::Object: From<Surface<S>>,
@@ -74,7 +77,7 @@ where
             let mut shell = server_context.shell().borrow_mut();
             let inserted = objects
                 .try_insert_with(id.0, || {
-                    let role = crate::shell::xdg::Surface::new(id);
+                    let role = xdg_roles::Surface::new(id);
                     surface.set_role(role, &mut shell);
                     Surface { inner: surface }.into()
                 })
@@ -125,10 +128,7 @@ where
         message: &'ctx mut Self::Message,
     ) -> Self::Future<'ctx> {
         tracing::debug!(?message, "LayoutEventHandler::poll_handle_event");
-        use crate::shell::{
-            surface::Role,
-            xdg::{Surface as XdgSurface, TopLevel},
-        };
+        use crate::shell::surface::roles::Role;
         let surface = objects
             .get::<crate::objects::compositor::Surface<<Ctx::ServerContext as HasShell>::Shell>>(
                 self.surface_object_id,
@@ -137,13 +137,17 @@ where
         let mut connection = Pin::new(connection);
         async move {
             if let Some(size) = message.0.extent {
-                if let Some(role_object_id) = surface.inner.role::<TopLevel>().map(|r| {
-                    assert!(
-                        <TopLevel as Role<<Ctx::ServerContext as HasShell>::Shell>>::is_active(&r),
-                        "TopLevel role no longer active"
-                    );
-                    r.object_id
-                }) {
+                if let Some(role_object_id) =
+                    surface.inner.role::<xdg_roles::TopLevel>().map(|r| {
+                        assert!(
+                            <xdg_roles::TopLevel as Role<
+                                <Ctx::ServerContext as HasShell>::Shell,
+                            >>::is_active(&r),
+                            "TopLevel role no longer active"
+                        );
+                        r.object_id
+                    })
+                {
                     connection
                         .as_mut()
                         .send(role_object_id, xdg_toplevel::events::Configure {
@@ -159,7 +163,7 @@ where
             }
             // Send xdg_surface.configure event
             let (serial, role_object_id) = {
-                let mut role = surface.inner.role_mut::<XdgSurface>().unwrap();
+                let mut role = surface.inner.role_mut::<xdg_roles::Surface>().unwrap();
                 let serial = role.serial;
                 role.serial = role.serial.checked_add(1).unwrap_or(1.try_into().unwrap());
                 role.pending_serial.push_back(serial);
@@ -303,8 +307,8 @@ where
             let surface = objects.get::<Self>(object_id).unwrap().inner.clone();
             let inserted = objects
                 .try_insert_with(id.0, || {
-                    let base_role = surface.role::<xdg::Surface>().unwrap().clone();
-                    let role = crate::shell::xdg::TopLevel::new(base_role, id.0);
+                    let base_role = surface.role::<xdg_roles::Surface>().unwrap().clone();
+                    let role = xdg_roles::TopLevel::new(base_role, id.0);
                     surface.set_role(role, &mut server_context.shell().borrow_mut());
 
                     // Start listening to layout events
@@ -329,7 +333,7 @@ where
     fn ack_configure(ctx: &mut Ctx, object_id: u32, serial: u32) -> Self::AckConfigureFut<'_> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
+            let mut role = this.inner.role_mut::<xdg_roles::Surface>().unwrap();
             while let Some(front) = role.pending_serial.front() {
                 if front.get() > serial {
                     break
@@ -353,7 +357,7 @@ where
     ) -> Self::SetWindowGeometryFut<'_> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.inner.role_mut::<xdg::Surface>().unwrap();
+            let mut role = this.inner.role_mut::<xdg_roles::Surface>().unwrap();
             role.pending_geometry = Some(Rectangle {
                 loc:  Point::new(x, y),
                 size: Extent::new(width, height),
@@ -439,7 +443,7 @@ where
     fn set_title<'a>(ctx: &'a mut Ctx, object_id: u32, title: Str<'a>) -> Self::SetTitleFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
+            let mut role = this.0.role_mut::<xdg_roles::TopLevel>().unwrap();
             role.title = Some(String::from_utf8_lossy(title.0).into_owned());
             Ok(())
         }
@@ -455,7 +459,7 @@ where
     fn set_app_id<'a>(ctx: &'a mut Ctx, object_id: u32, app_id: Str<'a>) -> Self::SetAppIdFut<'a> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
+            let mut role = this.0.role_mut::<xdg_roles::TopLevel>().unwrap();
             role.app_id = Some(String::from_utf8_lossy(app_id.0).into_owned());
             Ok(())
         }
@@ -469,7 +473,7 @@ where
     ) -> Self::SetMaxSizeFut<'_> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
+            let mut role = this.0.role_mut::<xdg_roles::TopLevel>().unwrap();
             role.pending.max_size = Some(Extent::new(width, height));
             Ok(())
         }
@@ -483,7 +487,7 @@ where
     ) -> Self::SetMinSizeFut<'_> {
         async move {
             let this = ctx.objects().get::<Self>(object_id).unwrap();
-            let mut role = this.0.role_mut::<xdg::TopLevel>().unwrap();
+            let mut role = this.0.role_mut::<xdg_roles::TopLevel>().unwrap();
             role.pending.min_size = Some(Extent::new(width, height));
             Ok(())
         }

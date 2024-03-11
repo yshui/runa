@@ -55,7 +55,7 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
-    static SIGBUS_COUNT: Cell<usize> = Cell::new(0);
+    static SIGBUS_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The number of times a recoverable SIGBUS has occurred for the current
@@ -86,7 +86,7 @@ unsafe fn map_zeroed(addr: *const libc::c_void, len: usize) -> Result<(), libc::
 }
 
 /// Handle a SIGBUS signal. Tries to recover from SIGBUS caused by a client
-/// shrinking its shm pool. You MUST call this function is your SIGBUS handler
+/// shrinking its shm pool. You MUST call this function in your SIGBUS handler
 /// if you want to map shm pools.
 ///
 /// Returns `true` if the signal was handled, `false` otherwise. Usually you

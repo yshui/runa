@@ -655,7 +655,7 @@ where
         async move {
             let surface = ctx.objects().get::<Self>(object_id).unwrap().0.clone();
             let role = surface
-                .role::<roles::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
+                .role::<roles::subsurface::Subsurface<<Ctx::ServerContext as HasShell>::Shell>>()
                 .unwrap();
             let parent = role.parent().upgrade().unwrap();
             let mut parent_stack_pending = parent.pending_mut();
@@ -768,7 +768,7 @@ where
             if !ctx.objects().contains(id.0) {
                 let shell = ctx.server_context().shell();
                 let mut shell = shell.borrow_mut();
-                if !crate::shell::surface::roles::Subsurface::attach(
+                if !roles::subsurface::Subsurface::attach(
                     parent,
                     surface.clone(),
                     &mut shell,

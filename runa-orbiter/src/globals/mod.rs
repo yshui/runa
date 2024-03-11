@@ -130,7 +130,7 @@ where
                     continue
                 }
                 self.surfaces.extend(
-                    crate::shell::surface::roles::subsurface_iter(
+                    crate::shell::surface::roles::subsurface::subsurface_iter(
                         surface.inner.current_key(),
                         &*shell,
                     )

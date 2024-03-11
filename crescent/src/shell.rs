@@ -12,7 +12,7 @@ use runa_orbiter::{
     shell::{
         buffers,
         output::OutputChange,
-        surface::{self, roles::subsurface_iter},
+        surface::{self, roles::subsurface::subsurface_iter},
         xdg::{Layout, XdgShell},
         Shell, ShellEvent,
     },
@@ -86,7 +86,7 @@ impl Window {
 
 #[derive(Debug)]
 pub struct DefaultShellSurfaceState<B: buffers::BufferLike> {
-    pub base:        surface::SurfaceState<DefaultShell<B>>,
+    pub base:        surface::State<DefaultShell<B>>,
     /// Whether this state is the current state of its corresponding surface.
     pub is_current:  bool,
     /// The index of this state in the window stack, if it's in the stack.
@@ -94,7 +94,7 @@ pub struct DefaultShellSurfaceState<B: buffers::BufferLike> {
 }
 
 impl<B: buffers::BufferLike> DefaultShellSurfaceState<B> {
-    pub fn new(base: surface::SurfaceState<DefaultShell<B>>) -> Self {
+    pub fn new(base: surface::State<DefaultShell<B>>) -> Self {
         Self {
             base,
             is_current: false,
@@ -143,7 +143,7 @@ impl<B: buffers::BufferLike> DefaultShell<B> {
                 let state = self.get(top_level.surface_state);
                 let surface = state.surface().unwrap();
                 let role = surface
-                    .role::<runa_orbiter::shell::xdg::TopLevel>()
+                    .role::<runa_orbiter::shell::surface::roles::xdg::TopLevel>()
                     .unwrap();
                 if let Some(geometry) = role.geometry() {
                     if !geometry.to().contains(position) {
@@ -383,7 +383,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
     type Token = DefaultKey;
 
     #[tracing::instrument(skip_all)]
-    fn allocate(&mut self, state: surface::SurfaceState<Self>) -> Self::Token {
+    fn allocate(&mut self, state: surface::State<Self>) -> Self::Token {
         self.storage.insert(DefaultShellSurfaceState::new(state))
     }
 
@@ -392,7 +392,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
         tracing::debug!("Released {:?}, #surfaces left: {}", key, self.storage.len());
     }
 
-    fn get(&self, key: Self::Token) -> &surface::SurfaceState<Self> {
+    fn get(&self, key: Self::Token) -> &surface::State<Self> {
         // This unwrap cannot fail, unless there is a bug in this implementation to
         // cause it to return an invalid token.
         self.storage
@@ -404,7 +404,7 @@ impl<B: buffers::BufferLike> Shell for DefaultShell<B> {
     fn get_disjoint_mut<const N: usize>(
         &mut self,
         keys: [Self::Token; N],
-    ) -> [&mut surface::SurfaceState<Self>; N] {
+    ) -> [&mut surface::State<Self>; N] {
         self.storage
             .get_disjoint_mut(keys)
             .unwrap()

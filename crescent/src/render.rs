@@ -261,7 +261,7 @@ impl Renderer {
 
     fn render(&mut self, output: wgpu::SurfaceTexture) {
         use runa_orbiter::{
-            shell::surface::roles::subsurface_iter, utils::geometry::coords::Map as _,
+            shell::surface::roles::subsurface::subsurface_iter, utils::geometry::coords::Map as _,
         };
         let shell = self.shell.borrow();
         let output_scale = shell.scale_f32().map(|f| NotNan::try_from(f).unwrap());
